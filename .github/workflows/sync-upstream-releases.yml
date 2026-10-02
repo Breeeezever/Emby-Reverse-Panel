@@ -1,0 +1,67 @@
+name: Sync upstream releases
+
+on:
+  schedule:
+    # 每天 UTC 02:17（北京时间 10:17）检查一次。
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-upstream-releases
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # 使用 github.token：由 Actions 触发的事件不会级联触发其他 workflow（如 release.yml）。
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REPOSITORY: snnabb/Meridian
+      TARGET_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Mirror missing stable releases from upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          # 只镜像正式版；预发布版不纳入定时同步。
+          gh api --paginate "repos/${UPSTREAM_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+            > release-tags.txt
+
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+
+            if gh release view "$tag" --repo "$TARGET_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release ${tag} already exists; skipping."
+              continue
+            fi
+
+            echo "Mirroring release ${tag}"
+            metadata="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/tags/${tag}")"
+            title="$(jq -r '.name // .tag_name' <<<"$metadata")"
+            jq -r '.body // ""' <<<"$metadata" > release-notes.md
+
+            rm -rf "release-assets/${tag}"
+            mkdir -p "release-assets/${tag}"
+            gh release download "$tag" \
+              --repo "${UPSTREAM_REPOSITORY}" \
+              --dir "release-assets/${tag}" \
+              --clobber || true
+
+            assets=()
+            while IFS= read -r -d '' file; do
+              assets+=( "$file" )
+            done < <(find "release-assets/${tag}" -maxdepth 1 -type f -print0)
+
+            args=( "$tag" --repo "$TARGET_REPOSITORY" --title "$title" --notes-file release-notes.md )
+            if (( ${#assets[@]} > 0 )); then
+              args+=( "${assets[@]}" )
+            fi
+            gh release create "${args[@]}"
+          done < release-tags.txt
