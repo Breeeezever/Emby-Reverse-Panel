@@ -51,7 +51,7 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: https://emby.qd.je/wiki/
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Publish Wiki
         id: deployment
