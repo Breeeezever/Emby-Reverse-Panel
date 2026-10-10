@@ -76,6 +76,9 @@ type restoreMarker struct {
 }
 
 type backupPanelSettings struct {
+	CertificateSource   string
+	CertificatePath     string
+	PrivateKeyPath      string
 	PanelDomain         string
 	RouteDomain         string
 	ListenPort          int
@@ -620,9 +623,9 @@ func readBackupPanelSettings(db *sql.DB) (*backupPanelSettings, error) {
 	}
 	var settings backupPanelSettings
 	err := db.QueryRow(`SELECT panel_domain, route_domain, listen_port, tls_enabled, configured,
-		acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging FROM panel_settings WHERE id=1`).Scan(
+		acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging, certificate_source, certificate_path, private_key_path FROM panel_settings WHERE id=1`).Scan(
 		&settings.PanelDomain, &settings.RouteDomain, &settings.ListenPort, &settings.TLSEnabled, &settings.Configured,
-		&settings.ACMEEmail, &settings.ACMEDNSProvider, &settings.ACMETokenCiphertext, &settings.ACMEStaging,
+		&settings.ACMEEmail, &settings.ACMEDNSProvider, &settings.ACMETokenCiphertext, &settings.ACMEStaging, &settings.CertificateSource, &settings.CertificatePath, &settings.PrivateKeyPath,
 	)
 	if err != nil {
 		return nil, err
@@ -639,6 +642,9 @@ func ensureBackupPanelACMEColumns(db *sql.DB) error {
 		{"acme_dns_provider", "TEXT NOT NULL DEFAULT 'cloudflare'"},
 		{"acme_token_ciphertext", "TEXT NOT NULL DEFAULT ''"},
 		{"acme_staging", "INTEGER NOT NULL DEFAULT 0"},
+		{"certificate_source", "TEXT NOT NULL DEFAULT 'acme'"},
+		{"certificate_path", "TEXT NOT NULL DEFAULT ''"},
+		{"private_key_path", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, column := range columns {
 		exists, err := backupSQLiteColumnExists(db, "panel_settings", column.name)
@@ -668,9 +674,9 @@ func preserveBackupPanelSettings(path string, settings *backupPanelSettings) err
 		return err
 	}
 	_, err = db.Exec(`UPDATE panel_settings SET panel_domain=?, route_domain=?, listen_port=?, tls_enabled=?, configured=?,
-		acme_email=?, acme_dns_provider=?, acme_token_ciphertext=?, acme_staging=?, updated_at=CURRENT_TIMESTAMP WHERE id=1`,
+		acme_email=?, acme_dns_provider=?, acme_token_ciphertext=?, acme_staging=?, certificate_source=?, certificate_path=?, private_key_path=?, updated_at=CURRENT_TIMESTAMP WHERE id=1`,
 		settings.PanelDomain, settings.RouteDomain, settings.ListenPort, settings.TLSEnabled, settings.Configured,
-		settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, settings.ACMEStaging)
+		settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, settings.ACMEStaging, settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath)
 	return err
 }
 
@@ -730,6 +736,16 @@ func writeRestorePending(dbPath string, manifest backupManifest, entries map[str
 	stagedDB, err := sql.Open("sqlite", databasePath+"?_pragma=journal_mode(DELETE)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return 0, err
+	}
+	if manifestIncludesTLS(manifest) {
+		if err := ensureBackupPanelACMEColumns(stagedDB); err != nil {
+			_ = stagedDB.Close()
+			return 0, err
+		}
+		if _, err := stagedDB.Exec("UPDATE panel_settings SET certificate_source='upload', certificate_path='', private_key_path='' WHERE certificate_source='path'"); err != nil {
+			_ = stagedDB.Close()
+			return 0, err
+		}
 	}
 	stagedPanelSettings, err := readBackupPanelSettings(stagedDB)
 	_ = stagedDB.Close()

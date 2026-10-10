@@ -46,7 +46,12 @@ func (a *App) handleIngressCapabilities(w http.ResponseWriter, r *http.Request) 
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	scheme := "http"
+	if a.pm.siteTLSConfigSnapshot() != nil {
+		scheme = "https"
+	}
 	a.jsonOK(w, map[string]interface{}{
+		"site_listener_scheme":       scheme,
 		"app_version":                appVersion,
 		"host_only_available":        a.pm.HostOnlyIngressSafe(),
 		"path_ingress_available":     true,
@@ -83,12 +88,20 @@ func (a *App) handlePanelCertificate(w http.ResponseWriter, r *http.Request) {
 }
 
 type panelSettingsRequest struct {
+	PanelDomain    string `json:"panel_domain"`
 	PanelPrefix    string `json:"panel_prefix"`
 	WildcardDomain string `json:"wildcard_domain"`
 	ListenPort     int    `json:"listen_port"`
 }
 
 func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
+	if a.panelCertificates != nil {
+		if !a.panelCertificates.operationMu.TryLock() {
+			a.jsonErr(w, http.StatusConflict, "另一项证书操作正在进行")
+			return
+		}
+		defer a.panelCertificates.operationMu.Unlock()
+	}
 	if r.Method != http.MethodPost {
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -98,7 +111,19 @@ func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
 		a.jsonErr(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	managed, err := normalizeManagedPanelPrefix(req.PanelPrefix, req.WildcardDomain)
+	var managed PanelSettings
+	var err error
+	if strings.TrimSpace(req.PanelDomain) != "" {
+		var routeDomain string
+		if strings.TrimSpace(req.WildcardDomain) != "" {
+			routeDomain, err = normalizeWildcardDomain(req.WildcardDomain)
+		}
+		if err == nil {
+			managed, err = normalizeStoredPanelSettings(req.PanelDomain, routeDomain, false)
+		}
+	} else {
+		managed, err = normalizeManagedPanelPrefix(req.PanelPrefix, req.WildcardDomain)
+	}
 	if err != nil {
 		a.jsonErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -112,7 +137,7 @@ func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
 		a.jsonErr(w, http.StatusInternalServerError, "failed to read panel settings")
 		return
 	}
-	settings, migrated, err := a.db.SaveManagedPanelSettings(managed.PanelDomain, managed.RouteDomain, req.ListenPort, current.TLSEnabled)
+	settings, migrated, err := a.db.SavePanelEndpointSettings(managed.PanelDomain, managed.RouteDomain, req.ListenPort, current.TLSEnabled)
 	if err != nil {
 		a.jsonErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -128,7 +153,7 @@ func (a *App) panelCertificateStatus(settings PanelSettings) panelCertificateSta
 	status.ACMEDNSProvider = settings.ACMEDNSProvider
 	status.ACMEStaging = settings.ACMEStaging
 	status.DNSAPITokenConfigured = settings.ACMETokenCiphertext != ""
-	status.AutoRenewEnabled = !jwtSecretEphemeral && settings.ACMEEmail != "" && settings.ACMETokenCiphertext != ""
+	status.AutoRenewEnabled = settings.CertificateSource == "acme" && !jwtSecretEphemeral && settings.ACMEEmail != "" && settings.ACMETokenCiphertext != ""
 	if settings.ACMETokenCiphertext == "" {
 		return status
 	}
@@ -139,6 +164,15 @@ func (a *App) panelCertificateStatus(settings PanelSettings) panelCertificateSta
 }
 
 func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request) {
+	if a.panelCertificates == nil {
+		a.jsonErr(w, http.StatusServiceUnavailable, "证书管理不可用")
+		return
+	}
+	if !a.panelCertificates.operationMu.TryLock() {
+		a.jsonErr(w, http.StatusConflict, "另一项证书操作正在进行")
+		return
+	}
+	defer a.panelCertificates.operationMu.Unlock()
 	if r.Method != http.MethodPost {
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -218,6 +252,11 @@ func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request
 			}
 			currentStatus = a.panelCertificateStatus(settings)
 		}
+		if err := a.db.setPanelCertificateSource("acme", "", ""); err != nil {
+			a.jsonErr(w, 500, "无法保存证书来源")
+			return
+		}
+		currentStatus.CertificateSource = "acme"
 		currentStatus.CertificateReused = true
 		a.jsonOK(w, currentStatus)
 		return
@@ -252,6 +291,12 @@ func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request
 		a.jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := a.db.setPanelCertificateSource("acme", "", ""); err != nil {
+		_ = a.panelCertificates.restoreInstalledFiles(backup)
+		a.jsonErr(w, 500, "无法保存证书来源")
+		return
+	}
+	settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath = "acme", "", ""
 	status := a.panelCertificateStatus(settings)
 	if !status.RestartRequired {
 		a.panelCertificates.activate(issued)

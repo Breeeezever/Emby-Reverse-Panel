@@ -68,6 +68,7 @@
     overlay.classList.add('active');
     overlay.setAttribute('aria-hidden', 'false');
     document.body.classList.add('modal-open');
+    if (modal && typeof modal.focus === 'function') modal.focus({ preventScroll: true });
     // Reset after layout as well: replacing modal content can restore the
     // previous scroll position in some browsers after the overlay is shown.
     if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(resetModalScroll);
@@ -94,7 +95,21 @@
   document.getElementById('modal-close').addEventListener('click', closeModal);
 
   document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape' && document.getElementById('modal-overlay').classList.contains('active')) closeModal();
+    if (!document.getElementById('modal-overlay').classList.contains('active')) return;
+    if (e.key === 'Escape') closeModal();
+    if (e.key !== 'Tab') return;
+    const modal = document.getElementById('modal');
+    if (!modal || typeof modal.querySelectorAll !== 'function') return;
+    const controls = [...modal.querySelectorAll('button, a[href], input, select, textarea, summary, [tabindex]')]
+      .filter(el => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length > 0);
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (!first) { e.preventDefault(); modal.focus(); return; }
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === modal)) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+      e.preventDefault(); first.focus();
+    }
   });
 
   function setSetupTokenVisible(visible) {
@@ -112,9 +127,9 @@
   function storedSidebarExpanded() {
     try {
       if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) return false;
-      return !!(window.localStorage && window.localStorage.getItem(sidebarStorageKey) === 'true');
+      return !window.localStorage || window.localStorage.getItem(sidebarStorageKey) !== 'false';
     } catch (_) {
-      return false;
+      return true;
     }
   }
 
@@ -131,7 +146,7 @@
       sidebarToggleEl.setAttribute('aria-label', label);
       sidebarToggleEl.title = label;
     }
-    if (persist) {
+    if (persist && !(window.matchMedia && window.matchMedia('(max-width: 768px)').matches)) {
       try {
         if (window.localStorage) window.localStorage.setItem(sidebarStorageKey, String(expanded));
       } catch (_) {}
@@ -139,6 +154,10 @@
   }
 
   setSidebarExpanded(storedSidebarExpanded(), false);
+  const sidebarMedia = window.matchMedia && window.matchMedia('(max-width: 768px)');
+  if (sidebarMedia && typeof sidebarMedia.addEventListener === 'function') {
+    sidebarMedia.addEventListener('change', () => setSidebarExpanded(storedSidebarExpanded(), false));
+  }
   if (sidebarToggleEl) {
     sidebarToggleEl.addEventListener('click', function() {
       setSidebarExpanded(!shellEl.classList.contains('sidebar-expanded'), true);
@@ -237,9 +256,7 @@
   }
 
   function renderLoginFooter(isSetup) {
-    const lines = [isSetup
-      ? '当前为单管理员模式，请创建唯一的管理员账号。'
-      : '当前为单管理员模式。'];
+    const lines = isSetup ? ['仅支持一个管理员账户。'] : [];
 
     if (authStatus.jwt_secret_ephemeral) {
       lines.push('<span class="login-note warn">当前未固定 JWT_SECRET，服务重启后需要重新登录。</span>');
@@ -252,12 +269,13 @@
     stopLoginRetryCountdown();
     revealAuthScreen();
     authMode = 'setup';
+    updateAuthHeading(true);
     loginFormEl.setAttribute('aria-busy', 'false');
     if (authCheckStatusEl) authCheckStatusEl.hidden = true;
     loginButtonEl.textContent = '创建管理员';
     loginButtonEl.disabled = false;
     loginFooterEl.innerHTML = renderLoginFooter(true);
-    loginFooterEl.hidden = false;
+    loginFooterEl.hidden = !loginFooterEl.innerHTML;
     usernameHelpEl.hidden = false;
     usernameInputEl.setAttribute('aria-describedby', 'admin-username-help');
     passwordHelpEl.hidden = false;
@@ -274,12 +292,13 @@
     stopLoginRetryCountdown();
     revealAuthScreen();
     authMode = 'login';
+    updateAuthHeading(false);
     loginFormEl.setAttribute('aria-busy', 'false');
     if (authCheckStatusEl) authCheckStatusEl.hidden = true;
     loginButtonEl.textContent = '登录';
     loginButtonEl.disabled = false;
     loginFooterEl.innerHTML = renderLoginFooter(false);
-    loginFooterEl.hidden = false;
+    loginFooterEl.hidden = !loginFooterEl.innerHTML;
     if (usernameHelpEl) usernameHelpEl.hidden = true;
     if (usernameInputEl && typeof usernameInputEl.removeAttribute === 'function') usernameInputEl.removeAttribute('aria-describedby');
     if (passwordHelpEl) passwordHelpEl.hidden = true;
@@ -304,6 +323,34 @@
     const length = utf8ByteLength(username);
     return length < 1 || length > 64 ? '管理员用户名必须为 1-64 个 UTF-8 字节' : '';
   }
+
+  function updateAuthHeading(isSetup) {
+    const title = document.getElementById('auth-title');
+    const description = document.getElementById('auth-description');
+    if (title) title.textContent = isSetup ? '创建管理员' : '登录';
+    if (description) {
+      description.textContent = isSetup ? '首次使用，请设置管理员账户。' : '';
+      description.hidden = !isSetup;
+    }
+    if (isSetup) loginEl.classList.add('is-setup');
+    else loginEl.classList.remove('is-setup');
+    if (passwordInputEl) passwordInputEl.type = 'password';
+    const toggle = document.getElementById('btn-toggle-password');
+    if (toggle) {
+      toggle.textContent = '显示';
+      toggle.setAttribute('aria-pressed', 'false');
+      toggle.setAttribute('aria-label', '显示密码');
+    }
+  }
+
+  const passwordToggle = document.getElementById('btn-toggle-password');
+  if (passwordToggle) passwordToggle.addEventListener('click', function() {
+    const visible = passwordInputEl.type === 'password';
+    passwordInputEl.type = visible ? 'text' : 'password';
+    this.textContent = visible ? '隐藏' : '显示';
+    this.setAttribute('aria-pressed', String(visible));
+    this.setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
+  });
 
   if (authRetryButtonEl) authRetryButtonEl.addEventListener('click', checkAuth);
   if (setupTokenToggleEl) setupTokenToggleEl.addEventListener('click', function() {

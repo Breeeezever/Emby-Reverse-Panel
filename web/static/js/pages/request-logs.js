@@ -43,6 +43,10 @@ function requestLogApplyDisplaySettings(settings) {
     backend_address: settings?.log_display_backend_address !== false,
     timeline: settings?.log_display_timeline !== false,
   };
+  requestLogApplyColumnVisibility();
+}
+
+function requestLogApplyColumnVisibility() {
   document.querySelectorAll('[data-log-field="node"]').forEach(node => { node.hidden = !requestLogDisplaySettings.node; });
   document.querySelectorAll('[data-log-field="category"]').forEach(node => { node.hidden = !requestLogDisplaySettings.category; });
   document.querySelectorAll('[data-log-field="status"]').forEach(node => { node.hidden = !requestLogDisplaySettings.status; });
@@ -114,23 +118,23 @@ function renderRequestLogs() {
   requestLogStatusFilter = 'all';
 
   page.innerHTML = `
-    <h1 class="section-title fade-up">日志记录</h1>
-    <p class="section-sub fade-up">查看各站点的请求状态、客户端 IP、客户端 UA 与实际发往后端的上游 UA。日志不保存查询参数、令牌、Cookie 或正文。</p>
 
     <section class="request-log-controls fade-up">
       <div class="request-log-search-row">
-        <label class="request-log-date-field">
-          <span>开始日期</span>
-          <input type="date" class="form-input" id="request-log-from" value="${requestLogDateInputValue(yesterday)}">
-        </label>
-        <span class="request-log-date-separator">至</span>
-        <label class="request-log-date-field">
-          <span>结束日期</span>
-          <input type="date" class="form-input" id="request-log-to" value="${requestLogDateInputValue(today)}">
-        </label>
+        <div class="request-log-date-range" role="group" aria-label="日期范围">
+          <label class="request-log-date-field">
+            <span>开始日期</span>
+            <input type="date" class="form-input" id="request-log-from" value="${requestLogDateInputValue(yesterday)}">
+          </label>
+          <span class="request-log-date-separator" aria-hidden="true">至</span>
+          <label class="request-log-date-field">
+            <span>结束日期</span>
+            <input type="date" class="form-input" id="request-log-to" value="${requestLogDateInputValue(today)}">
+          </label>
+        </div>
         <label class="request-log-search-field">
           <span class="sr-only">搜索日志</span>
-          <input type="search" class="form-input" id="request-log-search" placeholder="搜索节点、客户端 IP、客户端/上游 UA、路径或状态码（如 200）" autocomplete="off">
+          <input type="search" class="form-input" id="request-log-search" placeholder="搜索节点、IP、UA、路径或状态码" autocomplete="off">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
         </label>
       </div>
@@ -181,8 +185,8 @@ function renderRequestLogs() {
       <div class="request-log-table-scroll">
         <table class="request-log-table">
           <colgroup>
-            <col class="request-log-col-node"><col class="request-log-col-category"><col class="request-log-col-status">
-            <col class="request-log-col-ip"><col class="request-log-col-ua"><col class="request-log-col-upstream-ua"><col class="request-log-col-backend"><col class="request-log-col-time">
+            <col class="request-log-col-node" data-log-field="node"><col class="request-log-col-category" data-log-field="category"><col class="request-log-col-status" data-log-field="status">
+            <col class="request-log-col-ip" data-log-field="ip"><col class="request-log-col-ua" data-log-field="ua"><col class="request-log-col-upstream-ua" data-log-field="upstream-ua"><col class="request-log-col-backend" data-log-field="backend-address"><col class="request-log-col-time" data-log-field="timeline">
           </colgroup>
           <thead><tr>
             <th data-log-field="node">节点</th><th data-log-field="category">资源类别</th><th data-log-field="status">状态</th><th data-log-field="ip">客户端 IP</th><th data-log-field="ua">客户端 UA</th><th data-log-field="upstream-ua">上游 UA</th><th data-log-field="backend-address">后端地址</th><th data-log-field="timeline">时间线</th>
@@ -382,6 +386,7 @@ function renderRequestLogRows(logs) {
       </tr>
     `;
   }).join('');
+  requestLogApplyColumnVisibility();
 }
 
 async function clearRequestLogs() {

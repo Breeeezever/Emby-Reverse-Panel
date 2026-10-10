@@ -20,6 +20,7 @@ const EXTREME_OBSERVATION_REASON_CASES = [
 function loadScripts(...relativePaths) {
   const sandbox = { window: {}, URL };
   vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(STATIC_JS, 'form-validation.js'), 'utf8'), sandbox);
   for (const relativePath of relativePaths) {
     vm.runInContext(
       fs.readFileSync(path.join(STATIC_JS, relativePath), 'utf8'),
@@ -144,6 +145,9 @@ class FakeElement {
     this[`on${type}`] = handler;
   }
 
+  setAttribute(name, value) { this[name] = value; }
+  removeAttribute(name) { delete this[name]; }
+  click() { if (this.onclick) this.onclick(); }
   focus() {}
 }
 
@@ -258,6 +262,7 @@ function loadModalHarness() {
     uaNameMap: {},
   };
   vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(STATIC_JS, 'form-validation.js'), 'utf8'), sandbox);
   vm.runInContext(
     fs.readFileSync(path.join(STATIC_JS, 'pages', 'sites.js'), 'utf8'),
     sandbox,
@@ -430,35 +435,29 @@ test('profile risk notices and transition confirmations match the approved produ
   assert.equal(unchangedExtreme.requirement, 'none');
 });
 
-test('site modal presents proxy, direct main-video, automatic discovery, and playback origin controls', async () => {
-  const { sandbox, document } = loadModalHarness();
-  await sandbox.showSiteModal(null);
-  const body = document.getElementById('modal-body').innerHTML;
-
-  assert.match(body, /主视频流策略/);
-  assert.match(body, /反代/);
-  assert.match(body, /直连/);
-	  assert.match(body, /直连仅适用于主视频文件/);
-	  assert.match(body, /面板、API、HLS\/DASH 等仍由 Meridian 代理/);
-	  assert.match(body, /播放回源地址（可选）/);
-		  assert.equal(document.getElementById('m-main-video-mode').value, 'proxy');
-		  assert.equal(document.getElementById('m-playback-target').value, '');
-	  assert.ok(document.getElementById('m-dynamic-enabled'));
-	  assert.ok(document.getElementById('m-dynamic-profile'));
-	  assert.ok(document.getElementById('m-target-scheme'));
-	  assert.equal(document.getElementById('m-target-scheme').value, 'https');
-	  assert.equal(document.getElementById('m-target-port').value, '443');
-	  assert.equal(document.getElementById('m-dynamic-source-hls'), null);
-	  assert.equal(document.getElementById('m-dynamic-source-dash'), null);
-	  assert.equal(document.getElementById('m-dynamic-downgrade'), null);
-	  assert.match(body, /自动发现/);
-	  assert.match(body, /Compatible|兼容/);
-	  assert.match(body, /端口留空时自动使用 HTTPS 443 或 HTTP 80/);
-	  assert.match(body, /处理来源与 HTTPS 降级策略由所选模式自动设置/);
+test('one playback selector replaces duplicate policies and main URL needs no name', async () => {
+ const {sandbox,document}=loadModalHarness();await sandbox.showSiteModal(null);
+ assert.equal(document.getElementById('m-playback-routing-mode').value,'auto');
+ assert.equal(document.getElementById('m-main-video-mode'),null);
+ assert.equal(document.getElementById('m-primary-line-name'),null);
+ assert.equal(document.getElementById('m-dynamic-enabled'),null);
+ assert.ok(document.getElementById('m-target-address'));
+ const select=document.getElementById('m-playback-routing-mode');select.value='manual';select.onchange();
+ assert.equal(document.getElementById('m-manual-playback').hidden,false);
+ assert.equal(document.getElementById('m-auto-options').hidden,true);
+ select.value='direct';select.onchange();assert.equal(document.getElementById('m-manual-playback').hidden,true);
+ assert.match(document.getElementById('m-playback-mode-help').textContent,/海报图片/);
 });
 
-test('upstream line helpers preserve legacy targets and default new HTTPS ports', () => {
+test('upstream line helpers suggest HTTP 8096 without changing existing HTTP 80 targets', () => {
 	  const sandbox = loadScripts('api.js', 'pages/sites.js');
+	  assert.deepEqual(plain(sandbox.splitUpstreamTargetAddress('', 'http')), {
+	    scheme: 'http', address: '', port: '8096',
+	  });
+	  for (const url of ['http://media.example.com/emby', 'http://media.example.com:80/emby', 'http://[::1]:8096/emby?q=1', 'https://media.example.com:8443/base?q=/']) {
+	    const parts = sandbox.splitUpstreamTargetAddress(url, 'http');
+	    assert.equal(new URL(sandbox.joinUpstreamTargetAddress(parts.scheme, parts.address, parts.port)).href, new URL(url).href);
+	  }
 
 	  assert.deepEqual(plain(sandbox.splitUpstreamTargetAddress('', 'https')), {
 	    scheme: 'https',
@@ -481,7 +480,7 @@ test('upstream line helpers preserve legacy targets and default new HTTPS ports'
 	    port: '443',
 	  });
 	  assert.equal(sandbox.joinUpstreamTargetAddress('https', 'media.example.com/emby', ''), 'https://media.example.com/emby');
-	  assert.equal(sandbox.joinUpstreamTargetAddress('http', 'media.example.com/emby', ''), 'http://media.example.com/emby');
+	  assert.equal(sandbox.joinUpstreamTargetAddress('http', 'media.example.com/emby', ''), 'http://media.example.com:8096/emby');
 	  assert.equal(sandbox.joinUpstreamTargetAddress('https', 'media.example.com/emby', '8443'), 'https://media.example.com:8443/emby');
 	  assert.equal(sandbox.joinUpstreamTargetAddress('https', 'user:secret@media.example.com', '443'), '');
 	  assert.equal(sandbox.joinUpstreamTargetAddress('https', 'media.example.com/#fragment', '443'), '');
@@ -491,9 +490,7 @@ test('new site submission derives automatic discovery from the selected profile'
 	  const { sandbox, document, state } = loadModalHarness();
 	  await sandbox.showSiteModal(null);
 	  document.getElementById('m-name').value = 'Media';
-	  document.getElementById('m-target-scheme').value = 'https';
-	  document.getElementById('m-target-address').value = 'origin.example';
-	  document.getElementById('m-target-port').value = '';
+	  document.getElementById('m-target-address').value = 'https://origin.example';
 	  document.getElementById('m-playback-target').value = 'https://playback.example';
 	  document.getElementById('m-ingress-mode').value = 'port';
   document.getElementById('m-ingress-mode').onchange();
@@ -503,7 +500,7 @@ test('new site submission derives automatic discovery from the selected profile'
 
   assert.equal(state.creates.length, 1);
 	  assert.equal(state.creates[0].target_url, 'https://origin.example');
-	  assert.equal(state.creates[0].playback_target_url, 'https://playback.example');
+	  assert.equal(state.creates[0].playback_target_url, '');
   assert.equal(state.creates[0].playback_mode, 'direct');
   assert.equal(state.creates[0].main_video_stream_mode, 'proxy');
   assert.equal(state.creates[0].client_ip_mode, 'both');
@@ -776,7 +773,7 @@ test('dynamic rendering escapes values and never renders sensitive observation d
   assert.ok(!observations.includes('body-secret-value'));
 
   const panel = sandbox.renderDynamicObservationsPanel(true);
-  for (const phrase of ['规范化权威', '有限原因代码', '聚合时间/次数', '完整 URL', '路径', '查询参数', '令牌', '请求头', '正文']) {
+  for (const phrase of ['目标域名与处理结果', '不包含令牌或请求内容']) {
     assert.match(panel, new RegExp(phrase));
   }
 });
@@ -814,13 +811,13 @@ test('edit modal exposes discovery policy and observation controls', async () =>
   assert.deepEqual(state.observationDeletes, []);
   assert.deepEqual(state.confirmations, []);
   assert.deepEqual(state.errors, []);
-	  assert.equal(document.getElementById('m-main-video-mode').value, 'direct');
+	  assert.equal(document.getElementById('m-playback-routing-mode').value, 'direct');
 	  assert.equal(document.getElementById('m-client-ip-mode').value, 'real_ip');
 
 	  document.getElementById('m-playback-target').value = 'https://playback.example';
 	  await document.getElementById('m-submit').onclick();
 	  assert.equal(state.updates.length, 1);
-	  assert.equal(state.updates[0].payload.playback_target_url, 'https://playback.example');
+	  assert.equal(state.updates[0].payload.playback_target_url, '');
 });
 
 test('client IP forwarding selector exposes only the three node-level modes', () => {
@@ -833,21 +830,18 @@ test('client IP forwarding selector exposes only the three node-level modes', ()
   assert.match(source, /client_ip_mode: clientIPModeSelect\.value/);
 });
 
-test('main video strategy uses a compact selector and defaults to proxy', () => {
-  const source = fs.readFileSync(path.join(STATIC_JS, 'pages', 'sites.js'), 'utf8');
-  assert.match(source, /<select[^>]+id="m-main-video-mode"/);
-  assert.match(source, /<option value="proxy"[^>]*>反代<\/option>/);
-  assert.match(source, /<option value="direct"[^>]*>直连<\/option>/);
-  assert.doesNotMatch(source, /m-main-video-(?:proxy|direct)|main-video-mode-control/);
-  assert.match(source, /mainVideoModeSelect\.value = isEdit[^\n]+: 'proxy'/);
-  assert.match(source, /main_video_stream_mode: mainVideoModeSelect\.value/);
+test('complete upstream URLs validate ports without losing signed queries', () => {
+ const sandbox=loadScripts('api.js','pages/sites.js');
+ assert.equal(sandbox.normalizeSiteUpstreamAddress('https://origin.example/a?signature=/'),'https://origin.example/a?signature=/');
+ assert.equal(sandbox.normalizeSiteUpstreamAddress('origin.example:443/emby'),'https://origin.example/emby');
+ for(const v of ['http://origin:888888','http://origin:1.5','ftp://origin','http://u:p@origin'])assert.equal(sandbox.normalizeSiteUpstreamAddress(v),'');
 });
 
-test('advanced settings align main video with the separate cache limit row', () => {
+test('advanced settings give cache controls their own full-width panel', () => {
   const source = fs.readFileSync(path.join(STATIC_JS, 'pages', 'sites.js'), 'utf8');
   const style = fs.readFileSync(path.join(STATIC_JS, '..', 'css', 'style.css'), 'utf8');
   assert.match(source, /class="form-group cache-limit-group"/);
   assert.match(source, /class="cache-limit-grid"/);
-  assert.match(style, /"video cache-limits \."/);
-  assert.match(style, /\.cache-limit-group \{ grid-area: cache-limits; \}/);
+  assert.match(style, /\.site-settings-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(style, /\.site-settings-grid > \.cache-limit-group\s*\{[^}]*grid-column:\s*1 \/ -1;/);
 });

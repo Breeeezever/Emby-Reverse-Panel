@@ -27,9 +27,9 @@ func TestMainVideoStreamRequestClassification(t *testing.T) {
 		{"video download", http.MethodGet, "/Videos/1/download", true},
 		{"item download", http.MethodGet, "/Items/1/download", true},
 		{"static query", http.MethodGet, "/Videos/1?Static=true", true},
-		{"hls manifest", http.MethodGet, "/Videos/1/stream.m3u8", false},
-		{"dash manifest", http.MethodGet, "/Videos/1/manifest.mpd", false},
-		{"hls segment", http.MethodGet, "/media/segment.ts", false},
+		{"hls manifest", http.MethodGet, "/Videos/1/stream.m3u8", true},
+		{"dash manifest", http.MethodGet, "/Videos/1/manifest.mpd", true},
+		{"hls segment", http.MethodGet, "/media/segment.ts", true},
 		{"subtitle", http.MethodGet, "/Videos/1/Subtitles/2/Stream.ass", false},
 		{"image", http.MethodGet, "/Items/1/Images/Primary.jpg", false},
 		{"static asset", http.MethodGet, "/web/app.js", false},
@@ -107,7 +107,7 @@ func TestMainVideoDirectModeRedirectsOnlyMainVideo(t *testing.T) {
 		t.Fatalf("direct main video probe reached upstream %d times, want 1", got)
 	}
 
-	for _, path := range []string{"/media/segment.ts", "/Videos/1/Subtitles/2/Stream.ass", "/System/Info/Public"} {
+	for _, path := range []string{"/Items/1/Images/Primary.jpg", "/Videos/1/Subtitles/2/Stream.ass", "/System/Info/Public"} {
 		resp, err = client.Get(baseURL + path)
 		if err != nil {
 			t.Fatalf("request proxied path %s: %v", path, err)

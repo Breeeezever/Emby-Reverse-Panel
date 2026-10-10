@@ -34,8 +34,14 @@ func runPanelCertificateRenewalScheduler(ctx context.Context, db *DB, manager *p
 	go check()
 	ticker := time.NewTicker(panelCertificateRenewalInterval)
 	defer ticker.Stop()
+	pathTicker := time.NewTicker(time.Minute)
+	defer pathTicker.Stop()
 	for {
 		select {
+		case <-pathTicker.C:
+			if err := reloadExternalPanelCertificate(db, manager); err != nil {
+				log.Printf("[panel-certificate] external certificate reload: %v", err)
+			}
 		case <-ticker.C:
 			check()
 		case <-ctx.Done():
@@ -51,11 +57,15 @@ func disableExpiredPanelTLSIfNeeded(db *DB, manager *panelCertificateManager) (b
 	if db == nil || manager == nil {
 		return false, nil
 	}
+	if !manager.operationMu.TryLock() {
+		return false, nil
+	}
+	defer manager.operationMu.Unlock()
 	settings, err := db.PanelSettings()
 	if err != nil {
 		return false, err
 	}
-	if !settings.TLSEnabled || !settings.Configured || settings.PanelDomain == "" || settings.RouteDomain == "" {
+	if !settings.TLSEnabled || !settings.Configured || settings.PanelDomain == "" {
 		return false, nil
 	}
 	status := manager.status(settings, settings.PanelDomain, settings.RouteDomain, settings.ListenPort, settings.TLSEnabled)
@@ -73,6 +83,10 @@ func disableExpiredPanelTLSIfNeeded(db *DB, manager *panelCertificateManager) (b
 }
 
 func renewPanelCertificateIfDue(ctx context.Context, db *DB, manager *panelCertificateManager) error {
+	if manager == nil || !manager.operationMu.TryLock() {
+		return errCertificateIssuanceBusy
+	}
+	defer manager.operationMu.Unlock()
 	settings, err := db.PanelSettings()
 	if err != nil {
 		return err
@@ -80,7 +94,7 @@ func renewPanelCertificateIfDue(ctx context.Context, db *DB, manager *panelCerti
 	if !settings.TLSEnabled || !settings.Configured || settings.PanelDomain == "" || settings.RouteDomain == "" {
 		return nil
 	}
-	if jwtSecretEphemeral || strings.TrimSpace(settings.ACMEEmail) == "" || strings.TrimSpace(settings.ACMETokenCiphertext) == "" {
+	if settings.CertificateSource != "acme" || jwtSecretEphemeral || strings.TrimSpace(settings.ACMEEmail) == "" || strings.TrimSpace(settings.ACMETokenCiphertext) == "" {
 		return nil
 	}
 	status := manager.status(settings, settings.PanelDomain, settings.RouteDomain, settings.ListenPort, settings.TLSEnabled)

@@ -11,7 +11,7 @@ function accountErrorMessage(error) {
   const translations = {
     'current password is incorrect': '当前密码不正确',
     'username must be 1-64 characters': '用户名需要为 1–64 个字符',
-    'password must be 12-72 bytes': '新密码需要为 12–72 个字符',
+    'password must contain at least 6 characters and at most 72 bytes': '密码至少需要 6 个字符，且不能超过 72 字节',
     'no account changes requested': '用户名和密码均未修改',
   };
   return translations[message] || message;
@@ -56,20 +56,17 @@ function renderAccount() {
         <div class="account-profile-main">
           <span class="account-profile-avatar" id="account-avatar">${esc((API.username || 'A')[0].toUpperCase())}</span>
           <div>
-            <span class="account-eyebrow">当前账户</span>
             <h2 id="account-current-username">${esc(API.username || '管理员')}</h2>
-            <p>单管理员模式</p>
           </div>
         </div>
         <dl class="account-profile-meta">
-          <div><dt>账户类型</dt><dd id="account-role">管理员</dd></div>
           <div><dt>创建时间</dt><dd id="account-created-at">正在读取…</dd></div>
         </dl>
       </section>
 
       <section class="account-settings-card">
         <div class="account-card-head">
-          <div><h2>账户设置</h2><p>修改用户名或密码时，需要验证当前密码。</p></div>
+          <div><h2>修改账户</h2></div>
         </div>
         <form id="account-settings-form" class="account-settings-form">
           <div class="form-group">
@@ -90,7 +87,7 @@ function renderAccount() {
                 <input class="form-input" id="account-new-password" type="password" maxlength="72" autocomplete="new-password" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="不修改请留空">
                 <button type="button" class="secret-toggle" data-toggle-target="account-new-password" aria-label="显示新密码">显示</button>
               </div>
-              <div class="form-help">如需修改，密码长度为 12–72 个字符。</div>
+              <div class="form-help">至少 6 个字符。</div>
             </div>
             <div class="form-group">
               <label for="account-confirm-password">确认新密码</label>
@@ -107,7 +104,7 @@ function renderAccount() {
       </section>
 
       <section class="account-session-card">
-        <div><h2>安全退出登录</h2><p>退出登录将清除当前设备 Cookie，其他设备的登录会话不受影响。</p></div>
+        <p>仅退出当前设备，其他设备不受影响。</p>
         <button class="account-logout-button" id="account-logout" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M15 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/></svg>
           <span>退出登录</span>
@@ -125,7 +122,7 @@ function renderAccount() {
 
     if (!username) return Toast.error('请填写用户名');
     if (!currentPassword) return Toast.error('请输入当前密码');
-    if (newPassword && newPassword.length < 12) return Toast.error('新密码至少需要 12 个字符');
+    if (newPassword && adminPasswordValidationError(newPassword)) return Toast.error(adminPasswordValidationError(newPassword));
     if (newPassword !== confirmPassword) return Toast.error('两次输入的新密码不一致');
 
     saveButton.disabled = true;

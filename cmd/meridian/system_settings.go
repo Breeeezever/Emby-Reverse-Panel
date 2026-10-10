@@ -125,7 +125,7 @@ type SystemSettings struct {
 
 func defaultSystemSettings() SystemSettings {
 	return SystemSettings{
-		UIMode: "novice", UIRadius: 10, TrafficBillingMode: trafficBillingModeBidirectional, TrafficResetDay: 1, ProbeTimeoutMS: 5000, PingCacheMinutes: 10,
+		UIMode: "novice", UIRadius: 24, TrafficBillingMode: trafficBillingModeBidirectional, TrafficResetDay: 1, ProbeTimeoutMS: 5000, PingCacheMinutes: 10,
 		ScheduleTimezone:     beijingTimezoneOffsetMinutes,
 		ScheduleTimezoneName: defaultTimezoneName,
 		LogEnabled:           true, LogLevel: "info", LogRetentionDays: 30, LogFlushThreshold: 1,
@@ -137,6 +137,10 @@ func defaultSystemSettings() SystemSettings {
 }
 
 func normalizeSystemSettings(settings SystemSettings) (SystemSettings, error) {
+	// Fixed product defaults also apply to old databases and legacy API clients.
+	settings.UIRadius = 24
+	settings.ProbeTimeoutMS = 5000
+	settings.PingCacheMinutes = 10
 	settings.UIMode = strings.ToLower(strings.TrimSpace(settings.UIMode))
 	settings.TrafficBillingMode = strings.ToLower(strings.TrimSpace(settings.TrafficBillingMode))
 	if settings.TrafficBillingMode == "" {
@@ -166,9 +170,6 @@ func normalizeSystemSettings(settings SystemSettings) (SystemSettings, error) {
 	}
 	if settings.ScheduleTimezone < -720 || settings.ScheduleTimezone > 840 {
 		return settings, fmt.Errorf("schedule_timezone_offset must be between -720 and 840 minutes")
-	}
-	if settings.UIRadius < 0 || settings.UIRadius > 24 || settings.ProbeTimeoutMS < 1000 || settings.ProbeTimeoutMS > 180000 || settings.PingCacheMinutes < 0 || settings.PingCacheMinutes > 1440 {
-		return settings, fmt.Errorf("invalid system UI settings")
 	}
 	if settings.LogLevel != "info" && settings.LogLevel != "error" {
 		return settings, fmt.Errorf("log_level must be info or error")

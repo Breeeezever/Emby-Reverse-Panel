@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" />
+  <title>Meridian Telegram Bot 操作示意</title>
+  <style>
+    @font-face {
+      font-family: Inter;
+      src: url("../../web/static/fonts/inter-ui.woff2");
+    }
+    @font-face {
+      font-family: Han;
+      src: url("../../web/static/fonts/noto-sans-sc-ui.woff2");
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: #0b111d;
+      color: #f0f5ff;
+      font-family: Inter, Han, sans-serif;
+      width: 1440px;
+      height: 1000px;
+      padding: 52px 55px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 36px;
+    }
+    h1 {
+      font-size: 38px;
+      font-weight: 600;
+      letter-spacing: 0;
+      margin: 0 0 12px;
+    }
+    header p {
+      margin: 0;
+      font-size: 18px;
+      color: #a3b2c8;
+    }
+    .tag {
+      border: 1px solid #355275;
+      border-radius: 24px;
+      padding: 10px 18px;
+      color: #b8d4ff;
+      font-size: 16px;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 25px;
+    }
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 19px;
+      color: #d8e4f7;
+      margin-bottom: 18px;
+    }
+    .num {
+      display: inline-flex;
+      width: 30px;
+      height: 30px;
+      align-items: center;
+      justify-content: center;
+      background: #243957;
+      color: #9dc3ff;
+      border-radius: 9px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .phone {
+      height: 610px;
+      border: 1px solid #354255;
+      border-radius: 25px;
+      overflow: hidden;
+      background: #111d2b;
+      box-shadow: 0 12px 35px #0004;
+      position: relative;
+    }
+    .bar {
+      height: 80px;
+      background: #1b2939;
+      display: flex;
+      gap: 13px;
+      align-items: center;
+      padding: 16px;
+    }
+    .back {
+      font-size: 30px;
+      color: #99bcdf;
+      line-height: 1;
+    }
+    .avatar {
+      width: 43px;
+      height: 43px;
+      background: linear-gradient(140deg, #70b5ee, #446bb7);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 25px;
+      font-weight: 600;
+      color: white;
+    }
+    .name {
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .status {
+      font-size: 13px;
+      color: #8ca3ba;
+      margin-top: 4px;
+    }
+    .dots {
+      margin-left: auto;
+      font-size: 25px;
+      color: #9db1c6;
+    }
+    .chat {
+      padding: 18px 14px;
+    }
+    .date {
+      text-align: center;
+      font-size: 12px;
+      color: #9aacbd;
+      margin: 0 auto 20px;
+      width: 75px;
+      background: #25364a;
+      padding: 5px 10px;
+      border-radius: 18px;
+    }
+    .user {
+      margin-left: auto;
+      width: 108px;
+      background: #345574;
+      padding: 11px 14px;
+      border-radius: 13px 13px 2px 13px;
+      font-size: 17px;
+      margin-bottom: 15px;
+    }
+    .bubble {
+      border-radius: 13px 13px 13px 3px;
+      background: #24374a;
+      padding: 15px 16px 11px;
+      color: #e8f1ff;
+      font-size: 17px;
+      line-height: 1.65;
+      min-height: 107px;
+    }
+    .bubble .lead {
+      font-weight: 600;
+      margin-bottom: 7px;
+    }
+    .bubble .url {
+      color: #96c9ff;
+      overflow-wrap: anywhere;
+    }
+    .time {
+      text-align: right;
+      font-size: 11px;
+      color: #91a5bb;
+      margin-top: 7px;
+    }
+    .keys {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px;
+      margin-top: 5px;
+    }
+    .keys div {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 5px;
+      background: #253f56;
+      color: #aed8ff;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    .keys .wide {
+      grid-column: 1/-1;
+    }
+    .keys .primary {
+      background: #326194;
+      color: #f3f8ff;
+    }
+    .composer {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 60px;
+      background: #1b2939;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 17px;
+      color: #98b0c5;
+      font-size: 15px;
+    }
+    .menu {
+      background: #305b7f;
+      padding: 7px 10px;
+      border-radius: 18px;
+      color: #cbe5ff;
+      font-size: 13px;
+    }
+    .smile {
+      font-size: 23px;
+    }
+    .mic {
+      margin-left: auto;
+      font-size: 23px;
+    }
+    .note {
+      font-size: 16px;
+      color: #a7b9d0;
+      margin: 16px 0 0;
+      line-height: 1.6;
+    }
+    .foot {
+      font-size: 13px;
+      color: #71869f;
+      text-align: center;
+      margin: 28px 0 0;
+    }
+  </style>
+  <header>
+    <div>
+      <h1>不打开面板，也能管理站点。</h1>
+      <p>Telegram Bot · 私聊操作 · 当前消息更新 · 修改前确认</p>
+    </div>
+    <span class="tag">操作示意 · 模拟数据</span>
+  </header>
+  <div class="flow">
+    <section>
+      <div class="step"><span class="num">01</span>发送 /start，打开菜单</div>
+      <div class="phone">
+        <div class="bar">
+          <span class="back">‹</span><span class="avatar">M</span>
+          <div>
+            <div class="name">Meridian Bot</div>
+            <div class="status">机器人</div>
+          </div>
+          <span class="dots">⋮</span>
+        </div>
+        <div class="chat">
+          <div class="date">今天</div>
+          <div class="user">/start</div>
+          <div class="bubble">
+            <div class="lead">Meridian 管理</div>
+            请选择操作。随时发送 /cancel<br />可取消当前操作。
+            <div class="time">15:20</div>
+          </div>
+          <div class="keys">
+            <div>📊 立即日报</div>
+            <div>🌐 站点管理</div>
+            <div>🔗 站点地址</div>
+            <div>📈 站点流量</div>
+            <div>＋ 添加站点</div>
+            <div>📋 运行概览</div>
+            <div class="wide">打开面板 ↗</div>
+          </div>
+        </div>
+        <div class="composer">
+          <span class="menu">☰ 菜单</span><span class="smile">☺</span>消息<span
+            class="mic"
+            ><svg
+              width="21"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            >
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v4m-4 0h8" /></svg
+          ></span>
+        </div>
+      </div>
+      <p class="note">常用操作集中在菜单，<br />日报与管理员操作独立开关。</p>
+    </section>
+    <section>
+      <div class="step"><span class="num">02</span>选择站点，查看与操作</div>
+      <div class="phone">
+        <div class="bar">
+          <span class="back">‹</span><span class="avatar">M</span>
+          <div>
+            <div class="name">Meridian Bot</div>
+            <div class="status">机器人</div>
+          </div>
+          <span class="dots">⋮</span>
+        </div>
+        <div class="chat">
+          <div class="date">今天</div>
+          <div class="bubble">
+            <div class="lead">星海影院</div>
+            状态：运行中<br />入口：<span class="url"
+              >https://demo.example.com/cinema/</span
+            ><br />播放：自动发现
+            <div class="time">已编辑 15:21</div>
+          </div>
+          <div class="keys">
+            <div>发送地址</div>
+            <div>查看流量</div>
+            <div class="primary">编辑配置</div>
+            <div>启用 / 停用</div>
+            <div>检测连接</div>
+            <div>删除站点</div>
+            <div>返回站点列表</div>
+            <div>主菜单</div>
+          </div>
+        </div>
+        <div class="composer">
+          <span class="menu">☰ 菜单</span><span class="smile">☺</span>消息<span
+            class="mic"
+            ><svg
+              width="21"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            >
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v4m-4 0h8" /></svg
+          ></span>
+        </div>
+      </div>
+      <p class="note">导航和输入步骤更新原消息，<br />返回菜单不会连续刷屏。</p>
+    </section>
+    <section>
+      <div class="step"><span class="num">03</span>核对摘要，确认修改</div>
+      <div class="phone">
+        <div class="bar">
+          <span class="back">‹</span><span class="avatar">M</span>
+          <div>
+            <div class="name">Meridian Bot</div>
+            <div class="status">机器人</div>
+          </div>
+          <span class="dots">⋮</span>
+        </div>
+        <div class="chat">
+          <div class="date">今天</div>
+          <div class="bubble">
+            <div class="lead">编辑站点：星海影院</div>
+            播放模式：直连播放<br /><br />确认后生效（10 分钟内有效）。
+            <div class="time">已编辑 15:22</div>
+          </div>
+          <div class="keys">
+            <div class="wide primary">确认执行</div>
+            <div class="wide">取消操作</div>
+          </div>
+        </div>
+        <div class="composer">
+          <span class="menu">☰ 菜单</span><span class="smile">☺</span>消息<span
+            class="mic"
+            ><svg
+              width="21"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            >
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v4m-4 0h8" /></svg
+          ></span>
+        </div>
+      </div>
+      <p class="note">只允许授权管理员私聊，<br />每次确认仅执行一次。</p>
+    </section>
+  </div>
+  <p class="foot">
+    根据 Meridian v1.13.0 菜单与提示文案制作；非真实 Telegram 会话截图。
+  </p>
+</html>

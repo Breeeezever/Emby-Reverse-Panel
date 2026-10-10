@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -43,12 +44,12 @@ var errAdminAlreadyExists = errors.New("admin user already exists")
 var errInvalidCredentials = errors.New("invalid username or password")
 var errAdminNotConfigured = errors.New("administrator is not configured")
 var errMultipleAdmins = errors.New("multiple administrator accounts found")
-var errInvalidAdminPassword = errors.New("password must be 12-72 bytes")
+var errInvalidAdminPassword = errors.New("password must contain at least 6 characters and at most 72 bytes")
 var errInvalidAdminUsername = errors.New("username must be 1-64 characters")
 var errNoAccountChanges = errors.New("no account changes requested")
 
 func validateAdminPassword(password string) error {
-	if len(password) < 12 || len(password) > 72 {
+	if !utf8.ValidString(password) || utf8.RuneCountInString(password) < 6 || len(password) > 72 {
 		return errInvalidAdminPassword
 	}
 	return nil

@@ -176,7 +176,7 @@ func normalizeRoutePrefix(value string) (string, error) {
 }
 
 var reservedPathIngressPrefixes = map[string]struct{}{
-	"api": {}, "css": {}, "js": {}, "index.html": {}, "favicon.svg": {}, "_meridian": {},
+	"api": {}, "css": {}, "js": {}, "fonts": {}, "index.html": {}, "favicon.svg": {}, "_meridian": {},
 }
 
 // normalizePathPrefix validates the single URL path segment used by shared
@@ -640,7 +640,6 @@ func isMainVideoStreamURL(target *url.URL) bool {
 	}
 	pathValue := strings.ToLower(target.Path)
 	for _, suffix := range []string{
-		".m3u8", ".m3u", ".mpd", ".ts", ".m4s",
 		".srt", ".ass", ".vtt", ".sub",
 		".jpg", ".jpeg", ".gif", ".png", ".svg", ".ico", ".webp",
 		".js", ".css", ".woff", ".woff2", ".ttf", ".otf", ".map", ".webmanifest",
@@ -649,7 +648,10 @@ func isMainVideoStreamURL(target *url.URL) bool {
 			return false
 		}
 	}
-	for _, suffix := range []string{".mp4", ".m4v", ".ogv", ".webm", ".mkv", ".mov", ".avi", ".wmv", ".flv"} {
+	if strings.Contains(pathValue, "/images/") || strings.Contains(pathValue, "/subtitles/") {
+		return false
+	}
+	for _, suffix := range []string{".mp4", ".m4v", ".ogv", ".webm", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".m3u8", ".m3u", ".mpd", ".ts", ".m4s", ".aac", ".m4a"} {
 		if strings.HasSuffix(pathValue, suffix) {
 			return true
 		}
@@ -671,13 +673,17 @@ func isMainVideoStreamURL(target *url.URL) bool {
 	if len(parts) >= 3 && parts[0] == "items" && parts[1] != "" && parts[2] == "download" {
 		return true
 	}
-	for key, values := range target.Query() {
-		if !strings.EqualFold(key, "Static") && !strings.EqualFold(key, "Download") {
-			continue
-		}
-		for _, value := range values {
-			if strings.EqualFold(value, "true") {
-				return true
+	// Static is meaningful only on media endpoints; API and artwork query
+	// parameters must never turn those requests into direct playback.
+	if len(parts) == 2 && (parts[0] == "videos" || parts[0] == "audio") {
+		for key, values := range target.Query() {
+			if !strings.EqualFold(key, "Static") {
+				continue
+			}
+			for _, value := range values {
+				if strings.EqualFold(value, "true") {
+					return true
+				}
 			}
 		}
 	}

@@ -185,6 +185,16 @@ func (d *DB) migrateOnce() error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	INSERT OR IGNORE INTO telegram_report_settings (id) VALUES (1);
+ CREATE TABLE IF NOT EXISTS telegram_bot_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  admin_ids TEXT NOT NULL DEFAULT '[]',
+  public_url TEXT NOT NULL DEFAULT '',
+  revision INTEGER NOT NULL DEFAULT 0,
+  update_offset INTEGER NOT NULL DEFAULT -1,
+  authorized_since INTEGER NOT NULL DEFAULT 0
+ );
+ INSERT OR IGNORE INTO telegram_bot_settings (id) VALUES (1);
 		CREATE TABLE IF NOT EXISTS system_settings (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		ui_mode TEXT NOT NULL DEFAULT 'novice', ui_radius INTEGER NOT NULL DEFAULT 10,
@@ -459,6 +469,9 @@ func ensurePanelSettingsListenPortSchema(ctx context.Context, conn *sql.Conn) er
 		{"acme_dns_provider", "ALTER TABLE panel_settings ADD COLUMN acme_dns_provider TEXT NOT NULL DEFAULT 'cloudflare'"},
 		{"acme_token_ciphertext", "ALTER TABLE panel_settings ADD COLUMN acme_token_ciphertext TEXT NOT NULL DEFAULT ''"},
 		{"acme_staging", "ALTER TABLE panel_settings ADD COLUMN acme_staging INTEGER NOT NULL DEFAULT 0"},
+		{"certificate_source", "ALTER TABLE panel_settings ADD COLUMN certificate_source TEXT NOT NULL DEFAULT 'acme'"},
+		{"certificate_path", "ALTER TABLE panel_settings ADD COLUMN certificate_path TEXT NOT NULL DEFAULT ''"},
+		{"private_key_path", "ALTER TABLE panel_settings ADD COLUMN private_key_path TEXT NOT NULL DEFAULT ''"},
 	} {
 		var found int
 		if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('panel_settings') WHERE name=?", migration.column).Scan(&found); err != nil {

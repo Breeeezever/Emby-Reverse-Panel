@@ -593,7 +593,7 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 		manualAuthority := redirectHostKey(locationURL)
 		sameAuthority := sameRedirectAuthority(req.URL, locationURL)
 		unknownAuthority := !sameAuthority && !t.configuredAuthorities[manualAuthority]
-		directMainVideo := t.mainVideoDirect && expectedStructuredSource != dynamicDiscoverySourceHLS && expectedStructuredSource != dynamicDiscoverySourceDASH && (isMainVideoStreamRequest(req) || isMainVideoStreamURL(locationURL))
+		directMainVideo := t.mainVideoDirect && (mainVideoDirectFallbackTarget(req.Context()) != nil || isMainVideoStreamRequest(req))
 		if directMainVideo && !unknownAuthority && locationURL.User == nil && (locationURL.Scheme == "http" || locationURL.Scheme == "https") {
 			if tracker := backendAddressTrackerFromContext(req.Context()); tracker != nil {
 				tracker.SetURL(locationURL)
@@ -895,6 +895,10 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 
 func (t *redirectFollowTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	directFallback := mainVideoDirectFallbackTarget(req.Context())
+	if t.mainVideoDirect && directFallback != nil && req.Method == http.MethodGet {
+		req = req.Clone(req.Context())
+		req.Header.Set("Range", "bytes=0-1")
+	}
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
 		if t.mainVideoDirect && directFallback != nil {

@@ -1365,15 +1365,15 @@ func TestMobileModalKeepsBodyScrollableAndActionsVisible(t *testing.T) {
 		t.Fatalf("read embedded CSS: %v", err)
 	}
 	for _, rule := range []string{
-		"max-height: calc(100dvh - 48px)",
+		"max-height: calc(100dvh - 24px)",
 		"align-items: flex-start",
 		"overflow-y: auto",
 		"-webkit-overflow-scrolling: touch",
-		".form-select:not(.modal-select)",
-		".form-select.modal-select",
+		"background-image: var(--select-arrow)",
+		".site-config-modal .form-select",
 		".btn-modal { flex: 1; min-height: 44px",
 	} {
-		if !strings.Contains(string(css), rule) {
+		if !strings.Contains(strings.Join(strings.Fields(string(css)), " "), rule) {
 			t.Errorf("mobile modal CSS missing %q", rule)
 		}
 	}
@@ -1390,10 +1390,10 @@ func TestMobileModalKeepsBodyScrollableAndActionsVisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read embedded sites JavaScript: %v", err)
 	}
-	if !strings.Contains(string(sitesJS), "openModal({ closeOnBackdrop: false })") {
+	if !strings.Contains(string(sitesJS), "openModal({ closeOnBackdrop: false, modalClass: 'site-config-modal' })") {
 		t.Error("site add/edit form must not close when its backdrop is clicked")
 	}
-	for _, snippet := range []string{`id="m-speed"`, "speed_limit: parseInt(document.getElementById('m-speed').value || 0)"} {
+	for _, snippet := range []string{`id="m-speed"`, "speed_limit: Number(document.getElementById('m-speed').value)"} {
 		if !strings.Contains(string(sitesJS), snippet) {
 			t.Errorf("site form must expose and submit speed limit; missing %q", snippet)
 		}
@@ -1415,7 +1415,7 @@ func TestMobileModalKeepsBodyScrollableAndActionsVisible(t *testing.T) {
 		t.Error("app must reveal the authenticated shell or login form after the auth check")
 	}
 	cacheVersion := strings.TrimPrefix(appVersion, "v")
-	for _, asset := range []string{"/js/theme.js?v=" + cacheVersion, "/css/style.css?v=" + cacheVersion, "/js/pages/sites.js?v=" + cacheVersion, "/js/pages/request-logs.js?v=" + cacheVersion, "/js/app.js?v=" + cacheVersion} {
+	for _, asset := range []string{"/js/theme.js?v=" + cacheVersion, "/js/form-validation.js?v=" + cacheVersion, "/css/style.css?v=" + cacheVersion, "/js/pages/sites.js?v=" + cacheVersion, "/js/pages/request-logs.js?v=" + cacheVersion, "/js/app.js?v=" + cacheVersion} {
 		if !strings.Contains(string(indexHTML), asset) {
 			t.Errorf("index must cache-bust updated asset %q", asset)
 		}
@@ -1468,9 +1468,9 @@ func TestSourceVersionMetadataIsConsistent(t *testing.T) {
 }
 
 func TestDockerComposeExampleKeepsPanelReachableAndHostLoopbackOnly(t *testing.T) {
-	content, err := os.ReadFile(repositoryFilePath(t, "README.md"))
+	content, err := os.ReadFile(repositoryFilePath(t, "docs/DEPLOYMENT.md"))
 	if err != nil {
-		t.Fatalf("read README.md: %v", err)
+		t.Fatalf("read docs/DEPLOYMENT.md: %v", err)
 	}
 	source := string(content)
 	for _, expected := range []string{
@@ -2062,7 +2062,7 @@ func TestResetAdminPasswordRejectsInvalidDatabaseStateAndLength(t *testing.T) {
 	if err := app.db.ResetAdminPassword("another valid password"); !errors.Is(err, errMultipleAdmins) {
 		t.Fatalf("multiple users error = %v, want multiple administrators", err)
 	}
-	for _, password := range []string{"too-short", strings.Repeat("x", 73)} {
+	for _, password := range []string{"short", strings.Repeat("x", 73)} {
 		if err := app.db.ResetAdminPassword(password); !errors.Is(err, errInvalidAdminPassword) {
 			t.Fatalf("password length %d error = %v, want invalid password", len(password), err)
 		}
@@ -6507,6 +6507,7 @@ func TestPathIngressNormalizationAndPrefixHelpers(t *testing.T) {
 	}{
 		{input: " /Emby/ ", want: "/emby"},
 		{input: "api", err: true},
+		{input: " /Fonts/ ", err: true},
 		{input: "a/b", err: true},
 	} {
 		got, err := normalizePathPrefix(tt.input)

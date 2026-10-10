@@ -2,13 +2,10 @@
 function renderDiag() {
   const page = document.getElementById('page-diagnostics');
   page.innerHTML = `
-    <div class="settings-layout fade-up">
-      ${globalSettingsNav('diagnostics')}
+    <div class="diagnostics-layout fade-up">
       <main class="settings-content">
-        <h1 class="section-title fade-up">故障诊断</h1>
-        <p class="section-sub fade-up stagger-1">查看主回源、播放回源、上游证书和代理配置状态</p>
         <div class="diag-toolbar fade-up stagger-1">
-          <select class="form-select" id="diag-select">
+          <select class="form-select" id="diag-select" aria-label="选择诊断站点">
             <option value="">加载中...</option>
           </select>
           <button class="btn-scan" id="btn-scan">开始诊断</button>
@@ -127,7 +124,6 @@ function renderDiagNotes(notes) {
         </div>
         <div>
           <div class="diag-title">诊断说明</div>
-          <div class="diag-subtitle">播放回源关系和诊断语义由后端结构化返回</div>
         </div>
       </div>
       <div class="diag-note-list">
@@ -277,38 +273,29 @@ function renderProxyCard(proxy, staggerClass) {
 function primaryProbeNote(primary) {
   const probe = primary && primary.health ? primary.health.probe || {} : {};
   if (probe.kind !== 'reachability_fallback') return '';
-  return '主回源元数据接口未命中，当前已退回到目标根路径可达性探针。';
+  return '未找到媒体接口，已改为检查回源首页。';
 }
 
 function playbackNote(playback, primary) {
   if (playback.using_fallback) {
-    return `播放回源未单独配置，当前回退到主回源 ${primary.effective_url || '--'}，因此不重复展示播放健康或播放 TLS。`;
+    return '未单独配置播放回源，使用主回源。';
   }
   if (playback.same_as_primary) {
-    return '播放回源已配置，但与主回源相同，当前复用主回源诊断结果，不重复展示完全相同的诊断块。';
+    return '播放回源与主回源相同，共用以下诊断结果。';
   }
 
   const probe = playback.health && playback.health.probe ? playback.health.probe : {};
   if (probe.kind === 'playback_reachability') {
-    const probeText = probeRequestText(probe) || 'GET 播放回源基址探针';
-    const suffix = playback.show_tls ? '，并单独展示播放回源 TLS' : '';
     if (playback.health && playback.health.status === 'reachable') {
-      return `播放回源是独立上游：${playback.effective_url || '--'}。${probeText} 已收到 HTTP 响应，但该基址没有通用的媒体健康接口；基址返回非 2xx 只能说明探针路径的结果，不能据此判定具体媒体流无法播放${suffix}。`;
+      return '播放回源已响应，但基址返回非 2xx；是否可播放需以实际媒体请求为准。';
     }
-    return `播放回源是独立上游：${playback.effective_url || '--'}。当前健康块仅请求配置的播放回源基址（${probeText}），不会假设该地址提供 Emby Metadata / API${suffix}；HTTP 非 2xx 也只表示地址已到达，不代表完整播放一定成功。`;
+    return '此项检查播放回源地址的连通性，不代表媒体播放一定成功。';
   }
   if (probe.kind === 'metadata_api' || probe.kind === 'reachability_fallback') {
-    const probeText = probeRequestText(probe) || 'GET Metadata / API 探针';
-    if (playback.show_tls) {
-      return `播放回源是独立 HTTPS 上游：${playback.effective_url || '--'}。当前健康块使用与主回源一致的 ${probeText} 做可达性探针，不代表完整播放一定成功。`;
-    }
-    return `播放回源是独立上游：${playback.effective_url || '--'}。当前健康块使用与主回源一致的 ${probeText} 做可达性探针，不代表完整播放一定成功。`;
+    return '此项检查媒体接口或回源首页的连通性，完整播放仍需播放器实测。';
   }
 
-  if (playback.show_tls) {
-    return `播放回源是独立 HTTPS 上游：${playback.effective_url || '--'}，因此会单独展示播放健康和播放 TLS。`;
-  }
-  return `播放回源是独立上游：${playback.effective_url || '--'}。该上游未使用 HTTPS，因此只展示播放健康。`;
+  return '';
 }
 
 function probeLabel(probe) {

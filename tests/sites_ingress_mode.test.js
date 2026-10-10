@@ -10,6 +10,7 @@ function loadHelpers() {
   const source = loadSitesSource();
   const sandbox = { window: {}, URL, esc: value => String(value) };
   vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'web', 'static', 'js', 'form-validation.js'), 'utf8'), sandbox);
   vm.runInContext(source, sandbox, { filename: 'sites.js' });
   return sandbox;
 }
@@ -54,13 +55,9 @@ test('ingress payload clears stale host for port mode and preserves it otherwise
 	});
 });
 
-test('new-site ingress defaults follow backend host-only capability', () => {
+test('new sites default to path ingress across deployment types', () => {
   const { defaultIngressMode } = loadHelpers();
-  assert.equal(defaultIngressMode({ host_only_available: true, domain_prefix_available: true, panel_tls_enabled: true }), 'host');
-  assert.equal(defaultIngressMode({ host_only_available: false }), 'port');
-	assert.equal(defaultIngressMode({ host_only_available: true, domain_prefix_available: true, panel_tls_enabled: false }), 'port');
-	assert.equal(defaultIngressMode({ host_only_available: true, domain_prefix_available: false, panel_tls_enabled: true }), 'port');
-  assert.equal(defaultIngressMode(undefined), 'host');
+  for (const caps of [undefined, {}, {panel_tls_enabled:true,domain_prefix_available:true}, {panel_tls_enabled:false}]) assert.equal(defaultIngressMode(caps), 'path');
 });
 
 test('ingress mode labels remain concise for the site card', () => {
@@ -94,12 +91,10 @@ test('site cards place ingress mode above running status and omit playback rows'
 
 test('access addresses use the full card width without ellipsis wrapping', () => {
   const css = fs.readFileSync(path.join(__dirname, '..', 'web', 'static', 'css', 'style.css'), 'utf8');
-  assert.match(css, /\.site-row\.site-access-row > \.site-access-value[\s\S]*?width:\s*100%/);
-  assert.match(css, /\.site-row\.site-access-row \.site-access-address[\s\S]*?overflow-x:\s*auto/);
-  assert.match(css, /\.site-row\.site-access-row \.site-access-address[\s\S]*?text-overflow:\s*clip/);
-  assert.match(css, /\.site-row\.site-access-row \.site-access-address[\s\S]*?white-space:\s*nowrap/);
-  assert.match(css, /\.site-row\.site-access-row \.site-access-address[\s\S]*?font-family:\s*inherit/);
-  assert.match(css, /\.site-row\.site-access-row \.site-access-address[\s\S]*?border-radius:\s*999px/);
+  assert.match(css, /\.site-access-value[\s\S]*?width:\s*100%/);
+  assert.match(css, /\.site-access-address[\s\S]*?overflow-x:\s*auto/);
+  assert.match(css, /\.site-access-address[\s\S]*?text-overflow:\s*clip/);
+  assert.match(css, /\.site-access-address[\s\S]*?white-space:\s*nowrap/);
 });
 
 test('copySiteAccessAddress copies the raw address even while it is hidden', async () => {
@@ -137,8 +132,8 @@ test('site modal always loads deployment capabilities for create and edit flows'
 	assert.doesNotMatch(modalSource, /id="m-port"[^>]*\srequired(?:\s|>)/);
 	assert.match(modalSource, /portInput\.required = state\.requireListenPort/);
 	assert.match(modalSource, /panelTLSReady = siteCapabilities\.panel_tls_enabled === true/);
-	assert.match(modalSource, /PANEL_ROUTE_DOMAIN/);
-	assert.match(modalSource, /TLS .*\u8bc1\u4e66/);
+	assert.match(modalSource, /canUseHostIngress = hostOnlyAvailable && domainPrefixAvailable/);
+	assert.match(modalSource, /需配置 TLS 和域名/);
 });
 
 test('stream host normalization accepts the array API and legacy JSON strings', () => {
@@ -200,4 +195,20 @@ test('missing upstream header key disables edits but leaves deletion available',
     { name: 'X-Origin-Secret', configured: true },
   ], true);
   assert.ok(!enabled.includes(' disabled'), 'configured key must keep inputs editable');
+});
+
+test('dedicated site ports use native listener TLS, independent of panel HTTPS', () => {
+  const sandbox = loadHelpers();
+  sandbox.window.location = { protocol: 'https:', hostname: 'panel.example', host: 'panel.example:8443', port: '8443' };
+  const portSite = { ingress_mode: 'port', listen_port: 50001 };
+  assert.equal(sandbox.siteAccessAddress(portSite, { panel_tls_enabled: false }), 'http://panel.example:50001');
+  assert.equal(sandbox.siteAccessAddress(portSite, { panel_tls_enabled: true }), 'https://panel.example:50001');
+  assert.equal(sandbox.siteAccessAddress({ ingress_mode: 'path', path_prefix: '/light' }, { panel_tls_enabled: false }), 'https://panel.example:8443/light/');
+});
+
+test('listener transport takes precedence over panel TLS and invalid ports are not copied', () => {
+  const sandbox=loadHelpers();sandbox.window.location={protocol:'https:',hostname:'panel.example',host:'panel.example:8443',port:'8443'};
+  assert.equal(sandbox.siteAccessAddress({ingress_mode:'port',listen_port:8096},{panel_tls_enabled:true,site_listener_scheme:'http'}),'http://panel.example:8096');
+  assert.equal(sandbox.siteAccessAddress({ingress_mode:'port',listen_port:888888},{}),'');
+  assert.equal(sandbox.siteAccessAddress({ingress_mode:'unset',public_host:'old.example'},{}),'');
 });

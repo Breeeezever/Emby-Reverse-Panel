@@ -461,6 +461,9 @@ func (a *App) handleSiteByID(w http.ResponseWriter, r *http.Request) {
 			a.jsonErr(w, 500, err.Error())
 			return
 		}
+		if !a.checkSiteCommandPrecondition(w, r, site) {
+			return
+		}
 		if site.Enabled {
 			// A pre-close failure leaves the running instance usable and aborts the
 			// toggle. A post-close failure is different: the listener is already gone,
@@ -534,6 +537,9 @@ func (a *App) handleSiteByID(w http.ResponseWriter, r *http.Request) {
 		oldSite, err := a.db.GetSite(id)
 		if err != nil {
 			a.jsonErr(w, 404, "site not found")
+			return
+		}
+		if !a.checkSiteCommandPrecondition(w, r, oldSite) {
 			return
 		}
 		var req struct {
@@ -1012,6 +1018,16 @@ func (a *App) handleSiteByID(w http.ResponseWriter, r *http.Request) {
 	case action == "" && r.Method == "DELETE":
 		a.siteLifecycleMu.Lock()
 		defer a.siteLifecycleMu.Unlock()
+		if expected, _ := r.Context().Value(siteCommandPreconditionKey{}).(string); expected != "" {
+			site, getErr := a.db.GetSite(id)
+			if getErr != nil {
+				a.jsonErr(w, 404, "站点不存在")
+				return
+			}
+			if !a.checkSiteCommandPrecondition(w, r, site) {
+				return
+			}
+		}
 		// Only delete after a clean stop. If ingress already closed but drain or
 		// final persistence failed, retain a disabled row as the retry handle.
 		if stopErr := a.pm.StopSite(id); stopErr != nil {

@@ -9,13 +9,11 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -42,16 +40,17 @@ var telegramReportHTTPClient = &http.Client{
 }
 
 type TelegramReportSettings struct {
-	Enabled            bool   `json:"enabled"`
-	Configured         bool   `json:"configured"`
-	ChatID             string `json:"chat_id"`
-	ScheduleTime       string `json:"schedule_time"`
-	Frequency          string `json:"frequency"`
-	Weekday            int    `json:"weekday"`
-	LastSentKey        string `json:"last_sent_key,omitempty"`
-	SecretStable       bool   `json:"secret_stable"`
-	BotToken           string `json:"-"`
-	BotTokenConfigured bool   `json:"bot_token_configured"`
+	Bot                *TelegramBotSettings `json:"bot,omitempty"`
+	Enabled            bool                 `json:"enabled"`
+	Configured         bool                 `json:"configured"`
+	ChatID             string               `json:"chat_id"`
+	ScheduleTime       string               `json:"schedule_time"`
+	Frequency          string               `json:"frequency"`
+	Weekday            int                  `json:"weekday"`
+	LastSentKey        string               `json:"last_sent_key,omitempty"`
+	SecretStable       bool                 `json:"secret_stable"`
+	BotToken           string               `json:"-"`
+	BotTokenConfigured bool                 `json:"bot_token_configured"`
 }
 
 type telegramReportStoredSettings struct {
@@ -60,14 +59,15 @@ type telegramReportStoredSettings struct {
 }
 
 type telegramReportInput struct {
-	Enabled       *bool  `json:"enabled"`
-	BotToken      string `json:"bot_token"`
-	ClearBotToken bool   `json:"clear_bot_token"`
-	ChatID        string `json:"chat_id"`
-	ScheduleTime  string `json:"schedule_time"`
-	Frequency     string `json:"frequency"`
-	Weekday       *int   `json:"weekday"`
-	Action        string `json:"action"`
+	Bot           *TelegramBotSettings `json:"bot"`
+	Enabled       *bool                `json:"enabled"`
+	BotToken      string               `json:"bot_token"`
+	ClearBotToken bool                 `json:"clear_bot_token"`
+	ChatID        *string              `json:"chat_id"`
+	ScheduleTime  string               `json:"schedule_time"`
+	Frequency     string               `json:"frequency"`
+	Weekday       *int                 `json:"weekday"`
+	Action        string               `json:"action"`
 }
 
 type telegramReportSiteStat struct {
@@ -216,6 +216,11 @@ func (d *DB) telegramReportSettings() (telegramReportStoredSettings, error) {
 	if err != nil {
 		return stored, err
 	}
+	bot, botErr := d.telegramBotSettings()
+	if botErr != nil {
+		return stored, botErr
+	}
+	stored.Bot = &bot
 	stored.Enabled = enabled == 1
 	stored.Configured = stored.BotTokenCiphertext != "" && stored.ChatID != ""
 	stored.SecretStable = !jwtSecretEphemeral
@@ -252,8 +257,18 @@ func (d *DB) saveTelegramReportSettings(settings TelegramReportSettings, botToke
 			sqliteBool(settings.Enabled), settings.ChatID, settings.ScheduleTime, settings.Frequency, settings.Weekday,
 		}
 	}
-	_, err = d.db.Exec(query, args...)
-	return err
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(query, args...); err != nil {
+		return err
+	}
+	if err = saveTelegramBotSettings(tx, settings.Bot, replaceToken); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DB) markTelegramReportSent(key string) error {
@@ -504,41 +519,10 @@ func truncateTelegramText(value string, maxBytes int) string {
 }
 
 func sendTelegramReport(ctx context.Context, botToken, chatID, message string) error {
-	if ctx == nil {
-		ctx = context.Background()
+	if strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("请先配置 Chat ID")
 	}
-	botToken = strings.TrimSpace(botToken)
-	chatID = strings.TrimSpace(chatID)
-	if botToken == "" || chatID == "" {
-		return fmt.Errorf("Telegram bot token and chat ID are required")
-	}
-	payload, err := json.Marshal(map[string]any{"chat_id": chatID, "text": message, "disable_web_page_preview": true})
-	if err != nil {
-		return err
-	}
-	endpoint := "https://api.telegram.org/bot" + url.PathEscape(botToken) + "/sendMessage"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	// Telegram should never be able to redirect this credential-bearing request
-	// to an attacker-controlled host. Treat redirects as terminal responses and
-	// report them as an API failure below.
-	resp, err := telegramReportHTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("Telegram request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	var result struct {
-		OK          bool   `json:"ok"`
-		Description string `json:"description"`
-	}
-	_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&result)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.OK {
-		return fmt.Errorf("Telegram API rejected message: %s", result.Description)
-	}
-	return nil
+	return telegramAPICall(ctx, telegramReportHTTPClient, strings.TrimSpace(botToken), "sendMessage", map[string]any{"chat_id": strings.TrimSpace(chatID), "text": message, "disable_web_page_preview": true}, nil)
 }
 
 func (a *App) handleTelegramReport(w http.ResponseWriter, r *http.Request) {
@@ -549,8 +533,10 @@ func (a *App) handleTelegramReport(w http.ResponseWriter, r *http.Request) {
 			a.jsonErr(w, http.StatusInternalServerError, "failed to read Telegram report settings")
 			return
 		}
-		a.jsonOK(w, telegramReportPublicSettings(stored))
+		a.jsonOK(w, a.telegramPublicSettings(stored))
 	case http.MethodPost:
+		a.telegramConfigMu.Lock()
+		defer a.telegramConfigMu.Unlock()
 		var input telegramReportInput
 		if err := decodeJSONBody(w, r, &input); err != nil {
 			a.jsonErr(w, http.StatusBadRequest, "invalid Telegram report settings")
@@ -562,11 +548,19 @@ func (a *App) handleTelegramReport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		settings := stored.TelegramReportSettings
+		if input.Bot != nil {
+			bot, e := normalizeTelegramBotSettings(*input.Bot)
+			if e != nil {
+				a.jsonErr(w, 400, e.Error())
+				return
+			}
+			settings.Bot = &bot
+		}
 		if input.Enabled != nil {
 			settings.Enabled = *input.Enabled
 		}
-		if input.ChatID != "" {
-			settings.ChatID = strings.TrimSpace(input.ChatID)
+		if input.ChatID != nil {
+			settings.ChatID = strings.TrimSpace(*input.ChatID)
 		}
 		if input.ScheduleTime != "" {
 			settings.ScheduleTime = strings.TrimSpace(input.ScheduleTime)
@@ -607,6 +601,16 @@ func (a *App) handleTelegramReport(w http.ResponseWriter, r *http.Request) {
 			}
 			replaceToken = true
 		}
+		if input.ClearBotToken && strings.TrimSpace(input.BotToken) == "" {
+			settings.Enabled = false
+			if settings.Bot != nil {
+				settings.Bot.Enabled = false
+			}
+		}
+		if settings.Bot != nil && settings.Bot.Enabled && ciphertext == "" {
+			a.jsonErr(w, 400, "启用 Bot 管理前请保存 Bot Token")
+			return
+		}
 		if settings.Enabled && (ciphertext == "" || settings.ChatID == "") {
 			a.jsonErr(w, http.StatusBadRequest, "启用日报前必须配置 Bot Token 和 Chat ID")
 			return
@@ -645,7 +649,7 @@ func (a *App) handleTelegramReport(w http.ResponseWriter, r *http.Request) {
 			a.jsonErr(w, http.StatusInternalServerError, "failed to read Telegram report settings")
 			return
 		}
-		a.jsonOK(w, telegramReportPublicSettings(fresh))
+		a.jsonOK(w, a.telegramPublicSettings(fresh))
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")

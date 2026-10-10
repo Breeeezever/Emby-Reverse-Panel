@@ -210,6 +210,10 @@ const API = {
   panelCertificate() { return this.request('GET', '/api/panel-certificate'); },
   savePanelSettings(data) { return this.request('POST', '/api/panel-settings', data); },
   requestPanelCertificate(data) { return this.request('POST', '/api/panel-certificate/issue', data); },
+  importPanelCertificate(data) { return this.request('POST', '/api/panel-certificate/import', data); },
+  checkSystemUpdate() { return this.request('GET', '/api/system/update/check'); },
+  systemUpdateStatus() { return this.request('GET', '/api/system/update'); },
+  startSystemUpdate(version) { return this.request('POST', '/api/system/update', {version}); },
   restartSystem() { return this.request('POST', '/api/system/restart', {}); },
   async exportBackup(password, includeTLS) {
     const res = await fetch('/api/backup/export', {
@@ -314,8 +318,7 @@ const API = {
   }
 };
 
-// The server validates administrator passwords by UTF-8 byte length. Keep the
-// setup form on the same contract without allocating an encoded copy.
+// Count UTF-8 bytes for the bcrypt limit; the minimum counts Unicode characters.
 function utf8ByteLength(value) {
   let length = 0;
   for (const char of String(value)) {
@@ -330,7 +333,7 @@ function utf8ByteLength(value) {
 
 function adminPasswordValidationError(password) {
   const length = utf8ByteLength(password);
-  return length < 12 || length > 72 ? '管理员密码必须为 12-72 字节' : '';
+  return Array.from(String(password)).length < 6 || length > 72 ? '密码至少需要 6 个字符，且不能超过 72 字节' : '';
 }
 
 // Shared HTML escaper. It lives in the first-loaded script that every page

@@ -35,7 +35,7 @@ test('account page translates credential validation errors for the administrator
   vm.runInContext(accountScript, sandbox, { filename: 'account.js' });
 
   assert.equal(sandbox.accountErrorMessage(new Error('current password is incorrect')), '当前密码不正确');
-  assert.equal(sandbox.accountErrorMessage(new Error('password must be 12-72 bytes')), '新密码需要为 12–72 个字符');
+  assert.equal(sandbox.accountErrorMessage(new Error('password must contain at least 6 characters and at most 72 bytes')), '密码至少需要 6 个字符，且不能超过 72 字节');
 });
 
 test('account page provides secret toggle buttons for current and new passwords', () => {

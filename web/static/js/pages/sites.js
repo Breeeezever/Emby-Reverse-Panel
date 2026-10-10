@@ -6,10 +6,6 @@ function renderSites() {
   if (!page) return;
   if (!page.querySelector('#sites-grid')) {
     page.innerHTML = `
-      <div class="sites-page-head">
-        <div><h1 class="section-title">站点管理</h1><p class="section-sub">管理所有 Emby 反代站点与回源配置</p></div>
-        <div class="toolbar-info" id="sites-count"></div>
-      </div>
       <div class="page-toolbar sites-toolbar">
         <button class="btn-add" id="btn-add-site">
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -17,6 +13,7 @@ function renderSites() {
         </button>
         <label class="sites-search"><span class="sr-only">搜索站点</span><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16" y1="16" x2="21" y2="21"/></svg><input id="sites-search" type="search" placeholder="搜索站点名称或回源地址"></label>
         <button class="btn-ghost btn-test-all" id="btn-test-all-sites"><span aria-hidden="true">⌁</span> 全部测速</button>
+        <div class="toolbar-info" id="sites-count"></div>
       </div>
       <div class="sites-grid" id="sites-grid"></div>
     `;
@@ -39,7 +36,7 @@ async function loadSites() {
     const grid = document.getElementById('sites-grid');
     const searchQuery = document.getElementById('sites-search')?.value || '';
     if (!sites || sites.length === 0) {
-      grid.innerHTML = '<div style="text-align:center;color:var(--white-38);padding:60px;grid-column:1/-1">暂无站点，点击右上角添加</div>';
+      grid.innerHTML = '<div class="empty-state"><span class="empty-state-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg></span><h2>暂无站点</h2><p>点击“添加站点”连接 Emby 服务。</p></div>';
       filterSiteCards(searchQuery);
       return;
     }
@@ -67,7 +64,7 @@ async function loadSites() {
             </span>
           </div>
         </div>
-        <div class="site-latency-line"><span class="status-led ${s.running ? 'on' : 'off'}"></span><span>回源延迟：</span><strong class="site-latency" id="site-latency-${s.id}">未测试</strong></div>
+        <div class="site-latency-line"><span>回源延迟</span><strong class="site-latency" id="site-latency-${s.id}">未测试</strong></div>
 		<div class="site-rows">
 		  <div class="site-row site-access-row">
 		    <span class="site-row-label">访问地址</span>
@@ -436,6 +433,7 @@ function normalizeSiteCapabilities(value) {
 		domain_prefix_available: { value: capabilities.domain_prefix_available === undefined ? undefined : capabilities.domain_prefix_available === true, enumerable: false },
 		route_domain: { value: String(capabilities.route_domain || '').trim().toLowerCase(), enumerable: false },
 		panel_tls_enabled: { value: capabilities.panel_tls_enabled === true, enumerable: false },
+        site_listener_scheme: { value: capabilities.site_listener_scheme === 'https' ? 'https' : capabilities.site_listener_scheme === 'http' ? 'http' : capabilities.panel_tls_enabled === true ? 'https' : 'http', enumerable: false },
 		path_ingress_available: { value: capabilities.path_ingress_available !== false, enumerable: false },
 		panel_access_url: { value: String(capabilities.panel_access_url || '').replace(/\/$/, ''), enumerable: false },
 	});
@@ -611,7 +609,7 @@ function normalizeUpstreamScheme(value) {
 }
 
 function defaultUpstreamPort(value) {
-	return normalizeUpstreamScheme(value) === 'http' ? '80' : '443';
+	return normalizeUpstreamScheme(value) === 'http' ? '8096' : '443';
 }
 
 function splitUpstreamTargetAddress(value, fallbackScheme = 'https') {
@@ -633,7 +631,9 @@ function splitUpstreamTargetAddress(value, fallbackScheme = 'https') {
 		return {
 			scheme,
 			address: `${hostname}${pathname}${parsed.search}`,
-			port: parsed.port || defaultUpstreamPort(scheme),
+			// Existing URLs without a port use the protocol's actual default.
+			// The 8096 suggestion only applies to newly entered HTTP servers.
+			port: parsed.port || (scheme === 'http' ? '80' : '443'),
 		};
 	} catch (_) {
 		return { scheme: normalizedFallback, address: raw, port: defaultUpstreamPort(normalizedFallback) };
@@ -643,13 +643,15 @@ function splitUpstreamTargetAddress(value, fallbackScheme = 'https') {
 function joinUpstreamTargetAddress(scheme, address, port) {
 	const normalizedScheme = normalizeUpstreamScheme(scheme);
 	const rawAddress = String(address || '').trim();
-	if (!rawAddress) return '';
+	if (!rawAddress || /[\\\s]/.test(rawAddress)) return '';
+	const targetPort = parseBoundedInteger(String(port ?? '').trim() || defaultUpstreamPort(normalizedScheme), 1, 65535);
+	if (targetPort === null) return '';
 	const explicitScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawAddress);
 	try {
 		const parsed = new URL(explicitScheme ? rawAddress : `${normalizedScheme}://${rawAddress}`);
-		if (!parsed.hostname || parsed.username || parsed.password || parsed.hash) return '';
+		if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || parsed.hash) return '';
 		parsed.protocol = `${normalizedScheme}:`;
-		parsed.port = String(port || '').trim() || defaultUpstreamPort(normalizedScheme);
+		parsed.port = String(targetPort);
 		const normalized = parsed.toString();
 		return parsed.pathname === '/' && !parsed.search ? normalized.replace(/\/$/, '') : normalized;
 	} catch (_) {
@@ -761,13 +763,13 @@ function renderDynamicRuleRows(rules) {
 		const type = rule && rule.type === 'suffix' ? 'suffix' : 'exact';
 		const value = rule && rule.value !== undefined ? rule.value : '';
 		return `
-		<div class="m-dynamic-rule-row" data-idx="${index}" style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
-		  <select class="form-select modal-select m-dynamic-rule-type" data-idx="${index}" style="width:auto;flex-shrink:0">
+		<div class="m-dynamic-rule-row" data-idx="${index}">
+		  <select class="form-select modal-select m-dynamic-rule-type" data-idx="${index}">
 			<option value="exact" ${type === 'exact' ? 'selected' : ''}>精确</option>
 			<option value="suffix" ${type === 'suffix' ? 'selected' : ''}>后缀</option>
 		  </select>
 		  <input type="text" class="form-input m-dynamic-rule-value" data-idx="${index}" value="${esc(value)}" placeholder="media.example.com" maxlength="253" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1">
-		  <button type="button" class="btn-ghost danger m-dynamic-rule-remove" data-idx="${index}" style="padding:4px 8px;font-size:13px;flex-shrink:0">删除</button>
+		  <button type="button" class="btn-ghost danger m-dynamic-rule-remove" data-idx="${index}" >删除</button>
 		</div>`;
 	}).join('');
 }
@@ -922,7 +924,7 @@ function renderDynamicObservationsPanel(supported) {
 	return `
 		<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--glass-border)">
 		  <label>自动发现观察记录</label>
-		  <div class="form-help">记录由服务器限量保留并定期过期清理。这里只显示规范化权威、有限原因代码和聚合时间/次数；不会显示完整 URL、路径、查询参数、令牌、请求头或正文。</div>
+		  <div class="form-help">仅显示目标域名与处理结果，不包含令牌或请求内容。</div>
 		  <div style="display:flex;gap:8px;margin-top:8px">
 			<button type="button" class="btn-ghost" id="m-refresh-dynamic-observations" ${supported ? '' : 'disabled'}>刷新</button>
 			<button type="button" class="btn-ghost danger" id="m-clear-dynamic-observations" ${supported ? '' : 'disabled'}>清空</button>
@@ -964,7 +966,7 @@ function normalizedIngressMode(site) {
 
 function ingressFormState(mode) {
 	const normalized = ['unset', 'port', 'path', 'host', 'both'].includes(mode) ? mode : 'host';
-	if (normalized === 'unset') {
+	if (normalized === 'unset' || !mode) {
 		return {
 			mode: normalized,
 			showPublicHost: false,
@@ -985,18 +987,18 @@ function ingressFormState(mode) {
 		requireListenPort: normalized === 'port' || normalized === 'both',
 		portLabel: normalized === 'host' || normalized === 'path' ? '独立端口（可选，自动分配）' : '监听端口',
 		warning: normalized === 'port'
-			? '独立端口会绑定所有网络接口；公网部署时请配置防火墙。'
+			? '独立端口需要单独放行；若域名经过 CDN，请确认 CDN 支持该端口。'
 			: normalized === 'path'
-				? '路径入口复用面板域名和端口，例如 https://panel.example.com/emby/。客户端服务器地址需要包含该路径。'
+				? '复用面板域名和端口，客户端地址需保留路径。'
 			: normalized === 'both'
 				? '兼容模式会同时开放独立端口和共享域名，建议迁移到单一入口。'
-				: '域名前缀通过面板端口转发，不会绑定站点端口，例如 https://123.example.com:9090。请先在 TLS 页配置面板域名、泛域名并申请证书，完成后再启用。',
+				: '域名前缀通过面板端口转发，不会绑定站点端口；需先配置 TLS 泛域名证书。',
 	};
 }
 
 function buildIngressPayload(mode, port, publicHost, routePrefix, routeDomain, pathPrefix) {
 	const state = ingressFormState(mode);
-	const parsedPort = parseInt(port, 10);
+	const parsedPort = parseBoundedInteger(port, 1, 65535);
 	const prefix = String(routePrefix || '').trim().toLowerCase();
 	const generatedHost = state.showPublicHost && prefix && routeDomain
 		? `${prefix}.${String(routeDomain).trim().toLowerCase()}`
@@ -1010,23 +1012,22 @@ function buildIngressPayload(mode, port, publicHost, routePrefix, routeDomain, p
 	};
 }
 
-function defaultIngressMode(capabilities) {
-	if (!capabilities) return 'host';
-	if (capabilities.host_only_available === false) return 'port';
-	if (capabilities.domain_prefix_available !== true) return 'port';
-	if (capabilities.panel_tls_enabled !== true) return 'port';
-	return 'host';
-}
+function defaultIngressMode() { return 'path'; }
 
 function siteAccessAddress(site, capabilities) {
 	const mode = normalizedIngressMode(site);
+    if (mode === 'unset') return '';
 	const locationObject = typeof window !== 'undefined' && window.location
 		? window.location
 		: { protocol: 'http:', hostname: '127.0.0.1', port: '' };
 	const protocol = capabilities && capabilities.panel_tls_enabled ? 'https' : locationObject.protocol.replace(':', '') || 'http';
 	if (mode === 'port') {
 		const host = locationObject.hostname || '127.0.0.1';
-		return `${protocol}://${host}:${Number(site.listen_port) || ''}`;
+		// External HTTPS terminates at the panel's reverse proxy, not at a
+		// dedicated site listener. Only native panel TLS covers these ports.
+		const listenerProtocol = capabilities?.site_listener_scheme || (capabilities?.panel_tls_enabled === true ? 'https' : 'http');
+		const port = parseBoundedInteger(site.listen_port, 1, 65535);
+        return port === null ? '' : `${listenerProtocol}://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${port}`;
 	}
 	if (mode === 'path') {
 		// Path ingress is reached through the same public origin the operator is
@@ -1121,17 +1122,17 @@ function renderPanelCertificateStatus(status) {
 		return '<div class="form-help" style="color:var(--orange)">TLS 数据目录不可写，请检查数据库所在数据目录的权限。</div>';
 	}
 	if (!status.configured) {
-		return '<div class="form-help">尚未申请证书。请先保存域名设置，再点击“申请证书”。</div>';
+		return '<div class="form-help">尚未配置证书</div>';
 	}
 	return `
 	  <div class="diag-row"><span class="diag-key">证书域名</span><span class="diag-val">${esc(status.subject || `*.${status.route_domain || ''}`)}</span></div>
-	  <div class="diag-row"><span class="diag-key">证书匹配</span><span class="diag-val ${status.certificate_current ? 'good' : 'warn'}">${status.certificate_current ? '泛域名一致' : '需要申请或更新'}</span></div>
+	  <div class="diag-row"><span class="diag-key">证书匹配</span><span class="diag-val ${status.certificate_current ? 'good' : 'warn'}">${status.certificate_current ? '域名匹配' : '需要申请或更新'}</span></div>
 	  <div class="diag-row"><span class="diag-key">到期时间</span><span class="diag-val">${esc(status.expires_at || '—')}</span></div>
 	  <div class="diag-row"><span class="diag-key">证书状态</span><span class="diag-val ${status.certificate_valid ? 'good' : 'warn'}">${status.certificate_valid ? '有效' : '已过期或不可用'}</span></div>
-	  <div class="diag-row"><span class="diag-key">自动续签</span><span class="diag-val ${status.auto_renew_enabled ? 'good' : 'warn'}">${status.auto_renew_enabled ? '已启用（到期前 30 天）' : '待配置邮箱和 Token'}</span></div>
+	  <div class="diag-row"><span class="diag-key">自动续签</span><span class="diag-val ${status.auto_renew_enabled ? 'good' : 'warn'}">${status.certificate_source === 'path' ? '跟随服务器文件更新' : status.certificate_source === 'upload' ? '到期前重新上传' : status.auto_renew_enabled ? '已启用（到期前 30 天）' : '待配置邮箱和 Token'}</span></div>
 	  <div class="diag-row"><span class="diag-key">当前监听端口</span><span class="diag-val">${esc(String(status.active_listen_port || '—'))}</span></div>
 	  <div class="diag-row"><span class="diag-key">设置监听端口</span><span class="diag-val ${status.listen_port !== status.active_listen_port ? 'warn' : ''}">${esc(String(status.listen_port || '—'))}</span></div>
-	  <div class="diag-row"><span class="diag-key">面板 HTTPS</span><span class="diag-val ${status.restart_required ? 'warn' : 'good'}">${status.restart_required ? '等待重启应用' : '已启用'}</span></div>
+	  <div class="diag-row"><span class="diag-key">面板 HTTPS</span><span class="diag-val ${status.restart_required ? 'warn' : 'good'}">${status.restart_required ? '等待重启应用' : status.tls_enabled ? '已启用' : '未启用'}</span></div>
 	`;
 }
 
@@ -1160,145 +1161,7 @@ async function waitForPanelRestart(redirectURL) {
 	Toast.error('服务重启超时，请稍后手动打开新的 HTTPS 地址');
 }
 
-async function showPanelCertificateModal() {
-	let status;
-	try {
-		status = await API.panelCertificate();
-	} catch (error) {
-		Toast.error(`无法读取证书状态：${error.message}`);
-		return;
-	}
-	document.getElementById('modal-title').textContent = 'TLS 证书';
-	document.getElementById('modal-body').innerHTML = `
-	  <div id="m-panel-certificate-status">${renderPanelCertificateStatus(status)}</div>
-	  <div class="form-group" style="margin-top:18px">
-	    <label>面板访问域名前缀</label>
-	    <input type="text" class="form-input" id="m-panel-prefix" maxlength="63" value="${esc(status.panel_prefix || '')}" placeholder="panel" autocomplete="off" autocapitalize="none" spellcheck="false">
-	    <div class="form-help">只需填写前缀，例如 <code>panel</code>，不要填写完整域名。</div>
-	  </div>
-	  <div class="form-group">
-	    <label>节点泛域名</label>
-	    <input type="text" class="form-input" id="m-wildcard-domain" maxlength="255" value="${esc(status.wildcard_domain || (status.route_domain ? `*.${status.route_domain}` : ''))}" placeholder="*.example.com" autocomplete="off" autocapitalize="none" spellcheck="false">
-	    <div class="form-help">仅使用泛域名申请证书，例如 <code>*.example.com</code>；请提前将泛域名解析到本机。</div>
-	  </div>
-	  <div class="form-group">
-	    <label>启用后的面板地址</label>
-	    <div class="form-help" id="m-panel-address-preview">${esc(panelHTTPSPreview(status.panel_domain || ''))}</div>
-	  </div>
-	  <div class="form-group">
-	    <label>面板监听端口</label>
-	    <input type="number" class="form-input" id="m-panel-listen-port" min="1" max="65535" step="1" value="${esc(String(status.listen_port || status.active_listen_port || 9090))}">
-	    <div class="form-help">修改端口后需要重启面板；Docker 请使用 host 网络，并在宿主机防火墙中放行新端口。</div>
-	  </div>
-	  <div class="form-group">
-	    <label>ACME 邮箱</label>
-	    <input type="email" class="form-input" id="m-acme-email" autocomplete="email" maxlength="254" value="${esc(status.acme_email || '')}" placeholder="admin@example.com">
-	    <div class="form-help">邮箱会直接显示在面板中，用于 ACME 账户与证书续签通知。</div>
-	  </div>
-	  <div class="form-group">
-	    <label>DNS 服务商</label>
-	    <select class="form-select modal-select" id="m-acme-provider"><option value="cloudflare">Cloudflare DNS</option></select>
-	  </div>
-	  <div class="form-group">
-	    <label>DNS API Token</label>
-	    <input type="text" class="form-input mono" id="m-acme-token" autocomplete="off" maxlength="512" value="${esc(status.dns_api_token || '')}" placeholder="Cloudflare DNS API Token">
-	    <div class="form-help">Token 会直接显示给已登录管理员；数据库中仍加密保存，并用于证书自动续签。</div>
-	  </div>
-	  <label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--white-60);font-size:.82rem">
-	    <input type="checkbox" id="m-acme-staging" ${status.acme_staging ? 'checked' : ''}>
-	    <span>ACME 测试环境</span>
-	  </label>
-	`;
-	document.getElementById('modal-footer').innerHTML = `
-	  <button class="btn-modal" id="m-cert-cancel">关闭</button>
-	  ${status.restart_required && ((status.configured && status.certificate_current) || (!status.configured && status.listen_port !== status.active_listen_port)) ? `<button class="btn-modal primary" id="m-cert-restart">${status.configured ? '启用 HTTPS 并重启' : '重启应用'}</button>` : ''}
-	  <button class="btn-modal" id="m-cert-save">保存设置</button>
-	  <button class="btn-modal primary" id="m-cert-issue" ${status.available === false || status.issuing || !status.settings_configured ? 'disabled' : ''}>申请证书</button>
-	`;
-	const refreshPreview = () => {
-		const domain = panelDomainFromForm();
-		const port = Number(document.getElementById('m-panel-listen-port').value) || 9090;
-		document.getElementById('m-panel-address-preview').textContent = domain ? `https://${domain}${port === 443 ? '' : `:${port}`}` : '—';
-	};
-	document.getElementById('m-panel-prefix').addEventListener('input', refreshPreview);
-	document.getElementById('m-wildcard-domain').addEventListener('input', refreshPreview);
-	document.getElementById('m-panel-listen-port').addEventListener('input', refreshPreview);
-	document.getElementById('m-cert-cancel').onclick = closeModal;
-	const restartButton = document.getElementById('m-cert-restart');
-	if (restartButton) restartButton.onclick = async () => {
-		if (!window.confirm('重启会短暂中断面板和所有站点连接，确定现在重启吗？')) return;
-		restartButton.disabled = true;
-		restartButton.textContent = '正在重启…';
-		try {
-			const result = await API.restartSystem();
-			Toast.success('重启请求已发送，正在等待 HTTPS 服务恢复');
-			await waitForPanelRestart(result.redirect_url);
-		} catch (error) {
-			restartButton.disabled = false;
-			restartButton.textContent = '启用 HTTPS 并重启';
-			Toast.error(error.message);
-		}
-	};
-	const settingsPayload = () => ({
-		panel_prefix: document.getElementById('m-panel-prefix').value.trim(),
-		wildcard_domain: document.getElementById('m-wildcard-domain').value.trim(),
-		listen_port: Number(document.getElementById('m-panel-listen-port').value),
-	});
-	document.getElementById('m-cert-save').onclick = async () => {
-		const button = document.getElementById('m-cert-save');
-		const payload = settingsPayload();
-		if (!payload.panel_prefix || !payload.wildcard_domain || !Number.isInteger(payload.listen_port) || payload.listen_port < 1 || payload.listen_port > 65535) {
-			Toast.error('请填写面板前缀、泛域名和有效监听端口');
-			return;
-		}
-		button.disabled = true;
-		button.textContent = '保存中…';
-		try {
-			await API.savePanelSettings(payload);
-			Toast.success('面板设置已保存；证书不会因修改前缀而重新申请');
-			closeModal();
-			await showPanelCertificateModal();
-		} catch (error) {
-			button.disabled = false;
-			button.textContent = '保存设置';
-			Toast.error(error.message);
-		}
-	};
-	document.getElementById('m-cert-issue').onclick = async () => {
-		const button = document.getElementById('m-cert-issue');
-		const tokenInput = document.getElementById('m-acme-token');
-		const settingsPayloadValue = settingsPayload();
-		const savedWildcard = String(status.wildcard_domain || '').toLowerCase().replace(/^\*\./, '');
-		const formWildcard = settingsPayloadValue.wildcard_domain.toLowerCase().replace(/^\*\./, '');
-		if (settingsPayloadValue.panel_prefix !== status.panel_prefix || formWildcard !== savedWildcard || settingsPayloadValue.listen_port !== Number(status.listen_port)) {
-			Toast.error('请先点击“保存设置”，再申请证书');
-			return;
-		}
-		const payload = {
-			email: document.getElementById('m-acme-email').value.trim(),
-			dns_provider: document.getElementById('m-acme-provider').value,
-			dns_api_token: tokenInput.value.trim(),
-			staging: document.getElementById('m-acme-staging').checked,
-		};
-		if (!payload.email || !payload.dns_api_token) {
-			Toast.error('请填写 ACME 邮箱和 DNS API Token');
-			return;
-		}
-		button.disabled = true;
-		button.textContent = '申请中…';
-		try {
-			const updated = await API.requestPanelCertificate(payload);
-			Toast.success(updated.certificate_reused ? '泛域名未改变，继续使用现有证书' : (updated.restart_required ? '证书已签发，请点击重启按钮' : '证书已签发并热加载'));
-			closeModal();
-			await showPanelCertificateModal();
-		} catch (error) {
-			button.disabled = false;
-			button.textContent = '申请证书';
-			Toast.error(error.message);
-		}
-	};
-	openModal({ closeOnBackdrop: false });
-}
+function showPanelCertificateModal() { Router.navigate('settings-tls'); }
 
 async function showSiteModal(site) {
   const isEdit = !!site;
@@ -1320,14 +1183,6 @@ async function showSiteModal(site) {
 	const domainPrefixAvailable = siteCapabilities.domain_prefix_available === true;
 	const panelTLSReady = siteCapabilities.panel_tls_enabled === true;
 	const canUseHostIngress = hostOnlyAvailable && domainPrefixAvailable && (panelTLSReady || (isEdit && String(site.public_host || '').trim() !== ''));
-	const primaryTargetParts = splitUpstreamTargetAddress(isEdit ? site.target_url : '', 'https');
-	const hostIngressBlockedHint = !hostOnlyAvailable
-		? '当前面板未满足安全的域名前缀转发条件，请先设置 PANEL_BIND_ADDR 或 TRUSTED_PROXY_CIDRS 并重启。'
-		: !domainPrefixAvailable
-			? '域名前缀通过面板端口转发，不会绑定站点端口，例如 https://123.example.com:9090。请配置 PANEL_ROUTE_DOMAIN。'
-			: !panelTLSReady
-				? '请先在 TLS 页配置面板域名、泛域名并申请证书，完成后才能启用域名前缀。'
-				: '';
 	const dynamicPolicy = normalizeDynamicSitePolicy(isEdit ? site : {
 		dynamic_discovery_enabled: Boolean(dynamicCapabilities && dynamicCapabilities.available),
 		dynamic_profile: 'compatible',
@@ -1335,98 +1190,90 @@ async function showSiteModal(site) {
 		dynamic_allow_https_downgrade: true,
 	});
 	let dynamicRules = [...dynamicPolicy.dynamic_domain_rules];
+  const primaryTarget = splitUpstreamTargetAddress(isEdit ? site.target_url : '', 'http');
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = `
     <div class="site-modal-tabs" id="site-modal-tabs" role="tablist">
-      <button type="button" class="site-modal-tab active" data-tab="basic" role="tab">基本配置</button>
-      <button type="button" class="site-modal-tab" data-tab="lines" role="tab">线路与回源</button>
-      <button type="button" class="site-modal-tab" data-tab="discovery" role="tab">自动发现</button>
-      <button type="button" class="site-modal-tab" data-tab="advanced" role="tab">高级策略</button>
+      <button type="button" class="site-modal-tab active" data-tab="basic" role="tab" id="site-tab-basic" aria-controls="site-panel-basic" aria-selected="true" tabindex="0">基本配置</button>
+      <button type="button" class="site-modal-tab" data-tab="lines" role="tab" id="site-tab-lines" aria-controls="site-panel-lines" aria-selected="false" tabindex="-1">播放设置</button>
+      <button type="button" class="site-modal-tab" data-tab="advanced" role="tab" id="site-tab-advanced" aria-controls="site-panel-advanced" aria-selected="false" tabindex="-1">高级策略</button>
     </div>
-    <div class="site-modal-panel active" id="site-panel-basic">
+    <div class="site-modal-panel active" id="site-panel-basic" role="tabpanel" aria-labelledby="site-tab-basic">
       <div class="form-group">
-        <label>站点名称</label>
+        <label for="m-name">站点名称</label>
         <input type="text" class="form-input" id="m-name" value="${isEdit ? esc(site.name) : ''}" placeholder="如：Emby-US-01" maxlength="100" required>
       </div>
 	<div class="form-group">
-	  <label>入口模式</label>
-	  <select class="form-select modal-select" id="m-ingress-mode">
+	  <label for="m-ingress-mode">入口模式</label>
+	  <select class="form-select modal-select" id="m-ingress-mode" required>
 		${isEdit && normalizedIngressMode(site) === 'unset' ? '<option value="unset" disabled>未配置（请选择）</option>' : ''}
-		<option value="host" ${canUseHostIngress ? '' : 'disabled'}>域名前缀（推荐${canUseHostIngress ? '' : '，需先配置 TLS 和域名'}）</option>
+		<option value="host" ${canUseHostIngress ? '' : 'disabled'}>域名前缀${canUseHostIngress ? '' : '（需配置 TLS 和域名）'}</option>
 		<option value="path">路径</option>
 		<option value="port">独立端口</option>
 	  </select>
 	  <div class="form-help" id="m-ingress-warning"></div>
-	  ${hostIngressBlockedHint ? `<div class="form-help">${hostIngressBlockedHint}</div>` : ''}
+
 	</div>
 	<div class="form-group" id="m-port-group">
-	  <label id="m-port-label">监听端口</label>
-	  <input type="number" class="form-input" id="m-port" value="${isEdit && ['port', 'both'].includes(normalizedIngressMode(site)) ? site.listen_port : ''}" placeholder="如：8001" min="1" max="65535" inputmode="numeric">
+	  <label id="m-port-label" for="m-port">监听端口</label>
+	  <input type="number" class="form-input" id="m-port" value="${isEdit && ['port', 'both'].includes(normalizedIngressMode(site)) ? site.listen_port : ''}" placeholder="如：8001" min="1" max="65535" step="1" inputmode="numeric">
 	  <div class="form-help" id="m-port-help"></div>
 	</div>
 	<div class="form-group" id="m-public-host-group">
-	  <label>域名前缀</label>
+	  <label for="m-route-prefix">域名前缀</label>
 	  <input type="text" class="form-input" id="m-route-prefix" value="${isEdit ? esc(routePrefixForSite(site, siteCapabilities.route_domain)) : ''}" placeholder="如：123" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="63">
 	  <input type="hidden" id="m-public-host" value="${isEdit ? esc(site.public_host || '') : ''}">
 	  <div class="form-help">访问地址为 https://前缀.${esc(siteCapabilities.route_domain || 'example.com')}:${esc(String((typeof window !== 'undefined' && window.location && window.location.port) || '9090'))}，由面板端口统一转发。</div>
 	</div>
 	<div class="form-group" id="m-path-prefix-group" hidden>
-	  <label>路径前缀</label>
+	  <label for="m-path-prefix">路径前缀</label>
 	  <input type="text" class="form-input" id="m-path-prefix" value="${isEdit ? esc(String(site.path_prefix || '').replace(/^\//, '')) : ''}" placeholder="如：emby" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64">
-	  <div class="form-help">只填写一段路径，系统会自动补全为 /emby/；不能使用 api、js、css、_meridian 等系统路径。</div>
 	</div>
+      <div class="form-group site-form-wide site-upstream-main" id="m-upstream-lines">
+        <label>主地址</label>
+        <div class="upstream-line site-upstream-line is-primary" data-line="primary">
+          <label class="site-primary-protocol" for="m-target-scheme"><span>协议</span><select class="form-select" id="m-target-scheme"><option value="http">HTTP</option><option value="https">HTTPS</option></select></label>
+          <label class="site-primary-address" for="m-target-address"><span>地址</span><input type="text" class="form-input upstream-line-address" id="m-target-address" value="${esc(primaryTarget.address)}" placeholder="emby.example.com 或 IP，可带 /emby" required maxlength="2048" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+          <label class="site-primary-port" for="m-target-port"><span>端口</span><input type="number" class="form-input upstream-line-port" id="m-target-port" value="${primaryTarget.port}" min="1" max="65535" step="1" inputmode="numeric" required></label>
+          <span class="upstream-line-latency" hidden></span>
+        </div>
+        <div class="form-help">粘贴完整链接可自动识别协议与端口。</div>
+        <details class="site-failover-options" ${isEdit && site.failover_lines?.length ? 'open' : ''}>
+          <summary>备用地址（可选）</summary>
+          <div id="m-failover-lines"></div>
+          <button type="button" class="btn-ghost" id="m-add-failover-line">添加备用地址</button>
+        </details>
+        <button type="button" class="btn-ghost" id="m-test-all-lines">测试连接</button>
+      </div>
     </div>
-    <div class="site-modal-panel" id="site-panel-lines">
-	<div class="form-group upstream-lines-card">
-	  <div class="upstream-lines-head">
-	    <div><label>线路列表</label><div class="form-help">主线路失败时按顺序切换，恢复后自动回切。</div></div>
-	    <div class="upstream-lines-buttons">
-	      <button type="button" class="btn-ghost upstream-test-all" id="m-test-all-lines">线路测速</button>
-	      <button type="button" class="btn-add upstream-add-line" id="m-add-failover-line">+ 添加线路</button>
-	    </div>
-	  </div>
-	  <div class="upstream-lines" id="m-upstream-lines">
-		    <div class="upstream-line upstream-line-v2 is-primary" data-line="primary">
-		      <label class="upstream-line-enabled"><input type="checkbox" checked disabled><span>主</span></label>
-		      <div class="upstream-line-field upstream-line-name-field" data-label="线路名称"><input type="text" class="form-input upstream-line-name" id="m-primary-line-name" value="${esc(isEdit ? (site.primary_line_name || '主线路') : '主线路')}" maxlength="100" aria-label="主线路名称"></div>
-		      <div class="upstream-line-field upstream-line-scheme-field" data-label="协议"><select class="form-select upstream-line-scheme" id="m-target-scheme" aria-label="主回源协议"><option value="https" ${primaryTargetParts.scheme === 'https' ? 'selected' : ''}>HTTPS</option><option value="http" ${primaryTargetParts.scheme === 'http' ? 'selected' : ''}>HTTP</option></select></div>
-		      <div class="upstream-line-field upstream-line-address-field" data-label="地址 / Base 路径"><input type="text" class="form-input upstream-line-address" id="m-target-address" value="${esc(primaryTargetParts.address)}" placeholder="emby.example.com/emby" inputmode="url" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="2048" required aria-label="主回源地址"></div>
-		      <div class="upstream-line-field upstream-line-port-field" data-label="端口"><input type="number" class="form-input upstream-line-port" id="m-target-port" value="${esc(primaryTargetParts.port)}" placeholder="443" min="1" max="65535" inputmode="numeric" aria-label="主回源端口"></div>
-		      <span class="upstream-line-latency" data-label="延迟">--</span>
-		      <div class="upstream-line-actions primary-actions" data-label="线路状态"><span class="upstream-line-primary-note">主线路</span></div>
-		      <input type="hidden" id="m-target">
-	    </div>
-	    <div id="m-failover-lines"></div>
-	  </div>
-		  <div class="form-help">先选择 HTTP 或 HTTPS，再填写域名/IP 和可选 Base 路径。端口留空时自动使用 HTTPS 443 或 HTTP 80；最多 7 条备用线路。</div>
-		</div>
-		<div class="form-group site-form-wide playback-targets-group">
-		  <label>播放回源地址（可选）</label>
+    <div class="site-modal-panel" id="site-panel-lines" role="tabpanel" aria-labelledby="site-tab-lines">
+      <div class="form-group">
+        <label for="m-playback-routing-mode">播放回源模式</label>
+        <select class="form-select" id="m-playback-routing-mode">
+          <option value="auto" ${dynamicCapabilities.available ? '' : 'disabled'}>自动发现</option>
+          <option value="manual">手动填写</option>
+          <option value="direct">直连播放</option>
+        </select>
+        <div class="form-help" id="m-playback-mode-help"></div>
+      </div>
+		<div class="form-group site-form-wide playback-targets-group" id="m-manual-playback">
+		  <label for="m-playback-target">播放回源地址</label>
 		  <input type="text" class="form-input" id="m-playback-target" value="${isEdit ? esc(site.playback_target_url || '') : ''}" placeholder="如：playback.example.com 或 https://playback.example.com:443" inputmode="url" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="2048">
-		  <div class="form-help">留空时播放请求跟随主线路；填写后，播放、转码和直链媒体请求优先使用此独立回源。未写协议时，:443 使用 HTTPS，其他端口默认 HTTP。</div>
+		  <div class="form-help">留空使用主地址；未写协议时，443 端口使用 HTTPS，其余使用 HTTP。</div>
 		  <div class="stream-hosts-wrap" style="margin-top: 14px;">
 		    <div class="stream-hosts-head" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-		      <span style="font-size: .84rem; font-weight: 600; color: var(--white-87);">额外播放/串流节点</span>
-		      <button type="button" class="btn-ghost" id="m-add-stream-host" style="font-size: .75rem; padding: 3px 9px;">+ 添加播放节点</button>
+		      <span style="font-size:12px; font-weight: 600; color: var(--white-87);">额外播放/串流节点</span>
+		      <button type="button" class="btn-ghost" id="m-add-stream-host" style="font-size:12px; padding: 3px 9px;">+ 添加播放节点</button>
 		    </div>
 		    <div id="m-stream-hosts-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
-		    <div class="form-help">支持添加多个独立 Emby 媒体回源或 CDN 节点，满足多媒体服或分流串流需求。</div>
 		  </div>
 		</div>
-			<div class="form-group site-form-wide">
-			  <label>主回源固定请求头（可选）</label>
-		  <div id="m-upstream-headers"></div>
-		  <button type="button" class="btn-ghost upstream-header-add" id="m-add-upstream-header" ${upstreamHeadersAvailable ? '' : 'disabled'}>+ 添加请求头</button>
-		  <div class="form-help">使用 UPSTREAM_HEADER_KEY 加密保存，不会回显；仅发送到主回源。</div>
-		  ${upstreamHeadersAvailable ? '' : '<div class="form-help" style="color:var(--orange)">当前部署未配置 UPSTREAM_HEADER_KEY，不能新增、重命名或修改 Header 值；仍可删除旧配置。配置密钥并重启后可恢复编辑。</div>'}
-		</div>
-    </div>
-    <div class="site-modal-panel" id="site-panel-discovery">
-		<div class="form-group site-form-wide site-dynamic-card">
-		  <div class="site-feature-heading"><div><label>自动发现</label>${renderDynamicStatus(dynamicCapabilities)}</div><span class="site-feature-badge">播放兼容</span></div>
+
+		<details class="form-group site-form-wide site-dynamic-card" id="m-auto-options"><summary>自动发现选项</summary>
+		  ${dynamicCapabilities.available ? '' : renderDynamicStatus(dynamicCapabilities)}
 		  <div class="site-dynamic-row">
-		    ${renderDynamicEnableControl(dynamicCapabilities, dynamicPolicy)}
-		    <label class="site-dynamic-profile"><span>模式</span><select class="form-select modal-select" id="m-dynamic-profile" ${dynamicCapabilities.recognized ? '' : 'disabled'}>${renderDynamicProfileOptions(dynamicCapabilities, dynamicPolicy.dynamic_profile)}</select></label>
+
+		    <label class="site-dynamic-profile"><span>兼容级别</span><select class="form-select modal-select" id="m-dynamic-profile" ${dynamicCapabilities.recognized ? '' : 'disabled'}>${renderDynamicProfileOptions(dynamicCapabilities, dynamicPolicy.dynamic_profile)}</select></label>
 		  </div>
 			  <div class="site-dynamic-help" id="m-dynamic-help">兼容模式默认处理 HTTP 30x、PlaybackInfo、HLS 和 DASH；仍拒绝私网与回环目标。</div>
 		  <div class="site-dynamic-extreme" id="m-dynamic-extreme-confirm" hidden>
@@ -1436,24 +1283,26 @@ async function showSiteModal(site) {
 			  <details class="site-dynamic-advanced">
 			    <summary>安全规则与观察记录</summary>
 			    <div class="site-dynamic-advanced-body">
-			      <div class="form-help">处理来源与 HTTPS 降级策略由所选模式自动设置，无需逐项勾选。</div>
 			      <div class="site-dynamic-rules-head"><span>Safe 域名规则</span><button type="button" class="btn-ghost" id="m-add-dynamic-rule">添加规则</button></div>
 		      <div id="m-dynamic-rules"></div>
 		      ${isEdit ? renderDynamicObservationsPanel(dynamicCapabilities.recognized && dynamicCapabilities.available) : ''}
 		    </div>
 		  </details>
-		</div>
+		</details>
     </div>
-    <div class="site-modal-panel" id="site-panel-advanced">
-	    <details class="site-advanced-card site-form-wide" open>
-      <summary class="site-advanced-summary">
-        <span>高级设置</span>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-      </summary>
-      <div class="site-advanced-body">
+    <div class="site-modal-panel" id="site-panel-advanced" role="tabpanel" aria-labelledby="site-tab-advanced">
+			<details class="form-group site-form-wide site-header-options" id="m-header-options" ${isEdit && site.upstream_headers?.length ? 'open' : ''}>
+          <summary>自定义请求头</summary>
+          <div class="site-header-options-body">
+		  <div id="m-upstream-headers"></div>
+		  <button type="button" class="btn-ghost upstream-header-add" id="m-add-upstream-header" ${upstreamHeadersAvailable ? '' : 'disabled'}>+ 添加请求头</button>
+		  <div class="form-help">加密保存，仅发送到主回源。</div>
+		  ${upstreamHeadersAvailable ? '' : '<div class="form-help" style="color:var(--orange)">当前部署未配置 UPSTREAM_HEADER_KEY，不能新增、重命名或修改 Header 值；仍可删除旧配置。配置密钥并重启后可恢复编辑。</div>'}
+		</div>
+        </details>
       <div class="site-settings-grid">
     <div class="form-group">
-      <label>UA 模式</label>
+      <label for="m-ua">UA 模式</label>
       <select class="form-select modal-select" id="m-ua">
         <option value="passthrough" ${(!isEdit || site.ua_mode === 'passthrough') ? 'selected' : ''}>透传（保留客户端身份）</option>
         <option value="infuse" ${isEdit && site.ua_mode === 'infuse' ? 'selected' : ''}>Infuse</option>
@@ -1463,35 +1312,25 @@ async function showSiteModal(site) {
       </select>
     </div>
     <div class="form-group" id="m-custom-ua-group" hidden>
-      <label>自定义身份</label>
+      <label for="m-custom-ua">自定义身份</label>
       <input type="text" class="form-input" id="m-custom-ua" placeholder="User-Agent" maxlength="1024" autocapitalize="none" autocorrect="off" spellcheck="false">
       <input type="text" class="form-input" id="m-custom-client" placeholder="Emby Client" maxlength="128" autocapitalize="none" autocorrect="off" spellcheck="false" style="margin-top:8px">
       <input type="text" class="form-input" id="m-custom-version" placeholder="Emby Version" maxlength="64" autocapitalize="none" autocorrect="off" spellcheck="false" style="margin-top:8px">
       <div class="form-help">只改写 User-Agent、Client、Version；Device 与 DeviceId 保持不变。</div>
     </div>
     <div class="form-group">
-      <label>真实客户端 IP 透传</label>
+      <label for="m-client-ip-mode">真实客户端 IP 透传</label>
       <select class="form-select modal-select" id="m-client-ip-mode">
         <option value="both" ${!isEdit || !site.client_ip_mode || site.client_ip_mode === 'both' ? 'selected' : ''}>透传 X-Real-IP 和 X-Forwarded-For（推荐）</option>
         <option value="real_ip" ${isEdit && site.client_ip_mode === 'real_ip' ? 'selected' : ''}>仅保留 X-Real-IP</option>
         <option value="none" ${isEdit && site.client_ip_mode === 'none' ? 'selected' : ''}>强制不透传（慎用）</option>
       </select>
-      <div class="form-help">与 UA 模式独立；仅影响发往回源的 X-Real-IP 与 X-Forwarded-For。</div>
-    </div>
-    <div class="form-group">
-      <label>主视频流策略</label>
-      <select class="form-select modal-select" id="m-main-video-mode">
-        <option value="proxy" ${!isEdit || site.main_video_stream_mode !== 'direct' ? 'selected' : ''}>反代</option>
-        <option value="direct" ${isEdit && site.main_video_stream_mode === 'direct' ? 'selected' : ''}>直连</option>
-      </select>
-      <div class="form-help">直连仅适用于主视频文件；面板、API、HLS/DASH 等仍由 Meridian 代理。</div>
-      <div class="form-help">自动发现保持启用；私网、回环和链路本地目标始终拒绝。</div>
     </div>
     <section class="form-group cache-limit-group" data-cache-panel aria-labelledby="m-cache-panel-title">
       <div class="site-cache-panel-heading">
         <div>
           <h3 id="m-cache-panel-title">缓存图片与静态资源</h3>
-          <p>仅缓存图片与静态资源；视频、音频、HLS/DASH、Range 和私有响应不缓存。</p>
+          <p>媒体流和私有响应不缓存。</p>
         </div>
         <select class="form-select modal-select" id="m-asset-cache" aria-label="缓存图片与静态资源">
           <option value="off" ${!isEdit || !site.asset_cache_enabled ? 'selected' : ''}>关闭</option>
@@ -1508,23 +1347,22 @@ async function showSiteModal(site) {
         </details>
         <div class="cache-limit-grid">
           <label for="m-cache-ttl">缓存时间（小时）</label>
-          <input type="number" class="form-input" id="m-cache-ttl" min="1" max="720" value="${isEdit ? Math.max(1, Math.round((site.asset_cache_ttl_sec || 86400) / 3600)) : 24}">
+          <input type="number" class="form-input" id="m-cache-ttl" min="1" max="720" step="1" inputmode="numeric" required value="${isEdit ? Math.max(1, Math.round((site.asset_cache_ttl_sec || 86400) / 3600)) : 24}">
           <label for="m-cache-max">容量上限（MB）</label>
-          <input type="number" class="form-input" id="m-cache-max" min="1" max="20480" value="${isEdit ? Math.max(1, Math.round((site.asset_cache_max_bytes || 536870912) / 1048576)) : 512}">
+          <input type="number" class="form-input" id="m-cache-max" min="1" max="20480" step="1" inputmode="numeric" required value="${isEdit ? Math.max(1, Math.round((site.asset_cache_max_bytes || 536870912) / 1048576)) : 512}">
         </div>
       </div>
     </section>
     <div class="form-group">
-      <label>流量额度 (GB, 0=不限)</label>
-      <input type="number" class="form-input" id="m-quota" value="${isEdit ? Math.round((site.traffic_quota || 0) / 1073741824) : 0}" placeholder="0" min="0" inputmode="numeric">
+      <label for="m-quota">流量额度 (GB, 0=不限)</label>
+      <input type="number" class="form-input" id="m-quota" value="${isEdit ? Math.round((site.traffic_quota || 0) / 1073741824) : 0}" placeholder="0" min="0" max="8589934591" step="1" inputmode="numeric" required>
     </div>
     <div class="form-group">
-      <label>单连接限速 (Mbps, 0=不限)</label>
-      <input type="number" class="form-input" id="m-speed" value="${isEdit ? (site.speed_limit || 0) : 0}" placeholder="0" min="0" max="1000000" step="1" inputmode="numeric">
+      <label for="m-speed">单连接限速 (Mbps, 0=不限)</label>
+      <input type="number" class="form-input" id="m-speed" value="${isEdit ? (site.speed_limit || 0) : 0}" placeholder="0" min="0" max="1000000" step="1" inputmode="numeric" required>
       <div class="form-help">限制单个连接的下行速度，上传不受影响。</div>
       </div>
       </div>
-    </details>
     </div>
   `;
 
@@ -1534,57 +1372,68 @@ async function showSiteModal(site) {
   `;
 
   if (typeof document.querySelectorAll === 'function') {
-    document.querySelectorAll('.site-modal-tab').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.site-modal-tab').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.site-modal-panel').forEach(p => p.classList.remove('active'));
-        btn.classList.add('active');
-        const panel = document.getElementById('site-panel-' + btn.dataset.tab);
-        if (panel) panel.classList.add('active');
+    const tabs = [...document.querySelectorAll('.site-modal-tab')];
+    const selectTab = tab => {
+      tabs.forEach(button => {
+        const active = button === tab;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+        button.tabIndex = active ? 0 : -1;
+        document.getElementById('site-panel-' + button.dataset.tab)?.classList.toggle('active', active);
+      });
+      document.getElementById('modal-body').scrollTop = 0;
+    };
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => selectTab(tab));
+      tab.addEventListener('keydown', event => {
+        const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+          : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+          : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+        if (next < 0) return;
+        event.preventDefault();
+        selectTab(tabs[next]);
+        tabs[next].focus();
       });
     });
   }
 
   document.getElementById('m-cancel').addEventListener('click', closeModal);
 
-	const bindUpstreamLineInputs = (schemeInput, addressInput, portInput, onChange) => {
-		if (!schemeInput || !addressInput || !portInput) return;
-		schemeInput.value = normalizeUpstreamScheme(schemeInput.value);
-		schemeInput.dataset.previousScheme = schemeInput.value;
-		schemeInput.onchange = event => {
-			const previousScheme = normalizeUpstreamScheme(event.target.dataset.previousScheme);
-			const nextScheme = normalizeUpstreamScheme(event.target.value);
-			const currentPort = String(portInput.value || '').trim();
-			if (!currentPort || currentPort === defaultUpstreamPort(previousScheme)) {
-				portInput.value = defaultUpstreamPort(nextScheme);
-			}
-			event.target.dataset.previousScheme = nextScheme;
-			if (onChange) onChange(nextScheme, portInput.value);
-		};
-		addressInput.onblur = () => {
-			if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(String(addressInput.value || '').trim())) return;
-			const parts = splitUpstreamTargetAddress(addressInput.value, schemeInput.value);
-			schemeInput.value = parts.scheme;
-			schemeInput.dataset.previousScheme = parts.scheme;
-			addressInput.value = parts.address;
-			portInput.value = parts.port;
-			if (onChange) onChange(parts.scheme, parts.port, parts.address);
-		};
-	};
-
-	const primarySchemeInput = document.getElementById('m-target-scheme');
 	const primaryAddressInput = document.getElementById('m-target-address');
-	const primaryPortInput = document.getElementById('m-target-port');
-	primarySchemeInput.value = primaryTargetParts.scheme;
-	bindUpstreamLineInputs(primarySchemeInput, primaryAddressInput, primaryPortInput);
-
+  const primarySchemeInput = document.getElementById('m-target-scheme');
+  const primaryPortInput = document.getElementById('m-target-port');
+  primarySchemeInput.value = primaryTarget.scheme;
+  let previousPrimaryScheme = primaryTarget.scheme;
+  const syncPrimaryAddress = () => {
+    const raw = primaryAddressInput.value.trim();
+    const authority = raw.split(/[/?#]/)[0];
+    const explicitScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw);
+    const explicitPort = /(?:\]|[^:]):\d+$/.test(authority);
+    if (!explicitScheme && !explicitPort) return;
+    const normalized = normalizeSiteUpstreamAddress(explicitScheme ? raw : `${primarySchemeInput.value}://${raw}`);
+    if (!normalized) return;
+    const parts = splitUpstreamTargetAddress(normalized, primarySchemeInput.value);
+    primarySchemeInput.value = parts.scheme;
+    primaryAddressInput.value = parts.address;
+    primaryPortInput.value = parts.port;
+    previousPrimaryScheme = parts.scheme;
+  };
+  primaryAddressInput.addEventListener('change', syncPrimaryAddress);
+  primarySchemeInput.onchange = () => {
+    const oldPort = primaryPortInput.value.trim();
+    if (!oldPort || oldPort === defaultUpstreamPort(previousPrimaryScheme) || oldPort === (previousPrimaryScheme === 'http' ? '80' : '443')) {
+      primaryPortInput.value = defaultUpstreamPort(primarySchemeInput.value);
+    }
+    previousPrimaryScheme = primarySchemeInput.value;
+  };
+  const primaryTargetURL = () => {
+    syncPrimaryAddress();
+    return joinUpstreamTargetAddress(primarySchemeInput.value, primaryAddressInput.value, primaryPortInput.value);
+  };
 	const failoverLinesContainer = document.getElementById('m-failover-lines');
 	let failoverLines = isEdit && Array.isArray(site.failover_lines)
-		? site.failover_lines.map(line => ({ name: String(line.name || ''), url: String(line.url || ''), enabled: line.enabled !== false, ...splitUpstreamTargetAddress(line.url, 'https') }))
-		: (isEdit && Array.isArray(site.failover_targets)
-			? site.failover_targets.map((url, index) => ({ name: `线路${index + 2}`, url: String(url || ''), enabled: true, ...splitUpstreamTargetAddress(url, 'https') }))
-			: []);
-
+		? site.failover_lines.map(line => ({name: line.name || '', url: line.url || '', enabled: line.enabled !== false}))
+		: (isEdit && Array.isArray(site.failover_targets) ? site.failover_targets.map((url, index) => ({name:`备用 ${index+1}`,url,enabled:true})) : []);
 	function lineActionIcon(kind) {
 		if (kind === 'up') return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>';
 		if (kind === 'down') return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
@@ -1593,57 +1442,35 @@ async function showSiteModal(site) {
 	}
 
 	function renderFailoverLines() {
-		failoverLinesContainer.innerHTML = failoverLines.map((line, index) => `
-		  <div class="upstream-line upstream-line-v2" data-line-index="${index}">
-		    <label class="upstream-line-enabled"><input type="checkbox" class="upstream-line-toggle" ${line.enabled ? 'checked' : ''}><span>${line.enabled ? '开' : '关'}</span></label>
-		    <div class="upstream-line-field upstream-line-name-field" data-label="线路名称"><input type="text" class="form-input upstream-line-name" value="${esc(line.name)}" placeholder="线路${index + 2}" maxlength="100" aria-label="备用线路名称"></div>
-		    <div class="upstream-line-field upstream-line-scheme-field" data-label="协议"><select class="form-select upstream-line-scheme" aria-label="备用线路协议"><option value="https" ${line.scheme === 'https' ? 'selected' : ''}>HTTPS</option><option value="http" ${line.scheme === 'http' ? 'selected' : ''}>HTTP</option></select></div>
-		    <div class="upstream-line-field upstream-line-address-field" data-label="地址 / Base 路径"><input type="text" class="form-input upstream-line-address" value="${esc(line.address)}" placeholder="backup.example.com/emby" maxlength="2048" inputmode="url" autocapitalize="none" autocorrect="off" spellcheck="false" aria-label="备用线路地址"></div>
-		    <div class="upstream-line-field upstream-line-port-field" data-label="端口"><input type="number" class="form-input upstream-line-port" value="${esc(line.port)}" placeholder="443" min="1" max="65535" inputmode="numeric" aria-label="备用线路端口"></div>
-		    <span class="upstream-line-latency" data-label="延迟">--</span>
-		    <div class="upstream-line-actions" data-label="排序 / 删除">
-		      <button type="button" class="icon-button upstream-line-move-up" title="上移" aria-label="上移" ${index === 0 ? 'disabled' : ''}>${lineActionIcon('up')}</button>
-		      <button type="button" class="icon-button upstream-line-move-down" title="下移" aria-label="下移" ${index === failoverLines.length - 1 ? 'disabled' : ''}>${lineActionIcon('down')}</button>
-		      <button type="button" class="icon-button upstream-line-remove" title="删除线路" aria-label="删除线路">${lineActionIcon('remove')}</button>
-		    </div>
-		  </div>`).join('');
-
-		failoverLinesContainer.querySelectorAll('.upstream-line').forEach(row => {
-			const index = Number(row.dataset.lineIndex);
-			row.querySelector('.upstream-line-toggle').onchange = event => {
-				failoverLines[index].enabled = event.target.checked;
-				renderFailoverLines();
-			};
-			const schemeInput = row.querySelector('.upstream-line-scheme');
-			const addressInput = row.querySelector('.upstream-line-address');
-			const portInput = row.querySelector('.upstream-line-port');
-			schemeInput.value = normalizeUpstreamScheme(failoverLines[index].scheme);
-			bindUpstreamLineInputs(schemeInput, addressInput, portInput, (scheme, port, address) => {
-				failoverLines[index].scheme = scheme;
-				failoverLines[index].port = port;
-				if (address !== undefined) failoverLines[index].address = address;
-			});
-			row.querySelector('.upstream-line-name').oninput = event => { failoverLines[index].name = event.target.value; };
-			addressInput.oninput = event => { failoverLines[index].address = event.target.value; };
-			portInput.oninput = event => { failoverLines[index].port = event.target.value; };
-			row.querySelector('.upstream-line-move-up').onclick = () => {
-				[failoverLines[index - 1], failoverLines[index]] = [failoverLines[index], failoverLines[index - 1]];
-				renderFailoverLines();
-			};
-			row.querySelector('.upstream-line-move-down').onclick = () => {
-				[failoverLines[index + 1], failoverLines[index]] = [failoverLines[index], failoverLines[index + 1]];
-				renderFailoverLines();
-			};
-			row.querySelector('.upstream-line-remove').onclick = () => {
-				failoverLines.splice(index, 1);
-				renderFailoverLines();
-			};
-		});
+		failoverLinesContainer.innerHTML = failoverLines.map((line,index) => `<div class="upstream-line site-upstream-line" data-line-index="${index}">
+          <label class="site-backup-enable"><input class="upstream-line-toggle" type="checkbox" ${line.enabled ? 'checked' : ''}><span>备用 ${index+1}</span></label>
+          <input class="form-input upstream-line-address" value="${esc(line.url)}" placeholder="https://backup.example.com" inputmode="url" maxlength="2048" aria-label="备用地址 ${index+1}" ${line.enabled ? 'required' : 'disabled'}>
+          <span class="upstream-line-latency">--</span>
+          <div class="upstream-line-actions">
+            <button type="button" class="icon-button upstream-line-move-up" aria-label="上移" ${index===0?'disabled':''}>${lineActionIcon('up')}</button>
+            <button type="button" class="icon-button upstream-line-move-down" aria-label="下移" ${index===failoverLines.length-1?'disabled':''}>${lineActionIcon('down')}</button>
+            <button type="button" class="icon-button upstream-line-remove" aria-label="删除">${lineActionIcon('remove')}</button>
+          </div>
+        </div>`).join('');
+        failoverLinesContainer.querySelectorAll('.upstream-line').forEach(row => {
+          const index=Number(row.dataset.lineIndex);
+          row.querySelector('.upstream-line-toggle').onchange = e => {failoverLines[index].enabled=e.target.checked;renderFailoverLines();};
+          row.querySelector('.upstream-line-address').oninput = e => {failoverLines[index].url=e.target.value;};
+          row.querySelector('.upstream-line-remove').onclick = () => {failoverLines.splice(index,1);renderFailoverLines();};
+          for(const [name,delta] of [['up',-1],['down',1]]) row.querySelector('.upstream-line-move-'+name).onclick=()=>{[failoverLines[index],failoverLines[index+delta]]=[failoverLines[index+delta],failoverLines[index]];renderFailoverLines();};
+        });
 	}
 
-	async function testUpstreamLine(row, schemeInput, addressInput, portInput) {
+	async function testUpstreamLine(row, addressInput) {
 		const latency = row.querySelector('.upstream-line-latency');
-		const targetURL = joinUpstreamTargetAddress(schemeInput.value, addressInput.value, portInput.value);
+    latency.hidden = false;
+    if (addressInput === primaryAddressInput) syncPrimaryAddress();
+		if (!validateFields(row)) {
+			latency.textContent = '请检查输入';
+			latency.className = 'upstream-line-latency bad';
+			return;
+		}
+		const targetURL = addressInput === primaryAddressInput ? primaryTargetURL() : normalizeSiteUpstreamAddress(addressInput.value);
 		if (!targetURL) {
 			latency.textContent = '请填写地址';
 			latency.className = 'upstream-line-latency bad';
@@ -1674,7 +1501,7 @@ async function showSiteModal(site) {
 			Toast.error('最多添加 7 条备用线路');
 			return;
 		}
-		failoverLines.push({ name: `线路${failoverLines.length + 2}`, url: '', scheme: 'https', address: '', port: '443', enabled: true });
+		failoverLines.push({ name: `备用 ${failoverLines.length + 1}`, url: '', enabled: true });
 		renderFailoverLines();
 		const inputs = failoverLinesContainer.querySelectorAll('.upstream-line-address');
 		if (inputs.length) inputs[inputs.length - 1].focus();
@@ -1689,10 +1516,10 @@ async function showSiteModal(site) {
 			return failoverLines[index] && failoverLines[index].enabled;
 		});
 		for (const row of rows) {
-			await testUpstreamLine(row, row.querySelector('.upstream-line-scheme'), row.querySelector('.upstream-line-address'), row.querySelector('.upstream-line-port'));
+			await testUpstreamLine(row, row.querySelector('.upstream-line-address'));
 		}
 		button.disabled = false;
-		button.textContent = '线路测速';
+		button.textContent = '测试连接';
 	};
 
 	const ingressSelect = document.getElementById('m-ingress-mode');
@@ -1716,10 +1543,11 @@ async function showSiteModal(site) {
 		pathPrefixInput.required = state.requirePathPrefix;
 		pathPrefixInput.disabled = !state.showPathPrefix;
 		portInput.required = state.requireListenPort;
+		portInput.disabled = !state.requireListenPort;
 		document.getElementById('m-port-group').hidden = !state.requireListenPort;
 		portLabel.textContent = state.portLabel;
 		portHelp.textContent = state.requireListenPort
-			? '独立端口模式需要填写未被占用的监听端口。'
+			? '填写 1–65535 之间的整数，并确保端口未被占用。'
 			: '共享入口不会另外开放站点端口。';
 		ingressWarning.textContent = state.warning;
 	}
@@ -1728,7 +1556,7 @@ async function showSiteModal(site) {
 
 	const uaSelect = document.getElementById('m-ua');
   const clientIPModeSelect = document.getElementById('m-client-ip-mode');
-  const mainVideoModeSelect = document.getElementById('m-main-video-mode');
+  const playbackRoutingSelect = document.getElementById('m-playback-routing-mode');
   const assetCacheSelect = document.getElementById('m-asset-cache');
   const cacheOptionsGroup = document.getElementById('m-cache-options');
   const cacheRulesGroup = document.getElementById('m-cache-rules-group');
@@ -1741,7 +1569,7 @@ async function showSiteModal(site) {
   const initialUAState = customUAFormState(isEdit ? site.ua_mode : 'passthrough', site);
   uaSelect.value = isEdit && site.ua_mode ? site.ua_mode : 'passthrough';
   clientIPModeSelect.value = isEdit && ['both', 'real_ip', 'none'].includes(site.client_ip_mode) ? site.client_ip_mode : 'both';
-  mainVideoModeSelect.value = isEdit && site.main_video_stream_mode === 'direct' ? 'direct' : 'proxy';
+  playbackRoutingSelect.value = isEdit ? sitePlaybackRoutingMode(site) : dynamicCapabilities.available ? 'auto' : 'manual';
   customUAInputs[0].value = initialUAState.customUserAgent;
   customUAInputs[1].value = initialUAState.customClient;
   customUAInputs[2].value = initialUAState.customVersion;
@@ -1777,7 +1605,7 @@ async function showSiteModal(site) {
   toggleCustomUAFields();
   uaSelect.addEventListener('change', toggleCustomUAFields);
 
-	  const dynamicEnabledInput = document.getElementById('m-dynamic-enabled');
+
 	  const dynamicProfileSelect = document.getElementById('m-dynamic-profile');
 	  const dynamicHelp = document.getElementById('m-dynamic-help');
 	  const dynamicRulesContainer = document.getElementById('m-dynamic-rules');
@@ -1799,7 +1627,7 @@ async function showSiteModal(site) {
 	  const syncDynamicControls = () => {
 	    const profile = normalizeDynamicProfile(dynamicProfileSelect?.value || dynamicPolicy.dynamic_profile);
 	    const extremeConfirm = document.getElementById('m-dynamic-extreme-confirm');
-	    if (extremeConfirm) extremeConfirm.hidden = profile !== 'extreme' || dynamicEnabledInput?.checked !== true;
+	    if (extremeConfirm) extremeConfirm.hidden = profile !== 'extreme' || playbackRoutingSelect.value !== 'auto';
 	    if (dynamicHelp) dynamicHelp.textContent = profile === 'safe'
 	      ? 'Safe：处理 HTTP 30x 与 PlaybackInfo，仅允许 HTTPS:443，并要求命中明确的域名规则。'
 	      : profile === 'extreme'
@@ -1813,7 +1641,18 @@ async function showSiteModal(site) {
     if (last) last.focus();
   };
   if (dynamicProfileSelect) dynamicProfileSelect.onchange = syncDynamicControls;
-  if (dynamicEnabledInput) dynamicEnabledInput.onchange = syncDynamicControls;
+  const syncPlaybackMode = () => {
+    const mode = playbackRoutingSelect.value;
+    document.getElementById('m-manual-playback').hidden = mode !== 'manual';
+    document.getElementById('m-auto-options').hidden = mode !== 'auto';
+    document.getElementById('m-playback-mode-help').textContent = mode === 'direct'
+      ? '视频、HLS/DASH 播放地址交给客户端直连；登录、海报图片和其他接口继续通过 Meridian。'
+      : mode === 'manual' ? '使用指定的播放回源与已知节点代理视频，主地址负责登录、海报和其他接口。'
+      : '自动识别播放回源、重定向及 HLS/DASH 地址，并通过 Meridian 代理播放。';
+    syncDynamicControls();
+  };
+  playbackRoutingSelect.onchange = syncPlaybackMode;
+  syncPlaybackMode();
   renderDynamicRules();
   syncDynamicControls();
   if (isEdit && dynamicCapabilities.recognized && dynamicCapabilities.available) {
@@ -1874,13 +1713,13 @@ async function showSiteModal(site) {
     const container = document.getElementById('m-stream-hosts-list');
     if (!container) return;
     if (!configuredStreamHosts.length) {
-      container.innerHTML = '<div style="font-size: .78rem; color: var(--white-38); padding: 4px 0;">暂无额外播放节点（按需添加）</div>';
+      container.innerHTML = '<div style="font-size:12px; color: var(--white-38); padding: 4px 0;">暂无额外播放节点（按需添加）</div>';
       return;
     }
     container.innerHTML = configuredStreamHosts.map((host, idx) => `
       <div class="stream-host-row" style="display: flex; gap: 8px; align-items: center;">
         <input type="text" class="form-input m-stream-host-input" data-idx="${idx}" value="${esc(host)}" placeholder="如：https://stream2.example.com:443" inputmode="url" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="2048" style="flex: 1;">
-        <button type="button" class="btn-ghost danger m-remove-stream-host" data-idx="${idx}" style="padding: 6px 12px; font-size: .76rem; min-height: 38px;">删除</button>
+        <button type="button" class="btn-ghost danger m-remove-stream-host" data-idx="${idx}" style="padding: 6px 12px; font-size:12px; min-height: 38px;">删除</button>
       </div>
     `).join('');
     container.querySelectorAll('.m-remove-stream-host').forEach(btn => {
@@ -1915,7 +1754,13 @@ async function showSiteModal(site) {
   }
   renderStreamHostRows();
 
-  document.getElementById('m-submit').onclick = async () => {
+  const modalBody = document.getElementById('modal-body');
+  bindFieldValidation(modalBody);
+  const submitButton = document.getElementById('m-submit');
+  let saving = false;
+  submitButton.onclick = async () => {
+    syncPrimaryAddress();
+    if (saving || !validateFields(modalBody)) return;
     const uaMode = uaSelect.value;
     const customUAPayload = buildCustomUAPayload(
       uaMode,
@@ -1925,19 +1770,18 @@ async function showSiteModal(site) {
     );
 		const ingressPayload = buildIngressPayload(
 		  ingressSelect.value,
-		  document.getElementById('m-port').value,
+		  portInput.disabled ? '' : portInput.value,
 		  publicHostInput.value,
 		  routePrefixInput.value,
 		  siteCapabilities.route_domain,
 		  pathPrefixInput.value,
 		);
-				const primaryTargetURL = joinUpstreamTargetAddress(
-				document.getElementById('m-target-scheme').value,
-				document.getElementById('m-target-address').value,
-				document.getElementById('m-target-port').value,
-				);
-				const playbackTargetURL = playbackTargetInput ? playbackTargetInput.value.trim() : '';
-				const streamHostValues = normalizeStreamHosts(configuredStreamHosts);
+				const primaryURL = primaryTargetURL();
+				if (!primaryURL) return rejectField(primaryAddressInput, '请填写有效的 HTTP / HTTPS 回源地址');
+                const invalidBackup = failoverLines.findIndex(line => line.enabled !== false && !normalizeSiteUpstreamAddress(line.url));
+                if (invalidBackup >= 0) return rejectField(failoverLinesContainer.querySelector(`[data-line-index="${invalidBackup}"] .upstream-line-address`), '请填写有效的 HTTP / HTTPS 备用地址');
+				const playbackTargetURL = playbackRoutingSelect.value === 'manual' && playbackTargetInput ? playbackTargetInput.value.trim() : '';
+				const streamHostValues = playbackRoutingSelect.value === 'manual' ? normalizeStreamHosts(configuredStreamHosts) : [];
 				const maxPlaybackAddresses = siteCapabilities && siteCapabilities.max_playback_addresses
 					? siteCapabilities.max_playback_addresses
 					: DEFAULT_MAX_PLAYBACK_ADDRESSES;
@@ -1945,9 +1789,9 @@ async function showSiteModal(site) {
 					Toast.error('播放回源地址和播放节点总数超过上限');
 					return;
 				}
-			const nextDynamicProfile = normalizeDynamicProfile(dynamicProfileSelect?.value || dynamicPolicy.dynamic_profile);
+			const nextDynamicProfile = playbackRoutingSelect.value === 'direct' ? 'compatible' : normalizeDynamicProfile(dynamicProfileSelect?.value || dynamicPolicy.dynamic_profile);
 			const nextDynamicPolicy = {
-				dynamic_discovery_enabled: dynamicEnabledInput?.checked === true,
+				dynamic_discovery_enabled: playbackRoutingSelect.value !== 'manual' && dynamicCapabilities.available,
 				dynamic_profile: nextDynamicProfile,
 				dynamic_domain_rules: dynamicRules,
 				dynamic_allow_https_downgrade: nextDynamicProfile === 'safe'
@@ -1964,23 +1808,27 @@ async function showSiteModal(site) {
 			document.getElementById('m-dynamic-extreme-name')?.value.trim() || '',
 		);
 		if (!dynamicConfirmation.ok) {
-			if (dynamicConfirmation.error) Toast.error(dynamicConfirmation.error);
+			if (dynamicConfirmation.error) {
+				document.getElementById('site-tab-lines')?.click();
+                document.getElementById('m-auto-options').open = true;
+				Toast.error(dynamicConfirmation.error);
+			}
 			return;
 		}
 		const dynamicPayload = buildDynamicPolicyPayload(nextDynamicPolicy, dynamicCapabilities);
 		const data = {
 	      name: document.getElementById('m-name').value.trim(),
-	      target_url: primaryTargetURL,
-		      primary_line_name: document.getElementById('m-primary-line-name').value.trim() || '主线路',
+	      target_url: primaryURL,
+		      primary_line_name: isEdit ? site.primary_line_name || '主线路' : '主线路',
 		      failover_lines: failoverLines.map((line, index) => ({
 		        name: String(line.name || '').trim() || `线路${index + 2}`,
-		        url: joinUpstreamTargetAddress(line.scheme, line.address, line.port),
+		        url: normalizeSiteUpstreamAddress(line.url),
 		        enabled: line.enabled !== false,
 		      })),
-		      failover_targets: failoverLines.filter(line => line.enabled !== false).map(line => joinUpstreamTargetAddress(line.scheme, line.address, line.port)).filter(Boolean),
+		      failover_targets: failoverLines.filter(line => line.enabled !== false).map(line => normalizeSiteUpstreamAddress(line.url)).filter(Boolean),
 	      playback_target_url: playbackTargetURL,
-      playback_mode: isEdit ? String(site.playback_mode || 'direct') : 'direct',
-		main_video_stream_mode: mainVideoModeSelect.value,
+      playback_mode: 'direct',
+		main_video_stream_mode: playbackRoutingSelect.value === 'direct' ? 'direct' : 'proxy',
 		stream_hosts: streamHostValues,
 			...ingressPayload,
 		upstream_headers: buildUpstreamHeaderPayload(upstreamHeaders),
@@ -1989,11 +1837,11 @@ async function showSiteModal(site) {
       ...customUAPayload,
 		...dynamicPayload,
       asset_cache_enabled: document.getElementById('m-asset-cache').value === 'on',
-      asset_cache_ttl_sec: parseInt(document.getElementById('m-cache-ttl').value || 24) * 3600,
-      asset_cache_max_bytes: parseInt(document.getElementById('m-cache-max').value || 512) * 1048576,
+      asset_cache_ttl_sec: (parseBoundedInteger(document.getElementById('m-cache-ttl').value, 1, 720) ?? 24) * 3600,
+      asset_cache_max_bytes: (parseBoundedInteger(document.getElementById('m-cache-max').value, 1, 20480) ?? 512) * 1048576,
       asset_cache_rules: document.getElementById('m-cache-rules').value.trim(),
-      traffic_quota: parseInt(document.getElementById('m-quota').value || 0) * 1073741824,
-      speed_limit: parseInt(document.getElementById('m-speed').value || 0),
+      traffic_quota: Number(document.getElementById('m-quota').value) * 1073741824,
+      speed_limit: Number(document.getElementById('m-speed').value),
     };
 
 		const listenPortRequired = ingressFormState(data.ingress_mode).requireListenPort;
@@ -2009,18 +1857,19 @@ async function showSiteModal(site) {
       Toast.error('请完整填写自定义 User-Agent、Client 和 Version');
 		return;
 	  }
-	  const invalidHeader = upstreamHeaders.some(header => {
+	  const invalidHeader = upstreamHeaders.findIndex(header => {
 		const name = String(header.name || '').trim();
 		const value = String(header.value || '').trim();
 		if (!header.configured && !name && !value) return false;
 		return !name || (!header.configured && !value);
 	  });
-		if (invalidHeader) {
-			Toast.error('请完整填写新增请求头的名称和值；已有值可留空保持不变');
-			return;
+		if (invalidHeader >= 0) {
+      const field = String(upstreamHeaders[invalidHeader].name || '').trim() ? 'value' : 'name';
+      return rejectField(document.getElementById(`m-upstream-header-${field}-${invalidHeader}`), '请完整填写请求头名称和值；已有值可留空保持不变');
 		}
 			if (data.failover_lines.some(line => !line.url)) {
-				Toast.error('请完整填写每条线路的地址，或删除空线路');
+				const index = data.failover_lines.findIndex(line => !line.url);
+				rejectField(failoverLinesContainer.querySelectorAll('.upstream-line-address')[index], '请填写有效的回源地址，或删除此线路');
 			return;
 		}
 		if (data.failover_targets.length > 0 && upstreamHeaders.some(header => String(header.name || '').trim())) {
@@ -2035,6 +1884,10 @@ async function showSiteModal(site) {
 			}
 		}
 
+    saving = true;
+    submitButton.disabled = true;
+    submitButton.textContent = isEdit ? '保存中…' : '创建中…';
+    submitButton.setAttribute('aria-busy', 'true');
     try {
       if (isEdit) {
         await API.updateSite(site.id, data);
@@ -2043,10 +1896,16 @@ async function showSiteModal(site) {
         await API.createSite(data);
         Toast.success('站点已创建');
       }
-      closeModal();
+      // A user may close this editor and open another while the request runs.
+      if (document.getElementById('m-submit') === submitButton) closeModal();
       loadSites();
     } catch (e) {
       Toast.error(e.message);
+    } finally {
+      saving = false;
+      submitButton.disabled = false;
+      submitButton.textContent = isEdit ? '保存' : '创建';
+      submitButton.removeAttribute('aria-busy');
     }
   };
 
@@ -2104,3 +1963,20 @@ window.confirmDelete = async function(id) {
     Toast.error(e.message);
   }
 };
+
+function normalizeSiteUpstreamAddress(value) {
+  let raw = String(value || '').trim().replaceAll('：', ':');
+  if (!raw || /[\\\s]/.test(raw)) return '';
+  const explicit = raw.includes('://');
+  try {
+    const parsed = new URL(explicit ? raw : `http://${raw}`);
+    if (!explicit && parsed.port === '443') parsed.protocol = 'https:';
+    if (!['http:','https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || parsed.hash || (parsed.port && parseBoundedInteger(parsed.port,1,65535) === null)) return '';
+    return parsed.href;
+  } catch (_) { return ''; }
+}
+
+function sitePlaybackRoutingMode(site) {
+  if (site?.main_video_stream_mode === 'direct') return 'direct';
+  return site?.dynamic_discovery_enabled ? 'auto' : 'manual';
+}

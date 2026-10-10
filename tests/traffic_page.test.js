@@ -569,8 +569,8 @@ test('dashboard trend tooltip avoids the pointer and flips at chart edges', () =
   assert.equal(topEdge.left, 114, 'the tooltip should default to the pointer right');
   assert.equal(topEdge.top, 24, 'the tooltip should move below the pointer at the top edge');
   const css = readScript('../css/style.css');
-  assert.match(css, /\.dashboard-chart-tooltip[^\n]*transform:\s*none/);
-  assert.match(css, /\.dashboard-chart-tooltip[^\n]*pointer-events:\s*none/);
+  assert.match(css, /\.dashboard-chart-tooltip\s*\{[^}]*transform:\s*none/);
+  assert.match(css, /\.dashboard-chart-tooltip\s*\{[^}]*pointer-events:\s*none/);
   assert.match(css, /\.dashboard-trend-card\s*\{[^}]*overflow:\s*visible/);
   assert.match(css, /\.dashboard-trend-grid\s*\{[^}]*position:\s*relative[^}]*z-index:\s*3/);
   assert.match(css, /\.dashboard-insights-grid,\s*\.dashboard-site-status\s*\{[^}]*position:\s*relative[^}]*z-index:\s*1/);
@@ -601,7 +601,7 @@ test('global traffic settings expose reset and no-reset billing cycles', () => {
   const source = readScript('pages/global-settings.js');
   assert.match(source, /setting-traffic-reset-day/);
   assert.match(source, /traffic_reset_day\s*=\s*numericSetting\('setting-traffic-reset-day'/);
-  assert.match(source, /短月自动使用该月最后一天/);
+  assert.match(source, /短月按最后一天重置/);
   assert.match(source, /不重置（累计流量）/);
   assert.match(source, /s\.traffic_reset_day == null \? 1 : s\.traffic_reset_day/);
 });
