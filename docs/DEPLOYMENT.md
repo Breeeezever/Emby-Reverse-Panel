@@ -1,6 +1,6 @@
 # 部署指南
 
-[返回首页](../README.md) · [使用指南](USAGE.md) · [安全说明](../SECURITY.md)
+[返回首页](../README.md) · [完整 Wiki](https://emby.qd.je/wiki/) · [使用指南](USAGE.md) · [安全说明](../SECURITY.md)
 
 ## 一键安装
 
@@ -62,10 +62,13 @@ chmod 600 .env
 services:
   meridian:
     image: ghcr.io/snnabb/meridian:latest
+    user: "10001:10001"
     restart: unless-stopped
     read_only: true
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     tmpfs:
@@ -96,6 +99,8 @@ docker compose pull && docker compose up -d
 ```
 
 通过 HTTPS 反向代理连接本机 `127.0.0.1:9090`，首次初始化令牌从 `.env` 的 `SETUP_TOKEN` 获取。上面的 HTTP 设置只用于容器内部这一跳，宿主机端口仍限制在回环地址。
+
+示例使用官方镜像初始化的命名卷，以 `10001:10001` 运行。官方程序带有端口绑定文件能力，需要保留 `NET_BIND_SERVICE` 能力边界；使用宿主目录时，先确保该目录可由服务 UID/GID 读写。
 
 设置 `PANEL_DOMAIN` 为面板域名；需要使用转发头时，将 `TRUSTED_PROXY_CIDRS` 精确设为实际反向代理地址或网段。备份 `.env` 和数据卷，重建容器时继续使用原密钥。
 

@@ -35,8 +35,8 @@
 ### 网络
 
 - 管理面板默认监听 `127.0.0.1`；如需公网绑定必须显式设置 `PANEL_BIND_ADDR`，并启用 HTTPS 或显式设置 `ALLOW_INSECURE_HTTP=true`
-- 管理面板本身不提供 HTTPS，需要外层反代处理 TLS 终止
-- 站点支持 `host`、`port`、`both` 三种入口模式；推荐的 `host` 模式只使用共享 Host 路由，不绑定保留的高端口，并强制要求面板回环绑定或非空 `TRUSTED_PROXY_CIDRS` 来源白名单。面板非回环绑定时，伪造正确 Host 的非可信 peer 仍会被拒绝；`port` 和显式高风险的 `both` 独立端口仍绑定所有接口
+- 管理面板支持原生 HTTPS，可自动申请、读取服务器路径或上传证书；也可由外层反向代理终止 TLS
+- 站点新增支持 `path`、`host`、`port` 入口，旧配置兼容 `both`；新建默认路径入口。`path` 与 `host` 使用共享面板监听，不额外绑定站点端口。Host 入口要求原生 TLS、面板回环绑定或非空 `TRUSTED_PROXY_CIDRS` 来源白名单；未启用原生 TLS 的非回环管理入口会对不可信 Host 路由来源执行校验。`port` 和旧 `both` 的独立监听仍需由防火墙控制其公开范围
 - 设置 `PANEL_DOMAIN` 后，未知 Host 返回 `421` 而不是管理面板；未设置时保留直接 IP/任意 Host 的初始部署兼容行为
 - 安装器生成的 Nginx 配置只代理管理端口，不读取或代理站点回源、播放地址或站点监听端口
 - 管理 API 默认拒绝跨站浏览器请求；所有状态变更还要求同源 `Origin` 或 `Referer`，并发送 CSP、`X-Frame-Options`、`nosniff` 等响应头
