@@ -1,6 +1,6 @@
 # 使用指南
 
-[返回首页](../README.md) · [完整 Wiki](https://snnabb.github.io/Meridian/) · [部署文档](DEPLOYMENT.md)
+[返回首页](../README.md) · [完整 Wiki](https://github.com/snnabb/Meridian/wiki) · [部署文档](DEPLOYMENT.md)
 
 ## 站点与播放
 

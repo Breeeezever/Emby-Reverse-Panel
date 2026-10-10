@@ -1,6 +1,6 @@
 # 部署指南
 
-[返回首页](../README.md) · [完整 Wiki](https://snnabb.github.io/Meridian/) · [使用指南](USAGE.md) · [安全说明](../SECURITY.md)
+[返回首页](../README.md) · [完整 Wiki](https://github.com/snnabb/Meridian/wiki) · [使用指南](USAGE.md) · [安全说明](../SECURITY.md)
 
 ## 一键安装
 

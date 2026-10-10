@@ -76,7 +76,17 @@ mkdocs serve
 
 修改页面后同步更新导航，验证相对链接、截图与中文搜索。示例只使用保留示例域名、虚构用户与站点，不记录真实凭据或私人部署数据。
 
-合并到 `master` 的文档改动由 Wiki 工作流自动构建与发布到 `https://snnabb.github.io/Meridian/`。发布应用新版本时，核对文档功能边界与截图版本，不把测试中功能当成已发布行为。
+合并到 `master` 的文档改动由 Wiki 工作流自动构建与发布到 [文档站](https://snnabb.github.io/Meridian/index.html)。原生 GitHub Wiki 从同一份源文档导出，使用有 Wiki 写入权限的 GitHub 账户同步：
+
+```bash
+git clone https://github.com/snnabb/Meridian.wiki.git ../Meridian.wiki
+python tools/wiki/export.py ../Meridian.wiki
+git -C ../Meridian.wiki add '*.md'
+git -C ../Meridian.wiki commit -m "docs: sync project wiki"
+git -C ../Meridian.wiki push origin master
+```
+
+导出会更新导航内的页面、侧边栏和页脚，保留其他自建页面。维护这些页面时以 `docs/wiki` 为准。发布应用新版本时，核对文档功能边界与截图版本，不把测试中功能当成已发布行为。
 
 ## 参与项目
 
