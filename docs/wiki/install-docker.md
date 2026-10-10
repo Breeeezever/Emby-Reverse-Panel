@@ -1,6 +1,6 @@
 # Docker 部署
 
-官方镜像为 `ghcr.io/snnabb/meridian`，提供 Linux amd64 和 arm64。`latest` 跟随最新正式版本；固定版本可使用 `v1.13.0`。
+官方镜像为 `ghcr.io/snnabb/meridian`，提供 Linux amd64 和 arm64。`latest` 跟随最新正式版本；固定版本可使用 `v1.13.1`。
 
 ## 1. 准备目录与密钥
 
@@ -25,7 +25,7 @@ chmod 600 .env
 ```yaml
 services:
   meridian:
-    image: ghcr.io/snnabb/meridian:v1.13.0
+    image: ghcr.io/snnabb/meridian:v1.13.1
     user: "10001:10001"
     restart: unless-stopped
     read_only: true

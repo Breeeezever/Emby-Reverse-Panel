@@ -44,8 +44,15 @@ test('upstream header rows reset fieldsets and retain an explicit action column'
   assert.match(cssSource, /\.upstream-header-row \.form-row-action\s*\{[^}]*white-space:\s*nowrap;/);
 });
 
-test('dashboard assets use a cache-busting revision after chart and mobile fixes', () => {
-  assert.match(indexSource, /\?v=1\.13\.0/);
+test('frontend assets use the current application version to bust caches', () => {
+  const mainSource = fs.readFileSync(path.join(ROOT, 'cmd/meridian/main.go'), 'utf8');
+  const version = mainSource.match(/var appVersion = "v([^"]+)"/)?.[1];
+  assert.ok(version, 'application version is missing');
+  const assets = [...indexSource.matchAll(/(?:src|href)="([^"]+)"/g)]
+    .map(match => new URL(match[1], 'https://meridian.example'))
+    .filter(url => /\.(js|css|svg)$/.test(url.pathname) && url.searchParams.has('v'));
+  assert.ok(assets.length >= 10, 'versioned frontend assets are missing');
+  for (const asset of assets) assert.equal(asset.searchParams.get('v'), version, asset.pathname);
 });
 
 test('desktop sidebar width and content offset share the expanded state', () => {
