@@ -314,6 +314,16 @@ func stripIngressPathPrefix(requestURL *url.URL, prefix string) {
 		}
 		requestURL.RawPath = rawPath
 	}
+	// Clients may append / to an entry URL that already ends in /. Collapse
+	// literal slashes at that boundary without changing escaped media paths.
+	escapedPath := requestURL.EscapedPath()
+	extraSlashes := len(escapedPath) - len(strings.TrimLeft(escapedPath, "/")) - 1
+	if extraSlashes > 0 {
+		requestURL.Path = requestURL.Path[extraSlashes:]
+		if requestURL.RawPath != "" {
+			requestURL.RawPath = escapedPath[extraSlashes:]
+		}
+	}
 }
 
 func addIngressPathPrefix(route, prefix string) string {
