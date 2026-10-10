@@ -1958,15 +1958,19 @@ print_setup_token_notice() {
 }
 
 
-setup_panel_updater() {
+panel_updater_supported_install() {
     # The root helper is offered only for the standard installation layout.
     # Manual/container/custom deployments still have release checks in the UI.
-    is_systemd || return 0
+    is_systemd || return 1
     [ "$INSTALL_DIR" = /usr/local/bin ] && [ "$DATA_DIR" = /opt/meridian ] \
         && [ "$SERVICE_FILE" = /etc/systemd/system/meridian.service ] \
-        && [ "$SERVICE_NAME" = meridian ] && [ "$REPO" = snnabb/Meridian ] || return 0
-    "${INSTALL_DIR}/${BIN_NAME}" --version --features 2>/dev/null | grep -qx panel-updater-v1 || { warn "当前二进制尚不支持面板更新服务，请更新到包含此功能的版本后重新运行 install -y"; return 0; }
-    local tmp_dir source_script version
+        && [ "$SERVICE_NAME" = meridian ] && [ "$REPO" = snnabb/Meridian ]
+}
+
+setup_panel_updater() {
+    panel_updater_supported_install || return 0
+    "${INSTALL_DIR}/${BIN_NAME}" --version --features 2>/dev/null | grep -x panel-updater-v1 >/dev/null || { warn "当前二进制尚不支持面板更新服务，请更新到包含此功能的版本后重新运行 install -y"; return 0; }
+    local tmp_dir source_script version socket_changed=0
     tmp_dir=$(mktemp -d)
     chmod 0700 "$tmp_dir"
     source_script="${BASH_SOURCE[0]:-}"
@@ -2006,12 +2010,22 @@ PrivateTmp=true
 WantedBy=multi-user.target
 UNIT
     as_root install -o root -g root -m 0644 "${tmp_dir}/meridian-updater.service" /etc/systemd/system/meridian-updater.service || return 1
-    replace_tls_env MERIDIAN_UPDATER_SOCKET /run/meridian-updater/control.sock "$tmp_dir" || { rm -rf -- "$tmp_dir"; return 1; }
+    if [ "$(read_env_value MERIDIAN_UPDATER_SOCKET)" != /run/meridian-updater/control.sock ]; then
+        replace_tls_env MERIDIAN_UPDATER_SOCKET /run/meridian-updater/control.sock "$tmp_dir" || { rm -rf -- "$tmp_dir"; return 1; }
+        socket_changed=1
+    fi
     rm -rf -- "$tmp_dir"
     as_root systemctl daemon-reload || return 1
-    as_root systemctl enable --now meridian-updater.service || return 1
-    as_root systemctl restart "$SERVICE_NAME" || return 1
-    wait_for_health 20 || return 1
+    as_root systemctl enable meridian-updater.service || return 1
+    # Restarting the agent from its own child installer would interrupt the
+    # update before the agent can persist its completed status.
+    if [ -z "${MERIDIAN_EXPECTED_UPDATE_VERSION:-}" ]; then
+        as_root systemctl restart meridian-updater.service || return 1
+    fi
+    if [ "$socket_changed" = 1 ] && service_is_active; then
+        as_root systemctl restart "$SERVICE_NAME" || return 1
+        wait_for_health 20 || return 1
+    fi
     ok "面板更新服务已启用"
 }
 
@@ -2036,7 +2050,7 @@ do_tls() (
     is_systemd || fail "自动配置泛域名证书需要 systemd"
     need_cmd systemd-run
     [ -x "${INSTALL_DIR}/${BIN_NAME}" ] || fail "请先安装 Meridian"
-    "${INSTALL_DIR}/${BIN_NAME}" --version --features 2>/dev/null | grep -qx managed-tls-v1 || fail "请先更新到支持泛域名证书命令的 Meridian 版本"
+    "${INSTALL_DIR}/${BIN_NAME}" --version --features 2>/dev/null | grep -x managed-tls-v1 >/dev/null || fail "请先更新到支持泛域名证书命令的 Meridian 版本"
     domain="$REQUESTED_DOMAIN"; wildcard="$REQUESTED_WILDCARD"; email="$CERTBOT_EMAIL"
     if [ "$ASSUME_YES" != 1 ]; then
         [ -n "$domain" ] || read -r -p "面板完整域名（例如 panel.example.com）: " domain
@@ -2202,6 +2216,7 @@ do_update() {
         fail "最新版本已发生变化，请重新检查更新后再试"
     fi
     if [ "$current_version" = "$latest_version" ]; then
+        setup_panel_updater || warn "更新服务安装失败，可稍后重新运行 update -y"
         ok "当前已是最新版本: $latest_version"
         return 0
     fi
@@ -2292,6 +2307,7 @@ do_update() {
         warn "无法清理更新临时目录（可能残留敏感快照），请手动删除: $tmp_dir"
     fi
     trap - EXIT INT TERM
+    setup_panel_updater || warn "版本已更新，但更新服务安装失败，可稍后重新运行 update -y"
     ok "已更新到最新版本: $latest_version"
     info "现有 .env、面板域名和证书均已保留；安装器管理的 Nginx 配置已按需完成 URI 日志脱敏迁移"
     [ -n "${MERIDIAN_EXPECTED_UPDATE_VERSION:-}" ] || print_setup_token_notice || return 1

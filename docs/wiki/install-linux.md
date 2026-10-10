@@ -90,4 +90,4 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 只有显式使用 `--purge` 才删除数据。重置密码会轮换会话密钥，使旧登录失效。
 
-标准 Linux 安装支持 [面板内更新](updates.md)。已有标准安装可以运行新版安装器的 `install -y` 补装更新服务；自定义服务名、目录或运行账户不能直接照搬这一流程。
+标准 Linux 安装支持 [面板内更新](updates.md)。新版安装器会在安装、升级和已是最新版时自动配置更新服务；旧标准安装运行一次新版安装器的 `update -y` 即可补装。自定义服务名、目录或运行账户不能直接照搬这一流程。
