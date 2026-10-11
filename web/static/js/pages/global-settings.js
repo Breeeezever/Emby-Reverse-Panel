@@ -482,12 +482,13 @@ async function renderTLSSettings() {
         payload = {source:'upload', certFile:cert, keyFile:key};
       }
       source.disabled = true; button.disabled = true; button.textContent = source.value === 'acme' ? '签发中，请稍候…' : '校验并应用中…';
+      get('cert-result').textContent = source.value === 'acme' ? '正在申请证书，DNS 验证最多等待 2 分钟，签发流程设有 5 分钟超时，请勿重复提交。' : '正在校验并应用证书…';
       try {
         if (payload.source === 'upload') payload = {source:'upload',certificate_pem:await payload.certFile.text(),private_key_pem:await payload.keyFile.text()};
         const updated = source.value === 'acme' ? await API.requestPanelCertificate(payload) : await API.importPanelCertificate(payload);
         Toast.success(updated.restart_required ? '证书已保存，请重启以启用 HTTPS' : '证书已应用');
         await renderTLSSettings();
-      } catch (error) { Toast.error(error.message); if (button.isConnected) {button.disabled=false;source.disabled=false;syncSource();} }
+      } catch (error) { Toast.error(error.message); if (button.isConnected) {get('cert-result').textContent='证书操作失败：'+error.message;button.disabled=false;source.disabled=false;syncSource();} }
     };
     const restart = get('cert-restart');
     if (restart) restart.onclick = async () => {

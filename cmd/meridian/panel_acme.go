@@ -18,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
+	"log"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -682,9 +682,11 @@ func fulfillCloudflareDNSAuthorization(ctx context.Context, acmeClient *acme.Cli
 		defer cancel()
 		_ = cf.deleteRecord(cleanupCtx, zoneID, recordID)
 	}()
-	if err := waitForTXTRecord(ctx, recordName, value); err != nil {
+	log.Printf("[panel-certificate] checking DNS-01 propagation for %s", recordName)
+	if err := waitForTXTRecord(ctx, recordName, value, zoneName); err != nil {
 		return err
 	}
+	log.Printf("[panel-certificate] DNS-01 record ready for %s; requesting ACME validation", recordName)
 	if _, err := acmeClient.Accept(ctx, challenge); err != nil {
 		return fmt.Errorf("accept DNS-01 challenge: %w", err)
 	}
@@ -692,30 +694,6 @@ func fulfillCloudflareDNSAuthorization(ctx context.Context, acmeClient *acme.Cli
 		return fmt.Errorf("validate DNS-01 challenge: %w", err)
 	}
 	return nil
-}
-
-func waitForTXTRecord(ctx context.Context, name, value string) error {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	timeout := time.NewTimer(2 * time.Minute)
-	defer timeout.Stop()
-	for {
-		records, err := net.DefaultResolver.LookupTXT(ctx, name)
-		if err == nil {
-			for _, record := range records {
-				if record == value {
-					return nil
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timeout.C:
-			return fmt.Errorf("DNS-01 record %s did not propagate within two minutes", name)
-		case <-ticker.C:
-		}
-	}
 }
 
 func (c *cloudflareClient) request(ctx context.Context, method, requestPath string, body io.Reader) (json.RawMessage, error) {
