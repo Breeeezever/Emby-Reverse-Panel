@@ -9,7 +9,7 @@ import (
 	"unicode"
 )
 
-const dynamicObservationStageSQLCase = `CASE
+const dynamicObservationPreTimeoutStageSQLCase = `CASE
 	WHEN reason_code IN ('redirect_allowed', 'unsupported_status', 'response_failure') THEN 'response'
 	WHEN reason_code IN ('invalid_location', 'redirect_loop', 'hop_limit') THEN 'location'
 	WHEN reason_code IN ('candidate_allowed', 'scheme_denied', 'port_denied', 'domain_denied', 'https_downgrade_denied', 'self_target', 'playback_info_denied', 'hls_feature_denied', 'dash_feature_denied') THEN 'policy'
@@ -22,6 +22,8 @@ const dynamicObservationStageSQLCase = `CASE
 	ELSE NULL
 END`
 
+const dynamicObservationStageSQLCase = `CASE WHEN reason_code = 'redirect_timeout' THEN 'response' ELSE (` + dynamicObservationPreTimeoutStageSQLCase + `) END`
+
 const dynamicObservationRouteTableDDLPrefix = `
 CREATE TABLE dynamic_observations (
 	site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
@@ -29,7 +31,7 @@ CREATE TABLE dynamic_observations (
 	source TEXT NOT NULL CHECK(source IN ('redirect', 'playback_info', 'hls', 'dash')),
 	target_kind TEXT NOT NULL CHECK(target_kind IN ('same_authority', 'configured', 'discovered')),
 	stage TEXT NOT NULL CHECK(stage IN ('response', 'location', 'policy', 'resolve', 'connect', 'capacity', 'parse', 'capability', 'runtime'))
-		CHECK(stage = ` + dynamicObservationStageSQLCase + `),
+		CHECK(stage = ` + dynamicObservationPreTimeoutStageSQLCase + `),
 	decision TEXT NOT NULL CHECK(decision IN ('allowed', 'denied')),
 	reason_code TEXT NOT NULL CHECK(reason_code IN (
 		'redirect_allowed',
@@ -74,8 +76,14 @@ const dynamicObservationRouteTableDDLSuffix = `
 	PRIMARY KEY(site_id, canonical_authority, source, target_kind, stage, decision, reason_code, redirect_status)
 ) WITHOUT ROWID;`
 
-const dynamicObservationTableDDL = dynamicObservationRouteTableDDLPrefix + `
+const dynamicObservationPreTimeoutTableDDL = dynamicObservationRouteTableDDLPrefix + `
 	CHECK(source = 'redirect' OR redirect_status = 0),` + dynamicObservationRouteTableDDLSuffix
+
+// Preserve the exact previous DDL for validating upgrades and old backups.
+// All substitutions are fixed schema text; no external values enter this SQL.
+var dynamicObservationTableDDL = strings.Replace(
+	strings.Replace(dynamicObservationPreTimeoutTableDDL, dynamicObservationPreTimeoutStageSQLCase, dynamicObservationStageSQLCase, 1),
+	"'hop_limit',", "'hop_limit',\n\t\t'redirect_timeout',", 1)
 
 const dynamicObservationPreviousTableDDL = dynamicObservationRouteTableDDLPrefix + `
 	CHECK(source = 'redirect' OR (target_kind = 'discovered' AND redirect_status = 0)),` + dynamicObservationRouteTableDDLSuffix
@@ -167,12 +175,13 @@ CREATE INDEX IF NOT EXISTS idx_dynamic_observations_last_seen
 	ON dynamic_observations(last_seen_ms);`
 
 const (
-	dynamicObservationSchemaCurrent  = "current"
-	dynamicObservationSchemaPrevious = "previous"
-	dynamicObservationSchemaV19      = "v1.9"
-	dynamicObservationSchemaV18      = "v1.8"
-	dynamicObservationSchemaLegacy   = "legacy"
-	dynamicObservationSchemaInvalid  = "invalid"
+	dynamicObservationSchemaCurrent    = "current"
+	dynamicObservationSchemaPreTimeout = "pre_timeout"
+	dynamicObservationSchemaPrevious   = "previous"
+	dynamicObservationSchemaV19        = "v1.9"
+	dynamicObservationSchemaV18        = "v1.8"
+	dynamicObservationSchemaLegacy     = "legacy"
+	dynamicObservationSchemaInvalid    = "invalid"
 )
 
 func compactSQLiteDDL(value string) string {
@@ -191,6 +200,8 @@ func dynamicObservationSchemaState(tableSQL string) string {
 	switch compact {
 	case compactSQLiteDDL(dynamicObservationTableDDL):
 		return dynamicObservationSchemaCurrent
+	case compactSQLiteDDL(dynamicObservationPreTimeoutTableDDL):
+		return dynamicObservationSchemaPreTimeout
 	case compactSQLiteDDL(dynamicObservationPreviousTableDDL):
 		return dynamicObservationSchemaPrevious
 	case compactSQLiteDDL(dynamicObservationV19TableDDL):
@@ -211,7 +222,7 @@ type dynamicObservationColumnSpec struct {
 }
 
 func dynamicObservationExpectedColumns(state string) []dynamicObservationColumnSpec {
-	if state == dynamicObservationSchemaCurrent || state == dynamicObservationSchemaPrevious {
+	if state == dynamicObservationSchemaCurrent || state == dynamicObservationSchemaPrevious || state == dynamicObservationSchemaPreTimeout {
 		return []dynamicObservationColumnSpec{
 			{name: "site_id", typeName: "INTEGER", primaryKeyPosition: 1},
 			{name: "canonical_authority", typeName: "TEXT", primaryKeyPosition: 2},
@@ -393,7 +404,7 @@ func ensureDynamicObservationSchema(ctx context.Context, conn *sql.Conn) error {
 	}
 	var migrationProjection string
 	switch state {
-	case dynamicObservationSchemaPrevious:
+	case dynamicObservationSchemaPrevious, dynamicObservationSchemaPreTimeout:
 		migrationProjection = "site_id, canonical_authority, source, target_kind, stage, decision, reason_code, redirect_status, first_seen_ms, last_seen_ms, count"
 	case dynamicObservationSchemaV19, dynamicObservationSchemaV18, dynamicObservationSchemaLegacy:
 		// Schemas before route dimensions did not retain enough information to

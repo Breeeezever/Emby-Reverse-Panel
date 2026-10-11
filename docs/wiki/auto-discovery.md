@@ -17,7 +17,9 @@
 | --- | --- | --- | --- |
 | Safe | HTTP 30x、PlaybackInfo | 公网 DNS 域名，HTTPS `443` | 上游结构标准，希望收窄自动发现范围。 |
 | Compatible | HTTP 30x、PlaybackInfo、HLS、DASH | 公网 HTTP(S)，有效端口 | 默认，适合常见 Emby 播放链路。 |
-| Extreme | 上述来源及扩展的结构兼容 | 仍仅公网 HTTP(S) | 明确需要扩展兼容时使用，界面要求额外确认。 |
+| Extreme | 全部受支持来源及扩展的结构兼容 | 公网 HTTP(S)，所有有效端口，允许 HTTPS 降级 | 采用完整兼容预设，界面要求额外确认。 |
+
+Extreme 固定开启 HTTP 30x、PlaybackInfo、HLS、DASH，不要求域名白名单，旧配置中关闭的来源和 HTTPS 降级也会按完整预设生效。单份响应的地址数量与重定向跳数不设固定上限；重定向从首次收到跳转响应起共用 60 秒寻址预算，取得最终响应头后停止计时，不限制随后的视频播放时长。清单体积、解析内存、并发和循环检测继续由程序统一管理。
 
 提高兼容级别不会允许私网、回环、链路本地、自身目标或跳过 TLS 校验，也不会让客户端随意指定目标 URL。
 
@@ -55,6 +57,7 @@ Safe 的空规则表示允许符合网络校验的公网 DNS 域名，且仍只�
 | `dns_failure` | DNS 解析失败 | 服务器 DNS 与媒体域名。 |
 | `dial_failure` / `tls_failure` | 连接或证书验证失败 | 出站网络、证书链、域名和有效期。 |
 | `redirect_loop` / `hop_limit` | 跳转循环或超出跳数 | 上游跳转配置。 |
+| `redirect_timeout` | Extreme 重定向寻址超过 60 秒，返回 504 | 上游跳转链长度、响应速度与网络连接。 |
 | `parse_failure` / `hls_feature_denied` / `dash_feature_denied` | 结构或清单不受支持 | 上游格式；确有需要时再评估兼容级别。 |
 | `capacity_limit` / `rate_limit` | 命中运行预算 | 并发量、反复生成的节点与服务资源。 |
 | `capability_invalid` / `capability_expired` | 播放路由失效 | 重新获取 PlaybackInfo，不重复使用旧链接。 |

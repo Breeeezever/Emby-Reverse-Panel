@@ -78,6 +78,8 @@ func (e *dynamicProxyError) Error() string {
 func newDynamicProxyError(reasonCode string) *dynamicProxyError {
 	err := &dynamicProxyError{statusCode: http.StatusBadGateway, reasonCode: reasonCode}
 	switch reasonCode {
+	case dynamicObservationReasonRedirectTimeout:
+		err.statusCode = http.StatusGatewayTimeout
 	case dynamicObservationReasonCapacityLimit:
 		err.statusCode = http.StatusServiceUnavailable
 		err.retryAfter = "1"
@@ -112,19 +114,47 @@ type dynamicRedirectPolicy struct {
 }
 
 func newDynamicRedirectPolicy(site Site, available bool) (dynamicRedirectPolicy, error) {
-	_ = site
-	limits, ok := dynamicLimitsForProfile(dynamicProfileCompatible)
+	// The policy is a runtime projection of the site's persisted settings. The
+	// old implementation always enabled discovery with the Compatible profile,
+	// which made the UI's enabled/profile/source/domain and downgrade controls
+	// cosmetic. Keep a Compatible fallback for legacy in-memory Site values, but
+	// honor every canonical value loaded from the database.
+	profile, err := normalizeDynamicProfile(site.DynamicProfile)
+	if err != nil {
+		return dynamicRedirectPolicy{}, err
+	}
+	limits, ok := dynamicLimitsForProfile(profile)
 	if !ok {
 		return dynamicRedirectPolicy{}, fmt.Errorf("automatic proxy policy is unavailable")
 	}
+	sources := site.DynamicDiscoverySources
+	if sources == nil {
+		sources, _ = dynamicDiscoverySourcesForProfile(profile)
+	}
+	sources, err = normalizeDynamicDiscoverySources(sources)
+	if err != nil {
+		return dynamicRedirectPolicy{}, err
+	}
+	if err := validateDynamicDiscoverySourcesForProfile(profile, sources); err != nil {
+		return dynamicRedirectPolicy{}, err
+	}
+	rules, err := normalizeDynamicDomainRules(profile, site.DynamicDomainRules)
+	if err != nil {
+		return dynamicRedirectPolicy{}, err
+	}
+	allowHTTPSDowngrade := site.DynamicAllowHTTPSDowngrade
+	if profile == dynamicProfileExtreme {
+		sources = allDynamicDiscoverySources()
+		allowHTTPSDowngrade = true
+	}
 	return dynamicRedirectPolicy{
-		configured:          true,
+		configured:          site.DynamicDiscoveryEnabled,
 		available:           available,
-		profile:             dynamicProfileCompatible,
+		profile:             profile,
 		limits:              limits,
-		sources:             allDynamicDiscoverySources(),
-		domainRules:         nil,
-		allowHTTPSDowngrade: true,
+		sources:             sources,
+		domainRules:         rules,
+		allowHTTPSDowngrade: allowHTTPSDowngrade,
 	}, nil
 }
 func (p dynamicRedirectPolicy) sourceEnabled(source string) bool {
@@ -353,19 +383,26 @@ func (s *dynamicSiteState) hasLearnedPlaybackPath(pathValue string, now time.Tim
 }
 
 func (s *dynamicSiteState) acquireParse(memory int64) (func(), bool) {
+	release, _, acquired := s.acquireParseBudget(memory)
+	return release, acquired
+}
+
+// A small response starts with a small reservation and grows it only when
+// rewriting expands the output. Growth still shares the same site/global caps.
+func (s *dynamicSiteState) acquireParseBudget(memory int64) (func(), func(int64) bool, bool) {
 	if s == nil || s.runtime == nil || memory <= 0 || memory > globalDynamicMaxSiteParseMemoryBytes {
-		return nil, false
+		return nil, nil, false
 	}
 	select {
 	case s.runtime.parses <- struct{}{}:
 	default:
-		return nil, false
+		return nil, nil, false
 	}
 	select {
 	case s.parses <- struct{}{}:
 	default:
 		<-s.runtime.parses
-		return nil, false
+		return nil, nil, false
 	}
 	runtime := s.runtime
 	runtime.mu.Lock()
@@ -375,25 +412,48 @@ func (s *dynamicSiteState) acquireParse(memory int64) (func(), bool) {
 		runtime.mu.Unlock()
 		<-s.parses
 		<-runtime.parses
-		return nil, false
+		return nil, nil, false
 	}
 	runtime.parseMemory += memory
 	s.parseMemory += memory
 	s.mu.Unlock()
 	runtime.mu.Unlock()
 	var once sync.Once
-	return func() {
+	released := false
+	release := func() {
 		once.Do(func() {
 			runtime.mu.Lock()
 			s.mu.Lock()
 			runtime.parseMemory -= memory
 			s.parseMemory -= memory
+			released = true
 			s.mu.Unlock()
 			runtime.mu.Unlock()
 			<-runtime.parses
 			<-s.parses
 		})
-	}, true
+	}
+	grow := func(required int64) bool {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if released || required <= 0 || required > globalDynamicMaxSiteParseMemoryBytes {
+			return false
+		}
+		if required <= memory {
+			return true
+		}
+		extra := required - memory
+		if runtime.parseMemory+extra > globalDynamicMaxParseMemoryBytes || s.parseMemory+extra > globalDynamicMaxSiteParseMemoryBytes {
+			return false
+		}
+		runtime.parseMemory += extra
+		s.parseMemory += extra
+		memory = required
+		return true
+	}
+	return release, grow, true
 }
 
 func (s *dynamicSiteState) availableParseMemory() int64 {

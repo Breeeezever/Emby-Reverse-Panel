@@ -512,6 +512,7 @@ const DYNAMIC_OBSERVATION_REASON_CODES = new Set([
 	'unsupported_status',
 	'redirect_loop',
 	'hop_limit',
+	'redirect_timeout',
 	'scheme_denied',
 	'port_denied',
 	'domain_denied',
@@ -558,7 +559,11 @@ function isStructuredDiscoveryContract(value) {
 		if (!Array.isArray(profile.limits.allowed_schemes) || profile.limits.allowed_schemes.length === 0 || !profile.limits.allowed_schemes.every(scheme => scheme === 'http' || scheme === 'https')) return false;
 		if (!Array.isArray(profile.limits.allowed_ports) || !profile.limits.allowed_ports.every(port => Number.isInteger(port) && port > 0 && port <= 65535)) return false;
 		if (typeof profile.limits.allow_any_port !== 'boolean') return false;
-		if (!DYNAMIC_LIMIT_FIELDS.slice(3).every(field => Number.isInteger(profile.limits[field]) && profile.limits[field] > 0)) return false;
+		if (!DYNAMIC_LIMIT_FIELDS.slice(3).every(field => {
+			const limit = profile.limits[field];
+			const countCanBeUnlimited = id === 'extreme' && (field === 'max_redirects' || field === 'max_urls_per_response');
+			return Number.isInteger(limit) && (limit > 0 || countCanBeUnlimited && limit === 0);
+		})) return false;
 		if (!profile.features || typeof profile.features !== 'object' || Array.isArray(profile.features)) return false;
 		return DYNAMIC_FEATURES.every(([field, , expected]) => {
 			const profileExpected = id === 'safe' && (field === 'hls' || field === 'dash') ? false : expected;
@@ -665,6 +670,7 @@ function dynamicSourcesForProfile(value) {
 
 
 function normalizeDynamicDiscoverySources(value, profile = 'compatible') {
+	if (normalizeDynamicProfile(profile) === 'extreme') return [...DYNAMIC_SOURCE_IDS];
 	const allowed = new Set(dynamicSourcesForProfile(profile));
 	if (!Array.isArray(value)) return DEFAULT_DYNAMIC_SOURCE_IDS.filter(source => allowed.has(source));
 	const selected = new Set(value.map(source => String(source || '').trim().toLowerCase()));
@@ -714,7 +720,7 @@ function normalizeDynamicSitePolicy(site) {
 		dynamic_profile: profile,
 		dynamic_discovery_sources: normalizeDynamicDiscoverySources(value.dynamic_discovery_sources, profile),
 		dynamic_domain_rules: normalizeDynamicDomainRules(value.dynamic_domain_rules),
-		dynamic_allow_https_downgrade: value.dynamic_allow_https_downgrade === true,
+		dynamic_allow_https_downgrade: profile === 'extreme' || value.dynamic_allow_https_downgrade === true,
 		dynamic_policy_revision: Number.isInteger(revision) && revision > 0 ? revision : 1,
 	};
 }
@@ -750,7 +756,7 @@ function renderDynamicProfileSummaries(capabilities) {
 			: (Array.isArray(profile.limits.allowed_ports) ? profile.limits.allowed_ports.join(', ') : '—');
 		const sources = dynamicSourcesForProfile(profile.id).map(source => DYNAMIC_SOURCE_LABELS[source]).join(' + ');
 		const compatibility = profile.id === 'extreme'
-			? '；额外启用全数据面 30x/303、受限请求体重放、PlaybackInfo 完整 URL 兼容、安全 RequiredHttpHeaders、HLS 变量/扩展标签与 DASH 惰性扩展/DRM 元数据'
+			? '；全部发现来源与 HTTPS 降级开启；单份响应地址数与重定向跳数不设固定上限，寻址总超时 60 秒；支持扩展 PlaybackInfo/HLS/DASH 格式，保留资源预算与循环检测'
 			: '；使用严格协议字段与已审核结构';
 		const accent = profile.id === 'safe' ? 'var(--green)' : profile.id === 'compatible' ? 'var(--orange)' : 'var(--red)';
 		return `<div class="form-help" data-profile-summary="${esc(profile.id)}" style="padding:8px 10px;margin-top:6px;border:1px solid ${accent};border-radius:6px;background:var(--surface-hover);color:var(--white-87)"><strong style="color:${accent}">${esc(profile.label)}</strong>：${esc(sources)}；仅公网 ${esc(schemes)}，端口 ${esc(ports)}${esc(compatibility)}</div>`;
@@ -1631,7 +1637,7 @@ async function showSiteModal(site) {
 	    if (dynamicHelp) dynamicHelp.textContent = profile === 'safe'
 	      ? 'Safe：处理 HTTP 30x 与 PlaybackInfo，仅允许 HTTPS:443，并要求命中明确的域名规则。'
 	      : profile === 'extreme'
-	        ? 'Extreme：处理 HTTP 30x、PlaybackInfo、HLS 与 DASH，并启用最宽的公网兼容范围；只建议在其他模式无法播放时使用。'
+	        ? 'Extreme：全部发现来源、HTTP(S)、有效端口和 HTTPS 降级开启。单份响应地址数与重定向跳数不设固定上限；寻址总超时 60 秒，保留资源预算和循环检测。'
 	        : 'Compatible：处理 HTTP 30x、PlaybackInfo、HLS 与 DASH并允许受控 HTTPS 降级；仍拒绝私网与回环目标。';
 	  };
   if (dynamicRulesButton) dynamicRulesButton.onclick = () => {
@@ -1794,11 +1800,7 @@ async function showSiteModal(site) {
 				dynamic_discovery_enabled: playbackRoutingSelect.value !== 'manual' && dynamicCapabilities.available,
 				dynamic_profile: nextDynamicProfile,
 				dynamic_domain_rules: dynamicRules,
-				dynamic_allow_https_downgrade: nextDynamicProfile === 'safe'
-					? false
-					: (nextDynamicProfile === 'compatible' || dynamicInitialPolicy.dynamic_profile !== 'extreme'
-						? true
-						: dynamicInitialPolicy.dynamic_allow_https_downgrade),
+				dynamic_allow_https_downgrade: nextDynamicProfile !== 'safe',
 		};
 		const dynamicConfirmation = confirmDynamicProfileChange(
 			dynamicInitialPolicy,

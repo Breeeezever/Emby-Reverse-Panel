@@ -1,6 +1,6 @@
 # Meridian Wiki
 
-Meridian 是面向 Emby 的多站点管理与播放代理工具。本 Wiki 对应 **v1.13.2**，涵盖部署、日常使用与维护。
+Meridian 是面向 Emby 的多站点管理与播放代理工具。本 Wiki 对应 **v1.13.3**，涵盖部署、日常使用与维护。
 
 [GitHub Wiki](https://github.com/snnabb/Meridian/wiki) · [文档站](https://snnabb.github.io/Meridian/index.html)
 

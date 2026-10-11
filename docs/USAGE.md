@@ -20,6 +20,8 @@
 
 自动发现提供 Safe、Compatible、Extreme 预设。Safe 只接受公网 DNS 域名的 HTTPS:443，空规则允许符合网络校验的公网 DNS 域名，添加规则可进一步收窄；Compatible 支持公网 HTTP(S)、有效端口与标准 HLS/DASH；Extreme 用于需要扩展结构兼容的场景。详细网络边界见 [SECURITY.md](../SECURITY.md)。
 
+Extreme 固定开启 HTTP 30x、PlaybackInfo、HLS、DASH 全部发现来源，允许公网 HTTP(S)、所有有效端口和 HTTPS 降级，不要求域名白名单。单份响应的地址数和动态重定向跳数不设固定数量上限（能力 API 中对应值为 `0`）。从首次重定向响应开始，整条寻址链有 60 秒总时限；到达最终响应后停止计时，不限制正常视频播放时长。循环检测、响应体积、解析内存、动态地址存储和并发预算仍然生效。旧站点保存的 Extreme 来源子集或禁止降级设置按此预设生效。
+
 ![播放设置界面，示例站点](images/playback.webp)
 
 ## 流量、日志与诊断

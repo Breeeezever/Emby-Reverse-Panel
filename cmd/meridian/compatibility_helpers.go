@@ -63,6 +63,9 @@ func dynamicSelectableDiscoverySourceSetsForProfile(profile string) ([][]string,
 	if !ok {
 		return nil, false
 	}
+	if profile == dynamicProfileExtreme {
+		return [][]string{full}, true
+	}
 	withoutPlaybackInfo := make([]string, 0, len(full))
 	for _, source := range full {
 		if source != dynamicDiscoverySourcePlaybackInfo {

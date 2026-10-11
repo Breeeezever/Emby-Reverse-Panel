@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -31,7 +32,12 @@ func TestPanelACMETokenEncryptionRoundTripAndIsolation(t *testing.T) {
 	if _, err := decryptPanelACMETokenWithSecret(ciphertext, otherSecret); err == nil {
 		t.Fatal("ciphertext decrypted with a different JWT secret")
 	}
-	tampered := ciphertext[:len(ciphertext)-1] + "A"
+	payload, err := base64.RawURLEncoding.DecodeString(ciphertext[len(panelACMETokenCipherPrefix):])
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload[len(payload)-1] ^= 1
+	tampered := panelACMETokenCipherPrefix + base64.RawURLEncoding.EncodeToString(payload)
 	if _, err := decryptPanelACMETokenWithSecret(tampered, secret); err == nil {
 		t.Fatal("tampered ciphertext was accepted")
 	}

@@ -15,6 +15,7 @@ const EXTREME_OBSERVATION_REASON_CASES = [
   { source: 'hls', reason: 'hls_feature_denied' },
   { source: 'dash', reason: 'dash_feature_denied' },
   { source: 'redirect', reason: 'redirect_body_replay_denied' },
+  { source: 'redirect', reason: 'redirect_timeout' },
 ];
 
 function loadScripts(...relativePaths) {
@@ -43,7 +44,7 @@ function discoveryProfile(id, overrides = {}) {
   const values = {
     safe: [3, 256, 4096, 256, 4 * 1024 * 1024, 16, 60, 32, 30 * 60, 8 * 60 * 60],
     compatible: [5, 1024, 16384, 1024, 16 * 1024 * 1024, 32, 300, 128, 2 * 60 * 60, 24 * 60 * 60],
-    extreme: [10, 4096, 65536, 4096, 64 * 1024 * 1024, 64, 1200, 512, 24 * 60 * 60, 7 * 24 * 60 * 60],
+    extreme: [0, 4096, 65536, 0, 64 * 1024 * 1024, 64, 1200, 512, 24 * 60 * 60, 7 * 24 * 60 * 60],
   }[id];
   const anyPort = id !== 'safe';
   return {
@@ -304,6 +305,12 @@ test('only the exact structured-discovery capability envelope is recognized', as
   const invalidPort = clone(accepted);
   invalidPort.profiles[0].limits.allowed_ports = [0];
   malformed.push(invalidPort);
+
+  for (const [profile, field] of [[0, 'max_urls_per_response'], [1, 'max_redirects'], [2, 'max_streams']]) {
+    const invalidUnlimited = clone(accepted);
+    invalidUnlimited.profiles[profile].limits[field] = 0;
+    malformed.push(invalidUnlimited);
+  }
 
   const missingFeature = clone(accepted);
   delete missingFeature.profiles[0].features.raw_fallback;
@@ -844,4 +851,20 @@ test('advanced settings give cache controls their own full-width panel', () => {
   assert.match(source, /class="cache-limit-grid"/);
   assert.match(style, /\.site-settings-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(style, /\.site-settings-grid > \.cache-limit-group\s*\{[^}]*grid-column:\s*1 \/ -1;/);
+});
+
+test('Extreme exposes all sources and downgrade despite old stored opt-outs', () => {
+  const sandbox = loadScripts('api.js', 'pages/sites.js');
+  const policy = sandbox.normalizeDynamicSitePolicy({
+    dynamic_profile: 'extreme',
+    dynamic_discovery_enabled: true,
+    dynamic_discovery_sources: ['redirect'],
+    dynamic_allow_https_downgrade: false,
+  });
+  assert.deepEqual(plain(policy.dynamic_discovery_sources), ['redirect', 'playback_info', 'hls', 'dash']);
+  assert.equal(policy.dynamic_allow_https_downgrade, true);
+  const capabilities = sandbox.normalizeDynamicProfiles(structuredDiscoveryResponse());
+  assert.equal(capabilities.available, true);
+  assert.equal(capabilities.profiles[2].limits.max_urls_per_response, 0);
+  assert.equal(capabilities.profiles[2].limits.max_redirects, 0);
 });

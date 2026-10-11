@@ -266,7 +266,7 @@ type extremeHLSVariableTable struct {
 
 func newExtremeHLSVariableTable(session *dynamicRewriteSession) *extremeHLSVariableTable {
 	countLimit := maxExtremeHLSVariableCount
-	if session != nil && session.issuer != nil && session.issuer.policy.limits.MaxURLsPerResponse < countLimit {
+	if session != nil && session.issuer != nil && session.issuer.policy.limits.MaxURLsPerResponse > 0 && session.issuer.policy.limits.MaxURLsPerResponse < countLimit {
 		countLimit = session.issuer.policy.limits.MaxURLsPerResponse
 	}
 	byteLimit := maxExtremeHLSVariableTableBytes
@@ -441,6 +441,26 @@ func isExtremeHLSUnknownTagName(tag string) bool {
 		if !isHLSAttributeNameByte(tag[index]) {
 			return false
 		}
+	}
+	return true
+}
+
+// Some resolver playlists carry opaque metadata using '=' instead of ':'.
+// Permit this specific token form without allowing unrewritten URI extensions.
+func isExtremeHLSTokenExtension(line string) bool {
+	const prefix = "#EXT-X-TOKEN="
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	value := strings.TrimRight(line[len(prefix):], "=")
+	if value == "" || len(line)-len(prefix)-len(value) > 2 {
+		return false
+	}
+	for _, char := range value {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' || char == '_' {
+			continue
+		}
+		return false
 	}
 	return true
 }
@@ -635,7 +655,11 @@ func rewriteHLSResponse(payload []byte, session *dynamicRewriteSession) ([]byte,
 	if sawCRLF && sawLF {
 		return nil, fmt.Errorf("HLS manifest mixes newline styles")
 	}
-	maxLines := session.issuer.policy.limits.MaxURLsPerResponse*8 + 1024
+	// Bound Split's line-index memory even when Extreme has no URL count cap.
+	maxLines := int(session.structuredOutputLimit() / 32)
+	if limit := session.issuer.policy.limits.MaxURLsPerResponse; limit > 0 {
+		maxLines = limit*8 + 1024
+	}
 	if bytes.Count(payload, []byte{'\n'})+1 > maxLines {
 		return nil, fmt.Errorf("HLS manifest contains too many lines")
 	}
@@ -723,6 +747,9 @@ func rewriteHLSResponse(payload []byte, session *dynamicRewriteSession) ([]byte,
 		}
 		if expectVariantURI {
 			return nil, fmt.Errorf("HLS variant tag is not followed by a URI")
+		}
+		if extremeCompatibility && isExtremeHLSTokenExtension(line) {
+			continue
 		}
 		tag := line
 		if colon := strings.IndexByte(line, ':'); colon >= 0 {
@@ -835,7 +862,7 @@ func rewriteHLSResponse(payload []byte, session *dynamicRewriteSession) ([]byte,
 		}
 		outputSize += int64(len(line))
 	}
-	output := dynamicBoundedBuffer{limit: outputLimit}
+	output := session.outputBuffer()
 	for index, line := range lines {
 		if index > 0 {
 			if _, err := output.WriteString(separator); err != nil {
