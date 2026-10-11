@@ -17,6 +17,9 @@ import (
 )
 
 func dynamicTransportFailureReason(err error) string {
+	if errors.Is(err, errDynamicRedirectTimeout) {
+		return dynamicObservationReasonRedirectTimeout
+	}
 	var certificateVerification *tls.CertificateVerificationError
 	var recordHeader tls.RecordHeaderError
 	var unknownAuthority x509.UnknownAuthorityError
@@ -144,6 +147,7 @@ type redirectFollowTransport struct {
 	capabilityIssuer        *dynamicCapabilityIssuer
 	streamLeaseHeld         bool
 	mainVideoDirect         bool
+	redirectTimeout         time.Duration
 	database                *DB
 	siteID                  int64
 }
@@ -510,7 +514,27 @@ func (t *redirectFollowTransport) roundTripLegacy(req *http.Request, resp *http.
 	return resp, nil
 }
 
-func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http.Response) (*http.Response, error) {
+func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http.Response) (result *http.Response, resultErr error) {
+	if t.dynamicPolicy.profile == dynamicProfileExtreme && resp != nil && dynamicHandledRedirectStatus(resp.StatusCode, t.dynamicPolicy.profile) {
+		timeout := t.redirectTimeout
+		if timeout <= 0 {
+			timeout = dynamicRedirectChainTimeout
+		}
+		var budget *dynamicRedirectBudget
+		req, budget = startDynamicRedirectBudget(req, timeout)
+		defer func() {
+			previousErr := resultErr
+			result, resultErr = budget.finish(result, resultErr)
+			if errors.Is(resultErr, errDynamicRedirectTimeout) {
+				var discoveryErr *dynamicProxyError
+				if errors.As(previousErr, &discoveryErr) && discoveryErr.reasonCode == dynamicObservationReasonRedirectTimeout {
+					resultErr = previousErr
+				} else {
+					resultErr = t.denied(dynamicObservationReasonRedirectTimeout, dynamicCanonicalAuthority(req.URL))
+				}
+			}
+		}()
+	}
 	var selfTargets *dynamicSelfTargetPolicy
 	if t.dynamicState != nil && t.dynamicState.runtime != nil {
 		selfTargets = t.dynamicState.runtime.selfTargets.Load()
@@ -518,9 +542,23 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 	dynamicActive := false
 	redirectsFollowed := 0
 	visited := map[string]struct{}{dynamicRedirectURLKey(req.URL): struct{}{}}
+	visitedBytes := len(dynamicRedirectURLKey(req.URL)) + 64
+	rememberTarget := func(key string) bool {
+		if _, exists := visited[key]; !exists {
+			// URL strings and map entries consume a bounded working set even
+			// when Extreme has no redirect count cap.
+			visitedBytes += len(key) + 64
+			if visitedBytes > globalDynamicMaxStringBytes {
+				return false
+			}
+			visited[key] = struct{}{}
+		}
+		return true
+	}
 	var currentTransport *http.Transport
 	var streamRelease func()
 	streamLeaseHeld := t.streamLeaseHeld
+	selfTargetRetried := false
 	lease := &dynamicAuthorityLease{}
 
 	closeResponse := func() {
@@ -534,6 +572,9 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 	}
 	expectedStructuredSource, _ := req.Context().Value(dynamicExpectedStructuredSourceContextKey{}).(string)
 	fail := func(reasonCode, authority string) (*http.Response, error) {
+		if errors.Is(context.Cause(req.Context()), errDynamicRedirectTimeout) {
+			reasonCode = dynamicObservationReasonRedirectTimeout
+		}
 		closeResponse()
 		lease.rollback()
 		if streamRelease != nil {
@@ -542,7 +583,60 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 		}
 		return nil, t.denied(reasonCode, authority)
 	}
+	retrySelfTargetWithUpstreamHeaders := func(reasonCode string, target *url.URL) (bool, error) {
+		// Some upstreams echo our advertised public entry into media redirects.
+		// Retry the configured upstream, never dial the self-target itself.
+		if selfTargetRetried || dynamicActive || reasonCode != dynamicObservationReasonSelfTarget || target == nil || req == nil || req.URL == nil ||
+			(req.Method != http.MethodGet && req.Method != http.MethodHead) || !shouldInternallyFollowDynamicRedirect(req) ||
+			!t.configuredAuthorities[redirectHostKey(req.URL)] ||
+			(req.Header.Get("X-Forwarded-Host") == "" && req.Header.Get("X-Forwarded-Prefix") == "") {
+			return false, nil
+		}
+		if selfTargets == nil {
+			return false, nil
+		}
+		host, _, normalizeErr := normalizeDynamicHost(target.Hostname())
+		if normalizeErr != nil || requestPublicHost(req.Header.Get("X-Forwarded-Host")) != host {
+			return false, nil
+		}
+		if _, denied := selfTargets.deniedHosts[host]; !denied {
+			return false, nil
+		}
+		retryReq := req.Clone(req.Context())
+		if retryReq.Body != nil && retryReq.Body != http.NoBody {
+			return false, nil
+		}
+		retryReq.Header = req.Header.Clone()
+		// Advertise the upstream explicitly: removing this header can make an
+		// upstream behind another proxy fall back to its loopback listener.
+		retryReq.Header.Set("X-Forwarded-Host", retryReq.URL.Host)
+		retryReq.Header.Set("X-Forwarded-Proto", retryReq.URL.Scheme)
+		retryReq.Header.Del("X-Forwarded-Prefix")
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		retryResp, retryErr := t.base.RoundTrip(retryReq)
+		if retryErr != nil {
+			if retryResp != nil && retryResp.Body != nil {
+				_ = retryResp.Body.Close()
+			}
+			return true, retryErr
+		}
+		if retryResp == nil {
+			return true, fmt.Errorf("self-target retry returned no response")
+		}
+		if retryResp.Request == nil {
+			retryResp.Request = retryReq
+		}
+		req = retryReq
+		resp = retryResp
+		selfTargetRetried = true
+		return true, nil
+	}
 	for {
+		if req.Context().Err() != nil {
+			return fail(dynamicTransportFailureReason(context.Cause(req.Context())), dynamicCanonicalAuthority(req.URL))
+		}
 		if resp == nil {
 			return fail(dynamicObservationReasonResponseFailure, dynamicCanonicalAuthority(req.URL))
 		}
@@ -612,7 +706,7 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 			if _, seen := visited[key]; seen {
 				return fail(dynamicObservationReasonRedirectLoop, observationAuthority)
 			}
-			if redirectsFollowed >= t.dynamicPolicy.limits.MaxRedirects {
+			if limit := t.dynamicPolicy.limits.MaxRedirects; limit > 0 && redirectsFollowed >= limit {
 				return fail(dynamicObservationReasonHopLimit, observationAuthority)
 			}
 			newReq, stripBodyHeaders, reasonCode := t.newExtremeCompatibleDynamicRedirectRequest(req.Context(), req, resp.StatusCode, locationURL)
@@ -638,13 +732,19 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 			}
 			req = newReq
 			redirectsFollowed++
-			visited[key] = struct{}{}
+			if !rememberTarget(key) {
+				return fail(dynamicObservationReasonCapacityLimit, observationAuthority)
+			}
 			continue
 		}
 
 		if !dynamicActive && !unknownAuthority {
-			if t.disableLegacyRedirects || !t.playbackHosts[manualAuthority] || redirectsFollowed >= manualRedirectMaxHops {
+			if t.disableLegacyRedirects || !t.playbackHosts[manualAuthority] || t.dynamicPolicy.profile != dynamicProfileExtreme && redirectsFollowed >= manualRedirectMaxHops {
 				return resp, nil
+			}
+			key := dynamicRedirectURLKey(locationURL)
+			if _, seen := visited[key]; seen {
+				return fail(dynamicObservationReasonRedirectLoop, dynamicCanonicalAuthority(locationURL))
 			}
 			newReq, stripBodyHeaders, reasonCode := t.newExtremeCompatibleDynamicRedirectRequest(req.Context(), req, resp.StatusCode, locationURL)
 			if reasonCode != "" {
@@ -677,7 +777,9 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 			}
 			req = newReq
 			redirectsFollowed++
-			visited[dynamicRedirectURLKey(locationURL)] = struct{}{}
+			if !rememberTarget(key) {
+				return fail(dynamicObservationReasonCapacityLimit, dynamicCanonicalAuthority(locationURL))
+			}
 			continue
 		}
 
@@ -696,7 +798,7 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 		if _, seen := visited[key]; seen {
 			return fail(dynamicObservationReasonRedirectLoop, authority)
 		}
-		if redirectsFollowed >= t.dynamicPolicy.limits.MaxRedirects {
+		if limit := t.dynamicPolicy.limits.MaxRedirects; limit > 0 && redirectsFollowed >= limit {
 			return fail(dynamicObservationReasonHopLimit, authority)
 		}
 		if directMainVideo {
@@ -720,6 +822,12 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 		}
 		if t.followUnknownRedirects && shouldInternallyFollowDynamicRedirect(req) {
 			if reasonCode := t.dynamicPolicy.validateTarget(req.URL, normalized, selfTargets); reasonCode != "" {
+				if retried, retryErr := retrySelfTargetWithUpstreamHeaders(reasonCode, normalized); retried {
+					if retryErr != nil {
+						return nil, retryErr
+					}
+					continue
+				}
 				return fail(reasonCode, authority)
 			}
 			reservation, reasonCode := t.dynamicState.reserveAuthority(authority, time.Now())
@@ -791,7 +899,9 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 			req = newReq
 			dynamicActive = true
 			redirectsFollowed++
-			visited[key] = struct{}{}
+			if !rememberTarget(key) {
+				return fail(dynamicObservationReasonCapacityLimit, authority)
+			}
 			continue
 		}
 
@@ -816,6 +926,12 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 			return resp, nil
 		}
 		if reasonCode := t.dynamicPolicy.validateTarget(req.URL, normalized, selfTargets); reasonCode != "" {
+			if retried, retryErr := retrySelfTargetWithUpstreamHeaders(reasonCode, normalized); retried {
+				if retryErr != nil {
+					return nil, retryErr
+				}
+				continue
+			}
 			return fail(reasonCode, authority)
 		}
 		reservation, reasonCode := t.dynamicState.reserveAuthority(authority, time.Now())
@@ -889,7 +1005,9 @@ func (t *redirectFollowTransport) roundTripDynamic(req *http.Request, resp *http
 		req = newReq
 		dynamicActive = true
 		redirectsFollowed++
-		visited[key] = struct{}{}
+		if !rememberTarget(key) {
+			return fail(dynamicObservationReasonCapacityLimit, authority)
+		}
 	}
 }
 

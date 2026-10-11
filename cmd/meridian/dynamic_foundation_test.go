@@ -515,7 +515,8 @@ func TestDynamicSiteAPIAcceptsOnlySelectablePlaybackInfoSets(t *testing.T) {
 		{name: "compatible-on", profile: "COMPATIBLE", input: []string{"dash", "HLS", "playback_info", "REDIRECT"}, want: allDynamicDiscoverySources()},
 		{name: "compatible-off", profile: dynamicProfileCompatible, input: []string{"DASH", "redirect", "hls"}, want: []string{dynamicDiscoverySourceRedirect, dynamicDiscoverySourceHLS, dynamicDiscoverySourceDASH}},
 		{name: "extreme-on", profile: dynamicProfileExtreme, input: []string{"DASH", "HLS", "PLAYBACK_INFO", "REDIRECT"}, want: allDynamicDiscoverySources()},
-		{name: "extreme-off", profile: " EXTREME ", input: []string{"hls", "dash", "redirect"}, want: []string{dynamicDiscoverySourceRedirect, dynamicDiscoverySourceHLS, dynamicDiscoverySourceDASH}},
+		{name: "extreme-old-opt-out", profile: " EXTREME ", input: []string{"hls", "dash", "redirect"}, want: allDynamicDiscoverySources()},
+		{name: "extreme-empty", profile: dynamicProfileExtreme, input: []string{}, want: allDynamicDiscoverySources()},
 	}
 	for _, tc := range accepted {
 		site := post(tc.name, tc.profile, tc.input, http.StatusCreated)
@@ -548,7 +549,7 @@ func TestDynamicSiteAPIAcceptsOnlySelectablePlaybackInfoSets(t *testing.T) {
 		{name: "partial-hls-dash", profile: dynamicProfileCompatible, sources: []string{dynamicDiscoverySourceRedirect, dynamicDiscoverySourcePlaybackInfo, dynamicDiscoverySourceHLS}},
 		{name: "profile-invalid", profile: dynamicProfileSafe, sources: []string{dynamicDiscoverySourceRedirect, dynamicDiscoverySourceHLS, dynamicDiscoverySourceDASH}},
 		{name: "playback-only", profile: dynamicProfileSafe, sources: []string{dynamicDiscoverySourcePlaybackInfo}},
-		{name: "empty", profile: dynamicProfileExtreme, sources: []string{}},
+		{name: "empty", profile: dynamicProfileCompatible, sources: []string{}},
 	} {
 		post("rejected-"+tc.name, tc.profile, tc.sources, http.StatusBadRequest)
 	}
@@ -642,8 +643,8 @@ func TestDynamicSiteAPISelectableSourcesAndLegacySubsetTransitions(t *testing.T)
 		"dynamic_profile":           dynamicProfileExtreme,
 		"dynamic_discovery_sources": []string{"dash", "hls", "redirect"},
 	}, http.StatusOK)
-	if profileExplicit.DynamicProfile != dynamicProfileExtreme || !dynamicDiscoverySourcesEqual(profileExplicit.DynamicDiscoverySources, wantCompatibleOff) || profileExplicit.DynamicPolicyRevision != 2 {
-		t.Fatalf("profile change did not honor explicit PlaybackInfo-off set: %#v", profileExplicit)
+	if profileExplicit.DynamicProfile != dynamicProfileExtreme || !dynamicDiscoverySourcesEqual(profileExplicit.DynamicDiscoverySources, allDynamicDiscoverySources()) || !profileExplicit.DynamicAllowHTTPSDowngrade || profileExplicit.DynamicPolicyRevision != 2 {
+		t.Fatalf("profile change did not apply the full Extreme preset: %#v", profileExplicit)
 	}
 
 	enableExplicit := create("enable-explicit-off", dynamicProfileCompatible, false, legacySources)
@@ -788,7 +789,7 @@ func TestDynamicProfilesEndpointIsAuthenticatedAndDoesNotDiscloseKey(t *testing.
 	}{
 		"safe":       {"https", "443", false, 3, 256, 4096, 256, 4 << 20, 16, 60, 32, 30 * 60, 8 * 60 * 60},
 		"compatible": {"http,https", "", true, 5, 1024, 16384, 1024, 16 << 20, 32, 300, 128, 2 * 60 * 60, 24 * 60 * 60},
-		"extreme":    {"http,https", "", true, 10, 4096, 65536, 4096, 64 << 20, 64, 1200, 512, 24 * 60 * 60, 7 * 24 * 60 * 60},
+		"extreme":    {"http,https", "", true, 0, 4096, 65536, 0, 64 << 20, 64, 1200, 512, 24 * 60 * 60, 7 * 24 * 60 * 60},
 	}
 	for _, profile := range body.Profiles {
 		want, ok := expected[profile.ID]
@@ -980,7 +981,11 @@ func TestDynamicDiscoverySourcesFollowProfileContract(t *testing.T) {
 		}
 
 		selectable, ok := dynamicSelectableDiscoverySourceSetsForProfile(tc.profile)
-		if !ok || len(selectable) != 2 || !dynamicDiscoverySourcesEqual(selectable[0], tc.full) || !dynamicDiscoverySourcesEqual(selectable[1], tc.off) {
+		wantSetCount := 2
+		if tc.profile == dynamicProfileExtreme {
+			wantSetCount = 1
+		}
+		if !ok || len(selectable) != wantSetCount || !dynamicDiscoverySourcesEqual(selectable[0], tc.full) || wantSetCount == 2 && !dynamicDiscoverySourcesEqual(selectable[1], tc.off) {
 			t.Fatalf("%s selectable source sets=%#v, want full=%#v off=%#v", tc.profile, selectable, tc.full, tc.off)
 		}
 		for _, allowed := range selectable {
@@ -998,7 +1003,7 @@ func TestDynamicDiscoverySourcesFollowProfileContract(t *testing.T) {
 					sources = append(sources, source)
 				}
 			}
-			wantAccepted := dynamicDiscoverySourcesEqual(sources, tc.full) || dynamicDiscoverySourcesEqual(sources, tc.off)
+			wantAccepted := dynamicDiscoverySourcesEqual(sources, tc.full) || tc.profile != dynamicProfileExtreme && dynamicDiscoverySourcesEqual(sources, tc.off)
 			err := validateSelectableDynamicDiscoverySources(tc.profile, sources)
 			if (err == nil) != wantAccepted {
 				t.Fatalf("%s sources %#v selectable=%t err=%v", tc.profile, sources, wantAccepted, err)
@@ -1007,8 +1012,8 @@ func TestDynamicDiscoverySourcesFollowProfileContract(t *testing.T) {
 				accepted++
 			}
 		}
-		if accepted != 2 {
-			t.Fatalf("%s accepted %d source sets, want exactly 2", tc.profile, accepted)
+		if accepted != wantSetCount {
+			t.Fatalf("%s accepted %d source sets, want %d", tc.profile, accepted, wantSetCount)
 		}
 	}
 

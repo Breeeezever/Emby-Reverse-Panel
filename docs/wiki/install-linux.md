@@ -41,6 +41,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 自定义路径以实际安装配置为准。不要仅复制数据库而遗漏 `.env` 中的密钥。
 
+每次标准安装器更新前会在备份目录生成 `meridian-pre-<version>-<timestamp>.tar.gz`，内容是更新前的整个 `/opt/meridian` 数据目录。它包含 SQLite 主文件及 WAL/SHM 旁车文件，但不包含 systemd、Nginx 或数据目录之外的数据库路径；跨结构降级前请阅读[更新回滚](updates.md#回滚)。
+
 ## 首次初始化
 
 安装器新生成 `SETUP_TOKEN` 时会在终端显示一次，并写入受保护的环境文件。打开面板后使用令牌创建管理员。

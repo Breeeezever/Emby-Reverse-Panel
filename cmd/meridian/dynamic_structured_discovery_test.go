@@ -363,24 +363,33 @@ func TestPlaybackInfoRelativeManifestDoesNotRequireAdvancedSource(t *testing.T) 
 	}
 }
 
-func TestAutomaticProxyPolicyIgnoresLegacyPerSiteDiscoverySettings(t *testing.T) {
+func TestAutomaticProxyPolicyUsesPerSiteDiscoverySettings(t *testing.T) {
 	policy, err := newDynamicRedirectPolicy(Site{
-		DynamicDiscoveryEnabled:    false,
+		DynamicDiscoveryEnabled:    true,
 		DynamicProfile:             dynamicProfileSafe,
-		DynamicDiscoverySources:    []string{},
-		DynamicDomainRules:         []DynamicDomainRule{},
+		DynamicDiscoverySources:    []string{dynamicDiscoverySourceRedirect, dynamicDiscoverySourcePlaybackInfo},
+		DynamicDomainRules:         []DynamicDomainRule{{Type: "suffix", Value: "example.com"}},
 		DynamicAllowHTTPSDowngrade: false,
 	}, true)
 	if err != nil {
 		t.Fatalf("automatic proxy policy: %v", err)
 	}
-	if !policy.configured || !policy.available || policy.profile != dynamicProfileCompatible || !policy.allowHTTPSDowngrade {
+	if !policy.configured || !policy.available || policy.profile != dynamicProfileSafe || policy.allowHTTPSDowngrade {
 		t.Fatalf("automatic proxy policy = %#v", policy)
 	}
-	for _, source := range allDynamicDiscoverySources() {
-		if !policy.sourceEnabled(source) {
-			t.Fatalf("automatic proxy source %q is disabled", source)
-		}
+	if !policy.sourceEnabled(dynamicDiscoverySourceRedirect) || !policy.sourceEnabled(dynamicDiscoverySourcePlaybackInfo) || policy.sourceEnabled(dynamicDiscoverySourceHLS) {
+		t.Fatalf("automatic proxy sources = %#v", policy.sources)
+	}
+	if !dynamicDomainRuleMatches("cdn.example.com", policy.domainRules) || dynamicDomainRuleMatches("cdn.other.test", policy.domainRules) {
+		t.Fatalf("automatic proxy domain rules = %#v", policy.domainRules)
+	}
+
+	disabled, err := newDynamicRedirectPolicy(Site{DynamicDiscoveryEnabled: false, DynamicProfile: dynamicProfileExtreme}, true)
+	if err != nil {
+		t.Fatalf("disabled automatic proxy policy: %v", err)
+	}
+	if disabled.configured || disabled.profile != dynamicProfileExtreme || disabled.sourceEnabled(dynamicDiscoverySourceHLS) {
+		t.Fatalf("disabled automatic proxy policy = %#v", disabled)
 	}
 }
 

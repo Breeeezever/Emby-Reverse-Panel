@@ -143,6 +143,9 @@ func TestFixedAppearanceAndProbeSettingsCannotBeOverridden(t *testing.T) {
 	settings.UIRadius = 1
 	settings.ProbeTimeoutMS = 10
 	settings.PingCacheMinutes = 999
+	settings.LogWriteDelayMinutes = 60
+	settings.LogFlushThreshold = 1000
+	settings.LogTaskLeaseMS = 1000
 	if err := app.db.saveSystemSettings(settings); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +153,7 @@ func TestFixedAppearanceAndProbeSettingsCannotBeOverridden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.UIRadius != 24 || settings.ProbeTimeoutMS != 5000 || settings.PingCacheMinutes != 10 {
+	if settings.UIRadius != 24 || settings.ProbeTimeoutMS != 5000 || settings.PingCacheMinutes != 10 || settings.LogWriteDelayMinutes != 0 || settings.LogFlushThreshold != 1 || settings.LogTaskLeaseMS != 300000 {
 		t.Fatalf("fixed settings overridden: %+v", settings)
 	}
 }

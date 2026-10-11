@@ -14,15 +14,18 @@ import (
 )
 
 type telegramSession struct {
-	Action   string
-	Original *Site
-	Draft    map[string]any
-	Step     string
-	Nonce    string
-	Expires  time.Time
-	Scheme   string
-	Target   *url.URL
-	Summary  string
+	Action    string
+	Original  *Site
+	Draft     map[string]any
+	Accounts  []SiteAccountInput
+	SiteID    int64
+	AccountID int64
+	Step      string
+	Nonce     string
+	Expires   time.Time
+	Scheme    string
+	Target    *url.URL
+	Summary   string
 }
 
 func (b *telegramBot) newSession(id int64, action string, site *Site) *telegramSession {
@@ -75,6 +78,14 @@ func (b *telegramBot) handleText(ctx context.Context, id int64, text string) err
 		return b.report(ctx, id)
 	case "/sites":
 		return b.listSites(ctx, id, "menu", 0)
+	case "/accounts":
+		return b.listSites(ctx, id, "accounts", 0)
+	case "/export":
+		delete(b.sessions, id)
+		return b.exportMenu(ctx, id)
+	case "/import":
+		delete(b.sessions, id)
+		return b.importMenu(ctx, id)
 	case "/address":
 		return b.listSites(ctx, id, "address", 0)
 	case "/traffic":
@@ -91,7 +102,7 @@ func (b *telegramBot) handleText(ctx context.Context, id int64, text string) err
 		return b.acceptInput(ctx, id, s, text)
 	}
 	if strings.HasPrefix(text, "/") {
-		return b.send(ctx, id, "可用命令：/menu /report /sites /address /traffic /status /add /cancel", telegramBackKeyboard())
+		return b.send(ctx, id, "可用命令：/menu /report /sites /accounts /address /traffic /status /add /export /import /cancel", telegramBackKeyboard())
 	}
 	s := b.sessions[id]
 	if s == nil {
@@ -119,9 +130,26 @@ func (b *telegramBot) handleCallback(ctx context.Context, id int64, data string)
 	}
 	if len(parts) == 3 && parts[0] == "pick" {
 		page, _ := strconv.Atoi(parts[2])
-		if parts[1] == "menu" || parts[1] == "address" || parts[1] == "traffic" {
+		if parts[1] == "menu" || parts[1] == "address" || parts[1] == "traffic" || parts[1] == "accounts" {
 			return b.listSites(ctx, id, parts[1], page)
 		}
+	}
+	if data == "export" {
+		delete(b.sessions, id)
+		return b.exportMenu(ctx, id)
+	}
+	if data == "import" {
+		delete(b.sessions, id)
+		return b.importMenu(ctx, id)
+	}
+	if len(parts) == 2 && parts[0] == "export" {
+		return b.startExport(ctx, id, parts[1], 0)
+	}
+	if len(parts) == 3 && parts[0] == "export" && parts[1] == "client" {
+		return b.startExport(ctx, id, "client", 0, parts[2])
+	}
+	if len(parts) == 2 && parts[0] == "import" {
+		return b.startImport(ctx, id, parts[1])
 	}
 	if len(parts) == 3 && parts[0] == "site" {
 		siteID, e := strconv.ParseInt(parts[1], 10, 64)
@@ -130,6 +158,40 @@ func (b *telegramBot) handleCallback(ctx context.Context, id int64, data string)
 		}
 		delete(b.sessions, id)
 		return b.siteView(ctx, id, siteID, parts[2])
+	}
+	if len(parts) == 3 && parts[0] == "account" {
+		siteID, e := strconv.ParseInt(parts[1], 10, 64)
+		if e != nil {
+			return fmt.Errorf("站点编号无效")
+		}
+		switch parts[2] {
+		case "new":
+			return b.startAccountCreate(ctx, id, siteID)
+		case "export":
+			return b.accountExportMenu(ctx, id, siteID)
+		}
+	}
+	if len(parts) == 4 && parts[0] == "account" && parts[2] == "export" {
+		siteID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return fmt.Errorf("站点编号无效")
+		}
+		return b.startExport(ctx, id, "client", siteID, parts[3])
+	}
+	if len(parts) == 4 && parts[0] == "account" {
+		siteID, siteErr := strconv.ParseInt(parts[1], 10, 64)
+		accountID, accountErr := strconv.ParseInt(parts[2], 10, 64)
+		if siteErr != nil || accountErr != nil {
+			return fmt.Errorf("账号编号无效")
+		}
+		switch parts[3] {
+		case "edit":
+			return b.startAccountEdit(ctx, id, siteID, accountID)
+		case "delete":
+			return b.startAccountDelete(ctx, id, siteID, accountID)
+		case "export":
+			return b.startExport(ctx, id, "client", siteID, "multi")
+		}
 	}
 	if len(parts) == 3 && parts[0] == "edit" {
 		siteID, e := strconv.ParseInt(parts[1], 10, 64)
@@ -157,7 +219,7 @@ func (b *telegramBot) startAdd(ctx context.Context, id int64) error {
 	s.Draft["playback_mode"] = "direct"
 	s.Draft["asset_cache_ttl_sec"] = 86400
 	s.Draft["asset_cache_max_bytes"] = 512 * 1048576
-	return b.prompt(ctx, id, s, "name", "添加站点 · 请输入站点名称：")
+	return b.prompt(ctx, id, s, "name", "添加站点 · 请输入站点名称，或点击粘贴开号信息：", telegramButtonFor("粘贴开号信息", "launch"))
 }
 func (b *telegramBot) protocolPrompt(ctx context.Context, id int64, s *telegramSession) error {
 	return b.prompt(ctx, id, s, "protocol", "请选择主地址协议：", telegramButtonFor("HTTP · 默认 8096", "http"), telegramButtonFor("HTTPS · 默认 443", "https"))
@@ -208,7 +270,100 @@ func telegramTarget(raw, scheme string) (*url.URL, error) {
 func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSession, text string) error {
 	text = strings.TrimSpace(text)
 	switch s.Step {
+	case "launch":
+		record, err := parseSiteMessageRecord(text)
+		if err != nil {
+			return err
+		}
+		s.Draft["name"] = record.Name
+		s.Draft["target_url"] = record.TargetURL
+		s.Draft["ingress_mode"] = ingressModePath
+		s.Draft["path_prefix"] = record.PathPrefix
+		s.Draft["playback_mode"] = "direct"
+		s.Draft["main_video_stream_mode"] = "proxy"
+		s.Draft["dynamic_discovery_enabled"] = false
+		s.Draft["failover_targets"] = record.FailoverTargets
+		s.Draft["stream_hosts"] = record.StreamHosts
+		s.Draft["ua_mode"] = passthroughUAMode
+		s.Accounts = append([]SiteAccountInput(nil), record.Accounts...)
+		return b.finishDraft(ctx, id, s, "已解析开号信息")
+	case "account_name":
+		if s.Action != "account-create" || text == "" || len(text) > 128 {
+			return fmt.Errorf("账号名称不能为空且不能超过 128 个字符")
+		}
+		s.Draft["account_name"] = text
+		return b.prompt(ctx, id, s, "account_username", "请输入用户名：", telegramButtonFor("与账号名称相同", "same"))
+	case "account_username":
+		if text == "same" {
+			text, _ = s.Draft["account_name"].(string)
+		}
+		if text == "" || len(text) > 128 {
+			return fmt.Errorf("用户名不能为空且不能超过 128 个字符")
+		}
+		s.Draft["username"] = text
+		return b.prompt(ctx, id, s, "account_password", "请输入登录密码：", telegramButtonFor("跳过", "skip"))
+	case "account_password":
+		if text != "skip" {
+			s.Draft["password"] = text
+		}
+		return b.prompt(ctx, id, s, "account_security", "请输入安全密码：", telegramButtonFor("跳过", "skip"))
+	case "account_security":
+		if text != "skip" {
+			s.Draft["security_password"] = text
+		}
+		return b.prompt(ctx, id, s, "account_expires", "请输入到期日期（YYYY-MM-DD）：", telegramButtonFor("无到期时间", "skip"))
+	case "account_expires":
+		if text != "skip" {
+			if _, err := parseSiteAccountExpiry(text); err != nil {
+				return fmt.Errorf("到期日期格式无效")
+			}
+			s.Draft["expires_at"] = text
+		}
+		return b.prompt(ctx, id, s, "account_note", "请输入备注：", telegramButtonFor("跳过", "skip"))
+	case "account_note":
+		if text != "skip" {
+			s.Draft["note"] = text
+		}
+		return b.finishAccountDraft(ctx, id, s)
+	case "account_field":
+		if s.Action != "account-update" {
+			return fmt.Errorf("账号操作已失效")
+		}
+		return b.accountFieldPrompt(ctx, id, s, text)
+	case "account_value":
+		field, _ := s.Draft["field"].(string)
+		if text == "keep" {
+			return b.finishAccountDraft(ctx, id, s)
+		}
+		if text == "clear" {
+			if field == "password" {
+				s.Draft["clear_password"] = true
+			} else if field == "security" {
+				s.Draft["clear_security"] = true
+			} else if field == "expires" {
+				s.Draft["expires_at"] = ""
+				s.Draft["clear_expires"] = true
+			}
+			return b.finishAccountDraft(ctx, id, s)
+		}
+		if text == "" {
+			return fmt.Errorf("内容不能为空")
+		}
+		key := map[string]string{"name": "account_name", "username": "username", "password": "password", "security": "security_password", "expires": "expires_at", "note": "note"}[field]
+		if key == "expires" {
+			if _, err := parseSiteAccountExpiry(text); err != nil {
+				return fmt.Errorf("到期日期格式无效")
+			}
+		}
+		s.Draft[key] = text
+		return b.finishAccountDraft(ctx, id, s)
+	case "site-import-data":
+		s.Draft["data"] = text
+		return b.confirm(ctx, id, s, "导入站点配置\n导入站点将默认停用，请确认执行。")
 	case "name":
+		if text == "launch" {
+			return b.prompt(ctx, id, s, "launch", "请粘贴完整开号信息，解析后会填充站点和账号：")
+		}
 		if len(text) == 0 || len(text) > 100 || strings.ContainsAny(text, "\r\n") {
 			return fmt.Errorf("名称请填写 1–100 字节的单行文字")
 		}
@@ -385,6 +540,9 @@ func (b *telegramBot) afterIngress(ctx context.Context, id int64, s *telegramSes
 	return b.finishDraft(ctx, id, s, fmt.Sprintf("入口模式：%v\n路径：%v\n域名：%v\n端口：%v", s.Draft["ingress_mode"], s.Draft["path_prefix"], s.Draft["public_host"], s.Draft["listen_port"]))
 }
 func (b *telegramBot) finishDraft(ctx context.Context, id int64, s *telegramSession, summary string) error {
+	if strings.HasPrefix(s.Action, "account-") {
+		return b.finishAccountDraft(ctx, id, s)
+	}
 	if s.Action == "create" {
 		body, _ := json.Marshal(s.Draft)
 		var site Site
@@ -398,10 +556,29 @@ func (b *telegramBot) finishDraft(ctx context.Context, id int64, s *telegramSess
 			summary += "\n访问地址：" + addr
 		}
 		summary += "\n播放：" + telegramPlaybackLabel(site)
+		if len(s.Accounts) > 0 {
+			summary += fmt.Sprintf("\n账号：%d 个", len(s.Accounts))
+		}
 	} else {
 		summary = "编辑站点：" + s.Original.Name + "\n" + summary
 	}
 	return b.confirm(ctx, id, s, summary)
+}
+
+func (b *telegramBot) finishAccountDraft(ctx context.Context, id int64, s *telegramSession) error {
+	name, _ := s.Draft["account_name"].(string)
+	if s.Action == "account-create" {
+		return b.confirm(ctx, id, s, fmt.Sprintf("添加账号\n用户名：%s\n%s", s.Draft["username"], func() string {
+			if name != "" {
+				return "账号名称：" + name
+			}
+			return ""
+		}()))
+	}
+	if s.Action == "account-update" {
+		return b.confirm(ctx, id, s, "更新账号信息")
+	}
+	return b.confirm(ctx, id, s, "确认账号操作")
 }
 func (b *telegramBot) editMenu(ctx context.Context, id int64, site Site) error {
 	delete(b.sessions, id)
@@ -447,6 +624,12 @@ func (b *telegramBot) applySession(ctx context.Context, id int64, s *telegramSes
 	// Consume before mutation, including failures: retry always needs a fresh view
 	// and confirmation, avoiding ambiguous repeated creates after network failures.
 	delete(b.sessions, id)
+	if strings.HasPrefix(s.Action, "account-") {
+		return b.applyAccountSession(ctx, id, s)
+	}
+	if s.Action == "site-import" {
+		return b.applyImportSession(ctx, id, s)
+	}
 	siteID := int64(0)
 	expected := ""
 	if s.Original != nil {
@@ -464,6 +647,11 @@ func (b *telegramBot) applySession(ctx context.Context, id int64, s *telegramSes
 		var site Site
 		if json.Unmarshal(result, &site) == nil {
 			siteID = site.ID
+		}
+		for _, account := range s.Accounts {
+			if _, err := b.app.db.saveSiteAccount(siteID, 0, account); err != nil {
+				return fmt.Errorf("站点已创建，但账号保存失败：%w", err)
+			}
 		}
 	}
 	var warning struct {

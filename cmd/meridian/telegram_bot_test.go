@@ -232,6 +232,65 @@ func TestTelegramBotAddEditReadToggleDeleteAndDuplicateConfirmation(t *testing.T
 		t.Fatalf("site not deleted: %s", f.lastText())
 	}
 }
+
+func TestTelegramBotAccountManagementAndLaunchImport(t *testing.T) {
+	b, f := newTestTelegramBot(t)
+	site, err := b.app.db.CreateSiteRecord(Site{
+		Name: "account-site", IngressMode: ingressModePath, PathPrefix: "/account-site",
+		ListenPort: 12346, TargetURL: "http://127.0.0.1:8096", PlaybackMode: "direct", UAMode: "passthrough",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tgHandle(t, b, testTelegramCallback(101, fmt.Sprintf("site:%d:accounts", site.ID)))
+	tgHandle(t, b, testTelegramCallback(101, fmt.Sprintf("account:%d:new", site.ID)))
+	tgText(t, b, "demo")
+	tgChoose(t, b, "same")
+	tgChoose(t, b, "secret")
+	tgChoose(t, b, "second")
+	tgChoose(t, b, "skip")
+	tgChoose(t, b, "skip")
+	tgChoose(t, b, "yes")
+	accounts, err := b.app.db.listSiteAccounts(site.ID)
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("accounts=%d err=%v", len(accounts), err)
+	}
+	plain, err := accountPlaintext(accounts[0])
+	if err != nil || plain.Username != "demo" || plain.Password != "secret" || plain.SecurityPassword != "second" {
+		t.Fatalf("account=%+v err=%v", plain, err)
+	}
+
+	// The site-specific export menu must route through the site ID and return
+	// the requested client format instead of treating "export" as an account ID.
+	tgHandle(t, b, testTelegramCallback(101, fmt.Sprintf("account:%d:export", site.ID)))
+	tgHandle(t, b, testTelegramCallback(101, fmt.Sprintf("account:%d:export:original", site.ID)))
+	if !strings.Contains(f.lastText(), "demo") || !strings.Contains(f.lastText(), "http://127.0.0.1:8096") {
+		t.Fatalf("account export=%s", f.lastText())
+	}
+
+	tgText(t, b, "/add")
+	tgChoose(t, b, "launch")
+	tgText(t, b, "**launch-site**\n· 用户名称 | `launch-user`\n· 用户密码 | `launch-pass`\nhttps://origin.example/emby\nhttps://backup.example/emby")
+	tgChoose(t, b, "yes")
+	sites, err := b.app.db.ListSites()
+	if err != nil || len(sites) != 2 {
+		t.Fatalf("sites=%d err=%v", len(sites), err)
+	}
+	var imported *Site
+	for i := range sites {
+		if sites[i].Name == "launch-site" {
+			imported = &sites[i]
+		}
+	}
+	if imported == nil || imported.TargetURL != "https://origin.example/emby" || len(imported.FailoverTargetList) != 1 || imported.FailoverTargetList[0] != "https://backup.example/emby" {
+		t.Fatalf("launch site=%+v", imported)
+	}
+	importedAccounts, err := b.app.db.listSiteAccounts(imported.ID)
+	if err != nil || len(importedAccounts) != 1 {
+		t.Fatalf("launch accounts=%d err=%v", len(importedAccounts), err)
+	}
+}
 func TestTelegramBotRejectsStaleDraftAndRevokedAdministrator(t *testing.T) {
 	b, f := newTestTelegramBot(t)
 	site, err := b.app.db.CreateSiteRecord(Site{Name: "original", IngressMode: ingressModePath, PathPrefix: "/one", ListenPort: 12345, TargetURL: "http://127.0.0.1:8096", PlaybackMode: "direct", UAMode: "passthrough"})

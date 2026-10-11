@@ -2,6 +2,8 @@
 
 使用“全局设置 → 备份与恢复”导出密码保护的 `.mrbak` 文件。它用于数据恢复或迁移，不代替部署环境备份。
 
+升级回滚还会用到安装器自己的整目录快照。两种备份用途不同：`.mrbak` 是跨部署的数据逻辑备份；安装器的 `meridian-pre-*.tar.gz` 是某次更新前的文件级快照，适合把数据库恢复到旧程序能够读取的精确状态。
+
 ![加密备份与恢复](https://raw.githubusercontent.com/snnabb/Meridian/v1.13.0/docs/images/backup.webp)
 
 ## 备份包含什么
@@ -20,7 +22,7 @@
 
 ## 创建备份
 
-1. 设置备份密码并再次确认。界面要求至少 12 个字符；后端上限为 128 个 UTF-8 字节，建议使用足够长的随机密码。
+1. 设置备份密码并再次确认。界面要求至少 6 个字符；后端上限为 128 个 UTF-8 字节，建议使用足够长的随机密码。
 2. 决定是否包含 TLS。
 3. 点击“下载加密备份”，保管 `.mrbak` 文件。
 4. 单独保存环境配置、部署密钥和反向代理配置。
@@ -65,6 +67,19 @@
 优先使用面板备份或 SQLite 的一致性备份工具。数据库启用 WAL 时，不要只复制正在运行的 `.db` 文件而忽略未合并的内容。
 
 必须直接复制文件时，先停止服务，并一起保存数据库、相关数据文件及长期密钥。直接拷贝原数据库不能自动完成加密凭据的跨密钥迁移。
+
+标准 Linux 安装可以保存一份完整部署数据目录：
+
+```bash
+sudo systemctl stop meridian
+sudo install -d -m 700 /opt/meridian-backups
+sudo tar -C /opt -czf \
+  "/opt/meridian-backups/meridian-manual-$(date -u +%Y%m%dT%H%M%SZ).tar.gz" \
+  meridian
+sudo systemctl start meridian
+```
+
+这份归档包含 `.env`、长期密钥、数据库主文件及 SQLite 的旁车文件。它不包含 systemd 单元、Nginx、外部证书文件或数据目录之外的 `DB_PATH`；这些路径应另行备份。
 
 ## 恢复失败
 

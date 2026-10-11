@@ -18,7 +18,9 @@ func (b *telegramBot) home(ctx context.Context, id int64) error {
 	keys := telegramKeyboard{
 		{telegramButtonFor("📊 立即日报", "report"), telegramButtonFor("🌐 站点管理", "sites:0")},
 		{telegramButtonFor("🔗 站点地址", "pick:address:0"), telegramButtonFor("📈 站点流量", "pick:traffic:0")},
-		{telegramButtonFor("➕ 添加站点", "add"), telegramButtonFor("📋 运行概览", "overview")},
+		{telegramButtonFor("🧾 站点账号", "pick:accounts:0"), telegramButtonFor("📋 运行概览", "overview")},
+		{telegramButtonFor("➕ 添加站点", "add"), telegramButtonFor("📤 导出数据", "export")},
+		{telegramButtonFor("📥 导入数据", "import")},
 	}
 	if b.settings.PublicURL != "" {
 		keys = append(keys, []telegramButton{{Text: "打开面板", URL: b.settings.PublicURL}})
@@ -75,7 +77,7 @@ func (b *telegramBot) listSites(ctx context.Context, id int64, action string, pa
 		keys = append(keys, nav)
 	}
 	keys = append(keys, []telegramButton{telegramButtonFor("添加站点", "add"), telegramButtonFor("主菜单", "home")})
-	label := map[string]string{"menu": "管理站点", "address": "发送站点地址", "traffic": "查看站点流量"}[action]
+	label := map[string]string{"menu": "管理站点", "address": "发送站点地址", "traffic": "查看站点流量", "accounts": "管理站点账号"}[action]
 	return b.send(ctx, id, fmt.Sprintf("%s · 第 %d/%d 页\n请选择站点：", label, page+1, (len(sites)+7)/8), keys)
 }
 
@@ -115,6 +117,7 @@ func telegramSiteKeys(id int64) telegramKeyboard {
 	prefix := fmt.Sprintf("site:%d:", id)
 	return telegramKeyboard{
 		{telegramButtonFor("发送地址", prefix+"address"), telegramButtonFor("查看流量", prefix+"traffic")},
+		{telegramButtonFor("账号管理", prefix+"accounts"), telegramButtonFor("导出账号", prefix+"export")},
 		{telegramButtonFor("编辑配置", prefix+"edit"), telegramButtonFor("启用 / 停用", prefix+"toggle")},
 		{telegramButtonFor("检测连接", prefix+"diag"), telegramButtonFor("删除站点", prefix+"delete")},
 		{telegramButtonFor("返回站点列表", "sites:0"), telegramButtonFor("主菜单", "home")},
@@ -143,6 +146,10 @@ func (b *telegramBot) siteView(ctx context.Context, chatID, siteID int64, action
 			quota = formatTelegramBytes(site.TrafficQuota)
 		}
 		return b.send(ctx, chatID, fmt.Sprintf("%s · 流量\n本周期：%s\n累计：%s\n配额：%s\n速率上限：%s\n统计口径与面板的全局计费方式一致。", site.Name, formatTelegramBytes(live.MonthlyTraffic), formatTelegramBytes(live.TrafficUsed), quota, telegramSpeedLabel(site.SpeedLimit)), telegramSiteKeys(site.ID))
+	case "accounts":
+		return b.siteAccounts(ctx, chatID, site.ID)
+	case "export":
+		return b.accountExportMenu(ctx, chatID, site.ID)
 	case "edit":
 		return b.editMenu(ctx, chatID, *site)
 	case "toggle", "delete":

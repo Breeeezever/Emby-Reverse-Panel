@@ -198,10 +198,17 @@ func dashTemplatePublicSuffix(expressions []string) string {
 	return output.String()
 }
 
-func rewriteDASHTemplate(value string, base *url.URL, session *dynamicRewriteSession, bindings dashTemplateBindings) (string, error) {
+func rewriteDASHTemplate(value string, base *url.URL, session *dynamicRewriteSession, bindings dashTemplateBindings) (result string, resultErr error) {
 	if session == nil || session.issuer == nil || session.base == nil || base == nil {
 		return "", fmt.Errorf("DASH rewrite session is unavailable")
 	}
+	defer func() {
+		if resultErr == nil {
+			if err := session.accountOutputGrowth(value, result); err != nil {
+				result, resultErr = "", err
+			}
+		}
+	}()
 	if err := session.ctx.Err(); err != nil {
 		return "", fmt.Errorf("DASH parsing deadline exceeded")
 	}
@@ -242,8 +249,8 @@ func rewriteDASHTemplate(value string, base *url.URL, session *dynamicRewriteSes
 		return localTemplate, err
 	}
 	session.urlCount++
-	if session.urlCount > session.issuer.policy.limits.MaxURLsPerResponse {
-		return "", fmt.Errorf("discovered URL count exceeds its limit")
+	if limit := session.issuer.policy.limits.MaxURLsPerResponse; limit > 0 && session.urlCount > limit {
+		return "", errDynamicStructuredURLLimit
 	}
 	seenKey := "dash-template\x00" + strconv.FormatBool(configured) + "\x00" + claimTarget + "\x00" + strings.Join(expressions, "\x1f") + "\x00" + strings.Join(fixedValues, "\x1f")
 	if route, exists := session.seen[seenKey]; exists {
@@ -555,10 +562,14 @@ func rewriteDASHResponse(payload []byte, session *dynamicRewriteSession) ([]byte
 	if err := estimateDASHCloneExpansion(root, 0, 0, &cloneNodes, &cloneBytes, maxCloneBytes); err != nil {
 		return nil, err
 	}
+	session.outputEstimate += cloneBytes
+	if err := session.reserveStructuredOutput(session.outputEstimate); err != nil {
+		return nil, err
+	}
 	if _, err := rewriteDASHNode(root, session.base, nil, session); err != nil {
 		return nil, err
 	}
-	output := dynamicBoundedBuffer{limit: session.structuredOutputLimit()}
+	output := session.outputBuffer()
 	if _, err := output.Write([]byte(xml.Header)); err != nil {
 		return nil, err
 	}

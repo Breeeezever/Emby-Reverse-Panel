@@ -11,16 +11,49 @@ function renderSites() {
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           添加站点
         </button>
+        <details class="sites-tool-menu">
+          <summary class="btn-ghost">导入</summary>
+          <div class="sites-tool-menu-popover">
+            <button type="button" class="btn-ghost" data-site-import-format="json">JSON 配置</button>
+            <button type="button" class="btn-ghost" data-site-import-format="csv">CSV 表格</button>
+          </div>
+        </details>
+        <details class="sites-tool-menu">
+          <summary class="btn-ghost">导出</summary>
+          <div class="sites-tool-menu-popover">
+            <button type="button" class="btn-ghost" data-site-export-format="json">JSON 配置</button>
+            <button type="button" class="btn-ghost" data-site-export-format="csv">CSV 表格</button>
+            <div class="sites-tool-menu-label">客户端线路</div>
+            <button type="button" class="btn-ghost" data-site-export-format="client" data-site-export-mode="multi">多线路</button>
+            <button type="button" class="btn-ghost" data-site-export-format="client" data-site-export-mode="original">原线路</button>
+            <button type="button" class="btn-ghost" data-site-export-format="client" data-site-export-mode="proxy">反代线路</button>
+          </div>
+        </details>
+        <input id="site-import-file" type="file" accept=".json,.csv,text/csv,application/json" hidden>
         <label class="sites-search"><span class="sr-only">搜索站点</span><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16" y1="16" x2="21" y2="21"/></svg><input id="sites-search" type="search" placeholder="搜索站点名称或回源地址"></label>
         <button class="btn-ghost btn-test-all" id="btn-test-all-sites"><span aria-hidden="true">⌁</span> 全部测速</button>
         <div class="toolbar-info" id="sites-count"></div>
       </div>
+      <div class="site-account-reminders" id="site-account-reminders" hidden></div>
       <div class="sites-grid" id="sites-grid"></div>
     `;
 
     document.getElementById('btn-add-site').onclick = () => showSiteModal();
     document.getElementById('btn-test-all-sites').onclick = testAllSitesLatency;
     document.getElementById('sites-search').addEventListener('input', event => filterSiteCards(event.target.value));
+    document.querySelectorAll('[data-site-import-format]').forEach(button => {
+      button.onclick = () => {
+        const input = document.getElementById('site-import-file');
+        if (!input) return;
+        input.dataset.format = button.dataset.siteImportFormat;
+        input.value = '';
+        input.click();
+      };
+    });
+    document.querySelectorAll('[data-site-export-format]').forEach(button => {
+      button.onclick = () => downloadSiteData(button.dataset.siteExportFormat, button.dataset.siteExportMode || '');
+    });
+    document.getElementById('site-import-file').addEventListener('change', importSiteDataFile);
   }
   loadSites();
 }
@@ -32,6 +65,7 @@ async function loadSites() {
 	if (generation !== sitesLoadGeneration || Router.current !== 'sites') return;
 	siteIngressCapabilities = normalizeSiteCapabilities(capabilities);
     document.getElementById('sites-count').innerHTML = `共 <strong>${sites.length}</strong> 个站点`;
+    loadSiteAccountReminders();
 
     const grid = document.getElementById('sites-grid');
     const searchQuery = document.getElementById('sites-search')?.value || '';
@@ -123,6 +157,53 @@ async function loadSites() {
     filterSiteCards(searchQuery);
   } catch (e) {
     Toast.error('加载站点失败: ' + e.message);
+  }
+}
+
+async function downloadSiteData(format, mode) {
+  try {
+    const blob = await API.exportSiteData(format, format === 'client' ? mode : '');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `meridian-sites.${format === 'csv' ? 'csv' : format === 'client' ? 'txt' : 'json'}`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch (error) {
+    Toast.error(error.message || '导出失败');
+  }
+}
+
+async function importSiteDataFile(event) {
+  const input = event.currentTarget;
+  const file = input.files && input.files[0];
+  if (!file) return;
+  try {
+    const data = await file.text();
+    const format = input.dataset.format || (file.name.toLowerCase().endsWith('.csv') ? 'csv' : 'json');
+    const result = await API.importSiteData(format, data);
+    Toast.success(`已导入 ${result.created_sites || 0} 个站点；新站点默认停用`);
+    await loadSites();
+  } catch (error) {
+    Toast.error(error.message || '导入失败');
+  } finally {
+    input.value = '';
+  }
+}
+
+async function loadSiteAccountReminders() {
+  const target = document.getElementById('site-account-reminders');
+  if (!target || !API.getAccountReminders) return;
+  try {
+    const rows = await API.getAccountReminders();
+    if (!rows.length) {
+      target.hidden = true;
+      target.innerHTML = '';
+      return;
+    }
+    target.hidden = false;
+    target.innerHTML = `<span class="site-account-reminder-label">账号到期</span>${rows.sort((a, b) => a.days_left - b.days_left).slice(0, 8).map(row => `<span class="reminder-pill ${row.status}">${esc(row.site_name)} · ${esc(row.account.account_name)} · ${row.status === 'expired' ? '已到期' : `剩余 ${row.days_left} 天`}</span>`).join('')}`;
+  } catch (_) {
+    target.hidden = true;
   }
 }
 
@@ -512,6 +593,7 @@ const DYNAMIC_OBSERVATION_REASON_CODES = new Set([
 	'unsupported_status',
 	'redirect_loop',
 	'hop_limit',
+	'redirect_timeout',
 	'scheme_denied',
 	'port_denied',
 	'domain_denied',
@@ -558,7 +640,11 @@ function isStructuredDiscoveryContract(value) {
 		if (!Array.isArray(profile.limits.allowed_schemes) || profile.limits.allowed_schemes.length === 0 || !profile.limits.allowed_schemes.every(scheme => scheme === 'http' || scheme === 'https')) return false;
 		if (!Array.isArray(profile.limits.allowed_ports) || !profile.limits.allowed_ports.every(port => Number.isInteger(port) && port > 0 && port <= 65535)) return false;
 		if (typeof profile.limits.allow_any_port !== 'boolean') return false;
-		if (!DYNAMIC_LIMIT_FIELDS.slice(3).every(field => Number.isInteger(profile.limits[field]) && profile.limits[field] > 0)) return false;
+		if (!DYNAMIC_LIMIT_FIELDS.slice(3).every(field => {
+			const limit = profile.limits[field];
+			const countCanBeUnlimited = id === 'extreme' && (field === 'max_redirects' || field === 'max_urls_per_response');
+			return Number.isInteger(limit) && (limit > 0 || countCanBeUnlimited && limit === 0);
+		})) return false;
 		if (!profile.features || typeof profile.features !== 'object' || Array.isArray(profile.features)) return false;
 		return DYNAMIC_FEATURES.every(([field, , expected]) => {
 			const profileExpected = id === 'safe' && (field === 'hls' || field === 'dash') ? false : expected;
@@ -665,6 +751,7 @@ function dynamicSourcesForProfile(value) {
 
 
 function normalizeDynamicDiscoverySources(value, profile = 'compatible') {
+	if (normalizeDynamicProfile(profile) === 'extreme') return [...DYNAMIC_SOURCE_IDS];
 	const allowed = new Set(dynamicSourcesForProfile(profile));
 	if (!Array.isArray(value)) return DEFAULT_DYNAMIC_SOURCE_IDS.filter(source => allowed.has(source));
 	const selected = new Set(value.map(source => String(source || '').trim().toLowerCase()));
@@ -714,7 +801,7 @@ function normalizeDynamicSitePolicy(site) {
 		dynamic_profile: profile,
 		dynamic_discovery_sources: normalizeDynamicDiscoverySources(value.dynamic_discovery_sources, profile),
 		dynamic_domain_rules: normalizeDynamicDomainRules(value.dynamic_domain_rules),
-		dynamic_allow_https_downgrade: value.dynamic_allow_https_downgrade === true,
+		dynamic_allow_https_downgrade: profile === 'extreme' || value.dynamic_allow_https_downgrade === true,
 		dynamic_policy_revision: Number.isInteger(revision) && revision > 0 ? revision : 1,
 	};
 }
@@ -750,7 +837,7 @@ function renderDynamicProfileSummaries(capabilities) {
 			: (Array.isArray(profile.limits.allowed_ports) ? profile.limits.allowed_ports.join(', ') : '—');
 		const sources = dynamicSourcesForProfile(profile.id).map(source => DYNAMIC_SOURCE_LABELS[source]).join(' + ');
 		const compatibility = profile.id === 'extreme'
-			? '；额外启用全数据面 30x/303、受限请求体重放、PlaybackInfo 完整 URL 兼容、安全 RequiredHttpHeaders、HLS 变量/扩展标签与 DASH 惰性扩展/DRM 元数据'
+			? '；全部发现来源与 HTTPS 降级开启；单份响应地址数与重定向跳数不设固定上限，寻址总超时 60 秒；支持扩展 PlaybackInfo/HLS/DASH 格式，保留资源预算与循环检测'
 			: '；使用严格协议字段与已审核结构';
 		const accent = profile.id === 'safe' ? 'var(--green)' : profile.id === 'compatible' ? 'var(--orange)' : 'var(--red)';
 		return `<div class="form-help" data-profile-summary="${esc(profile.id)}" style="padding:8px 10px;margin-top:6px;border:1px solid ${accent};border-radius:6px;background:var(--surface-hover);color:var(--white-87)"><strong style="color:${accent}">${esc(profile.label)}</strong>：${esc(sources)}；仅公网 ${esc(schemes)}，端口 ${esc(ports)}${esc(compatibility)}</div>`;
@@ -1168,10 +1255,12 @@ async function showSiteModal(site) {
   const title = isEdit ? '编辑站点' : '添加站点';
 	let siteCapabilities;
 	let dynamicCapabilities;
+	let existingAccounts = [];
 	try {
-		[siteCapabilities, dynamicCapabilities] = await Promise.all([
+		[siteCapabilities, dynamicCapabilities, existingAccounts] = await Promise.all([
 			API.ingressCapabilities().then(normalizeSiteCapabilities),
 			loadDynamicProfiles(),
+			isEdit ? API.listSiteAccounts(site.id) : Promise.resolve([]),
 		]);
 	} catch (error) {
 		Toast.error(`无法读取站点能力：${error.message}`);
@@ -1190,6 +1279,8 @@ async function showSiteModal(site) {
 		dynamic_allow_https_downgrade: true,
 	});
 	let dynamicRules = [...dynamicPolicy.dynamic_domain_rules];
+	let modalAccounts = Array.isArray(existingAccounts) ? existingAccounts.map(account => ({ ...account })) : [];
+	let nextDraftAccountID = -1;
   const primaryTarget = splitUpstreamTargetAddress(isEdit ? site.target_url : '', 'http');
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = `
@@ -1203,6 +1294,13 @@ async function showSiteModal(site) {
         <label for="m-name">站点名称</label>
         <input type="text" class="form-input" id="m-name" value="${isEdit ? esc(site.name) : ''}" placeholder="如：Emby-US-01" maxlength="100" required>
       </div>
+	${!isEdit ? `<details class="form-group site-form-wide site-launch-import" id="m-launch-import">
+	  <summary>从开号信息填充</summary>
+	  <div class="site-launch-import-body">
+	    <textarea class="form-input" id="m-launch-message" rows="5" placeholder="粘贴包含站点名称、用户名、密码和线路的开号信息"></textarea>
+	    <div class="site-inline-actions"><button type="button" class="btn-ghost" id="m-launch-parse">解析并填充</button><span class="form-help" id="m-launch-result"></span></div>
+	  </div>
+	</details>` : ''}
 	<div class="form-group">
 	  <label for="m-ingress-mode">入口模式</label>
 	  <select class="form-select modal-select" id="m-ingress-mode" required>
@@ -1245,6 +1343,24 @@ async function showSiteModal(site) {
         </details>
         <button type="button" class="btn-ghost" id="m-test-all-lines">测试连接</button>
       </div>
+	  <details class="form-group site-form-wide site-accounts-module" id="m-account-options" ${modalAccounts.length ? 'open' : ''}>
+	    <summary>站点账号 <span class="site-account-count" id="m-account-count"></span></summary>
+	    <div class="site-accounts-body">
+	      <div id="m-account-list" class="site-account-list"></div>
+	      <div class="site-account-form">
+	        <input type="hidden" id="m-account-id">
+	        <div class="site-account-fields">
+	          <label>账号名称<input type="text" class="form-input" id="m-account-name" placeholder="可与用户名相同" maxlength="128"></label>
+	          <label>用户名<input type="text" class="form-input" id="m-account-username" placeholder="可与账号名称相同" maxlength="128"></label>
+	          <label>登录密码<input type="password" class="form-input" id="m-account-password" autocomplete="new-password"></label>
+	          <label>安全密码<input type="password" class="form-input" id="m-account-security" autocomplete="new-password"></label>
+	          <label>到期时间<input type="date" class="form-input" id="m-account-expires"></label>
+	          <label>备注<input type="text" class="form-input" id="m-account-note" maxlength="2000"></label>
+	        </div>
+	        <div class="site-inline-actions"><button type="button" class="btn-ghost" id="m-account-save">添加账号</button><button type="button" class="btn-ghost" id="m-account-reset">清空</button><span class="form-help">密码留空表示保留已有密码；清除密码请编辑后在面板中删除。</span></div>
+	      </div>
+	    </div>
+	  </details>
     </div>
     <div class="site-modal-panel" id="site-panel-lines" role="tabpanel" aria-labelledby="site-tab-lines">
       <div class="form-group">
@@ -1430,6 +1546,88 @@ async function showSiteModal(site) {
     syncPrimaryAddress();
     return joinUpstreamTargetAddress(primarySchemeInput.value, primaryAddressInput.value, primaryPortInput.value);
   };
+
+  const accountList = document.getElementById('m-account-list');
+  const accountCount = document.getElementById('m-account-count');
+  const accountFormIDs = ['m-account-id', 'm-account-name', 'm-account-username', 'm-account-password', 'm-account-security', 'm-account-expires', 'm-account-note'];
+  function resetModalAccountForm() {
+    accountFormIDs.forEach(id => { const input = document.getElementById(id); if (input) input.value = ''; });
+    const save = document.getElementById('m-account-save');
+    if (save) save.textContent = '添加账号';
+  }
+  function renderModalAccounts() {
+    if (!accountList) return;
+    if (accountCount) accountCount.textContent = modalAccounts.length ? `（${modalAccounts.length} 个）` : '';
+    if (!modalAccounts.length) {
+      accountList.innerHTML = '<div class="form-help">暂无账号，可在下方添加。</div>';
+      return;
+    }
+    accountList.innerHTML = modalAccounts.map(account => `<div class="site-account-row">
+      <div><strong>${esc(account.account_name || account.username || '未命名账号')}</strong><span>${esc(account.username || account.account_name || '')}</span></div>
+      <div class="site-account-row-meta"><span>${account.password_configured || account.password ? '登录密码已设置' : '未设置登录密码'}${account.expires_at ? ` · ${esc(account.expires_at)}` : ''}</span><div class="site-account-row-actions"><button type="button" class="icon-button" data-modal-account-edit="${account.id || ''}" title="编辑账号">编辑</button><button type="button" class="icon-button danger" data-modal-account-delete="${account.id || ''}" title="删除账号">删除</button></div></div>
+    </div>`).join('');
+    accountList.querySelectorAll('[data-modal-account-edit]').forEach(button => {
+      button.onclick = () => {
+        const account = modalAccounts.find(row => String(row.id || '') === String(button.dataset.modalAccountEdit));
+        if (!account) return;
+        document.getElementById('m-account-id').value = account.id || '';
+        document.getElementById('m-account-name').value = account.account_name || '';
+        document.getElementById('m-account-username').value = account.username || '';
+        document.getElementById('m-account-password').value = account.password || '';
+        document.getElementById('m-account-security').value = account.security_password || '';
+        document.getElementById('m-account-expires').value = String(account.expires_at || '').slice(0, 10);
+        document.getElementById('m-account-note').value = account.note || '';
+        document.getElementById('m-account-save').textContent = '保存账号';
+      };
+    });
+    accountList.querySelectorAll('[data-modal-account-delete]').forEach(button => {
+      button.onclick = async () => {
+        const accountID = Number(button.dataset.modalAccountDelete);
+        const index = modalAccounts.findIndex(row => Number(row.id) === accountID);
+        if (index < 0) return;
+        if (!confirm('确认删除这个账号？')) return;
+        try {
+          if (isEdit && accountID > 0) await API.deleteSiteAccount(site.id, accountID);
+          modalAccounts.splice(index, 1);
+          resetModalAccountForm();
+          renderModalAccounts();
+          loadSiteAccountReminders();
+          Toast.success('账号已删除');
+        } catch (error) { Toast.error(error.message || '删除账号失败'); }
+      };
+    });
+  }
+  document.getElementById('m-account-save')?.addEventListener('click', async () => {
+    const id = Number(document.getElementById('m-account-id')?.value || 0);
+    const data = {
+      account_name: document.getElementById('m-account-name')?.value.trim() || '',
+      username: document.getElementById('m-account-username')?.value.trim() || '',
+      password: document.getElementById('m-account-password')?.value || '',
+      security_password: document.getElementById('m-account-security')?.value || '',
+      expires_at: document.getElementById('m-account-expires')?.value || '',
+      note: document.getElementById('m-account-note')?.value.trim() || '',
+    };
+    if (!data.account_name && !data.username) { Toast.error('请填写账号名称或用户名'); return; }
+    try {
+      if (isEdit) {
+        const saved = id ? await API.updateSiteAccount(site.id, id, data) : await API.createSiteAccount(site.id, data);
+        const index = modalAccounts.findIndex(row => Number(row.id) === id);
+        if (index >= 0) modalAccounts[index] = saved;
+        else modalAccounts.push(saved);
+      } else {
+        const draft = { ...data, password_configured: !!data.password, security_password_configured: !!data.security_password };
+        const index = modalAccounts.findIndex(row => Number(row.id) === id && id < 0);
+        if (index >= 0) modalAccounts[index] = { ...modalAccounts[index], ...draft };
+        else modalAccounts.push({ ...draft, id: nextDraftAccountID-- });
+      }
+      resetModalAccountForm();
+      renderModalAccounts();
+      loadSiteAccountReminders();
+      Toast.success('账号已保存');
+    } catch (error) { Toast.error(error.message || '保存账号失败'); }
+  });
+  document.getElementById('m-account-reset')?.addEventListener('click', resetModalAccountForm);
+  renderModalAccounts();
 	const failoverLinesContainer = document.getElementById('m-failover-lines');
 	let failoverLines = isEdit && Array.isArray(site.failover_lines)
 		? site.failover_lines.map(line => ({name: line.name || '', url: line.url || '', enabled: line.enabled !== false}))
@@ -1553,6 +1751,31 @@ async function showSiteModal(site) {
 	}
 	updateIngressFields();
 	ingressSelect.addEventListener('change', updateIngressFields);
+	if (!isEdit) {
+	  document.getElementById('m-launch-parse')?.addEventListener('click', async () => {
+	    const result = document.getElementById('m-launch-result');
+	    const text = document.getElementById('m-launch-message')?.value.trim() || '';
+	    if (!text) { Toast.error('请先粘贴开号信息'); return; }
+	    try {
+	      const parsed = await API.parseSiteMessage(text);
+	      document.getElementById('m-name').value = parsed.name || '';
+	      const target = splitUpstreamTargetAddress(parsed.target_url || '', 'http');
+	      primarySchemeInput.value = target.scheme;
+	      primaryAddressInput.value = target.address;
+	      primaryPortInput.value = target.port;
+	      ingressSelect.value = parsed.ingress_mode || 'path';
+	      pathPrefixInput.value = String(parsed.path_prefix || '').replace(/^\//, '');
+	      updateIngressFields();
+	      modalAccounts = (Array.isArray(parsed.accounts) ? parsed.accounts : []).map(account => ({ ...account, id: nextDraftAccountID--, password_configured: !!account.password, security_password_configured: !!account.security_password }));
+	      renderModalAccounts();
+	      result.textContent = `已填充 ${parsed.name || '站点'}，请检查配置后创建`;
+	      document.getElementById('m-account-options')?.setAttribute('open', '');
+	    } catch (error) {
+	      result.textContent = error.message || '解析失败';
+
+	    }
+	  });
+	}
 
 	const uaSelect = document.getElementById('m-ua');
   const clientIPModeSelect = document.getElementById('m-client-ip-mode');
@@ -1631,7 +1854,7 @@ async function showSiteModal(site) {
 	    if (dynamicHelp) dynamicHelp.textContent = profile === 'safe'
 	      ? 'Safe：处理 HTTP 30x 与 PlaybackInfo，仅允许 HTTPS:443，并要求命中明确的域名规则。'
 	      : profile === 'extreme'
-	        ? 'Extreme：处理 HTTP 30x、PlaybackInfo、HLS 与 DASH，并启用最宽的公网兼容范围；只建议在其他模式无法播放时使用。'
+	        ? 'Extreme：全部发现来源、HTTP(S)、有效端口和 HTTPS 降级开启。单份响应地址数与重定向跳数不设固定上限；寻址总超时 60 秒，保留资源预算和循环检测。'
 	        : 'Compatible：处理 HTTP 30x、PlaybackInfo、HLS 与 DASH并允许受控 HTTPS 降级；仍拒绝私网与回环目标。';
 	  };
   if (dynamicRulesButton) dynamicRulesButton.onclick = () => {
@@ -1794,11 +2017,7 @@ async function showSiteModal(site) {
 				dynamic_discovery_enabled: playbackRoutingSelect.value !== 'manual' && dynamicCapabilities.available,
 				dynamic_profile: nextDynamicProfile,
 				dynamic_domain_rules: dynamicRules,
-				dynamic_allow_https_downgrade: nextDynamicProfile === 'safe'
-					? false
-					: (nextDynamicProfile === 'compatible' || dynamicInitialPolicy.dynamic_profile !== 'extreme'
-						? true
-						: dynamicInitialPolicy.dynamic_allow_https_downgrade),
+				dynamic_allow_https_downgrade: nextDynamicProfile !== 'safe',
 		};
 		const dynamicConfirmation = confirmDynamicProfileChange(
 			dynamicInitialPolicy,
@@ -1893,8 +2112,19 @@ async function showSiteModal(site) {
         await API.updateSite(site.id, data);
         Toast.success('站点已更新');
       } else {
-        await API.createSite(data);
-        Toast.success('站点已创建');
+        const created = await API.createSite(data);
+        const pendingAccounts = modalAccounts.filter(account => Number(account.id) < 0 || !account.id);
+        for (const account of pendingAccounts) {
+          await API.createSiteAccount(created.id, {
+            account_name: account.account_name || '',
+            username: account.username || '',
+            password: account.password || '',
+            security_password: account.security_password || '',
+            expires_at: account.expires_at || '',
+            note: account.note || '',
+          });
+        }
+        Toast.success(pendingAccounts.length ? `站点已创建，已保存 ${pendingAccounts.length} 个账号` : '站点已创建');
       }
       // A user may close this editor and open another while the request runs.
       if (document.getElementById('m-submit') === submitButton) closeModal();

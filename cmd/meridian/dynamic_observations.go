@@ -39,6 +39,7 @@ const (
 	dynamicObservationReasonUnsupportedStatus    = "unsupported_status"
 	dynamicObservationReasonRedirectLoop         = "redirect_loop"
 	dynamicObservationReasonHopLimit             = "hop_limit"
+	dynamicObservationReasonRedirectTimeout      = "redirect_timeout"
 	dynamicObservationReasonSchemeDenied         = "scheme_denied"
 	dynamicObservationReasonPortDenied           = "port_denied"
 	dynamicObservationReasonDomainDenied         = "domain_denied"
@@ -115,6 +116,7 @@ func dynamicObservationStageForReason(reasonCode string) (string, bool) {
 	switch reasonCode {
 	case dynamicObservationReasonRedirectAllowed,
 		dynamicObservationReasonUnsupportedStatus,
+		dynamicObservationReasonRedirectTimeout,
 		dynamicObservationReasonResponseFailure:
 		return dynamicObservationStageResponse, true
 	case dynamicObservationReasonInvalidLocation,
@@ -195,6 +197,7 @@ func validDynamicObservationEnums(source, decision, reasonCode string) bool {
 			dynamicObservationReasonUnsupportedStatus,
 			dynamicObservationReasonRedirectLoop,
 			dynamicObservationReasonHopLimit,
+			dynamicObservationReasonRedirectTimeout,
 			dynamicObservationReasonSchemeDenied,
 			dynamicObservationReasonPortDenied,
 			dynamicObservationReasonDomainDenied,

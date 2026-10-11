@@ -631,7 +631,10 @@ func rewritePlaybackInfoResponse(payload []byte, session *dynamicRewriteSession)
 	if session == nil || session.issuer == nil {
 		return nil, fmt.Errorf("PlaybackInfo rewrite session is unavailable")
 	}
-	maxTokens := min(session.issuer.policy.limits.MaxURLsPerResponse*64+8192, globalDynamicMaxJSONTokens)
+	maxTokens := globalDynamicMaxJSONTokens
+	if limit := session.issuer.policy.limits.MaxURLsPerResponse; limit > 0 {
+		maxTokens = min(limit*64+8192, maxTokens)
+	}
 	tokenCount, err := validateDynamicJSONStructureWithin(session.ctx, payload, maxTokens, globalDynamicMaxParseDepth)
 	if err != nil {
 		return nil, fmt.Errorf("invalid PlaybackInfo JSON")
@@ -838,7 +841,7 @@ func rewritePlaybackInfoResponse(payload []byte, session *dynamicRewriteSession)
 			return nil, err
 		}
 	}
-	output := dynamicBoundedBuffer{limit: session.structuredOutputLimit()}
+	output := session.outputBuffer()
 	encoder := json.NewEncoder(&output)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(root); err != nil {
@@ -855,7 +858,10 @@ func rewriteAutomaticPlaybackInfoResponse(payload []byte, session *dynamicRewrit
 	if session == nil || session.issuer == nil || session.base == nil {
 		return nil, fmt.Errorf("automatic PlaybackInfo rewrite session is unavailable")
 	}
-	maxTokens := min(session.issuer.policy.limits.MaxURLsPerResponse*64+8192, globalDynamicMaxJSONTokens)
+	maxTokens := globalDynamicMaxJSONTokens
+	if limit := session.issuer.policy.limits.MaxURLsPerResponse; limit > 0 {
+		maxTokens = min(limit*64+8192, maxTokens)
+	}
 	if _, err := validateDynamicJSONStructureWithin(session.ctx, payload, maxTokens, globalDynamicMaxParseDepth); err != nil {
 		return nil, fmt.Errorf("invalid automatic PlaybackInfo JSON")
 	}
@@ -869,7 +875,7 @@ func rewriteAutomaticPlaybackInfoResponse(payload []byte, session *dynamicRewrit
 		return nil, fmt.Errorf("invalid automatic PlaybackInfo JSON")
 	}
 	rewritten := rewriteAutomaticPlaybackInfoValue(root, session, 0, "")
-	output := dynamicBoundedBuffer{limit: session.structuredOutputLimit()}
+	output := session.outputBuffer()
 	encoder := json.NewEncoder(&output)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(rewritten); err != nil {

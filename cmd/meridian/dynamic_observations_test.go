@@ -694,6 +694,7 @@ func TestDynamicObservationStageMappingIsExhaustive(t *testing.T) {
 		dynamicObservationReasonRedirectAllowed:          dynamicObservationStageResponse,
 		dynamicObservationReasonUnsupportedStatus:        dynamicObservationStageResponse,
 		dynamicObservationReasonResponseFailure:          dynamicObservationStageResponse,
+		dynamicObservationReasonRedirectTimeout:          dynamicObservationStageResponse,
 		dynamicObservationReasonInvalidLocation:          dynamicObservationStageLocation,
 		dynamicObservationReasonRedirectLoop:             dynamicObservationStageLocation,
 		dynamicObservationReasonHopLimit:                 dynamicObservationStageLocation,

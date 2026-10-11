@@ -412,6 +412,13 @@ func (a *App) handleSiteByID(w http.ResponseWriter, r *http.Request) {
 	if len(parts) > 1 {
 		action = parts[1]
 	}
+	if strings.HasPrefix(action, "accounts") {
+		tail := strings.TrimPrefix(action, "accounts")
+		if tail == "" || strings.HasPrefix(tail, "/") {
+			a.handleSiteAccounts(w, r, id, strings.TrimPrefix(tail, "/"))
+			return
+		}
+	}
 
 	switch {
 	case action == "dynamic-observations" && (r.Method == http.MethodGet || r.Method == http.MethodDelete):

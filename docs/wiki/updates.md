@@ -67,7 +67,45 @@ docker compose ps
 
 ## 回滚
 
-安装器的失败回滚用于更新事务内的恢复。更新成功后，手动降级需要核对数据库结构与版本兼容性。
+### 自动回滚范围
+
+标准 Linux systemd 安装在替换程序前会停止服务，并同时创建两份更新前副本：
+
+- `/opt/meridian-backups/meridian-pre-<version>-<timestamp>.tar.gz`：保留更新前的数据目录，供人工恢复。
+- 更新临时目录中的整目录快照：用于本次事务失败时自动恢复。
+
+快照是 `/opt/meridian` 的字节级副本，因此包括 `meridian.db`、SQLite 的 `-wal`、`-shm` 或 `-journal` 文件、`.env`、持久密钥以及数据目录中的其他文件。健康检查失败时，安装器会恢复旧二进制、整套数据快照和被安装器管理的 systemd 服务文件，然后重新启动原来的服务状态。
+
+自动回滚只发生在这次更新事务仍在运行且新版本未通过健康检查时。快照恢复失败不会被当作成功，安装器会保留备份归档路径并提示手动恢复。
+
+以下内容不在数据目录归档内，需要单独保存：`/etc/systemd/system/meridian.service`、安装器管理的 Nginx 配置、外部反向代理配置、证书路径指向的外部文件，以及 `DB_PATH` 指向 `/opt/meridian` 之外的数据库。
+
+### 成功更新后的降级
+
+更新已经成功并退出后，安装器不会因为你随后替换旧二进制而自动恢复数据库。新版本可能已经完成数据库迁移，此时只替换程序可能导致旧程序无法读取新结构。应先恢复同一份更新前数据，再启动旧程序。
+
+标准安装的手动恢复示例（执行前确认归档文件名）：
+
+```bash
+sudo systemctl stop meridian
+
+# 先保留当前状态，便于再次取证或恢复
+sudo mv /opt/meridian "/opt/meridian-after-update-$(date -u +%Y%m%dT%H%M%SZ)"
+
+# 选择对应更新前归档，例如 meridian-pre-v1.13.2-*.tar.gz
+ARCHIVE=/opt/meridian-backups/meridian-pre-v1.13.2-YYYYMMDDTHHMMSSZ-PID.tar.gz
+sudo tar -tzf "$ARCHIVE" | grep -Fx 'meridian/' >/dev/null
+sudo tar -xpf "$ARCHIVE" -C /opt
+
+# 更新流程通常会留下上一版程序
+sudo install -o root -g root -m 0755 \
+  /usr/local/bin/meridian.previous /usr/local/bin/meridian
+sudo systemctl daemon-reload
+sudo systemctl start meridian
+sudo systemctl status meridian --no-pager -l
+```
+
+如果 `DB_PATH` 是外部路径，必须在停止服务后另外恢复该数据库及其 `-wal`、`-shm`、`-journal` 文件；不要只恢复 `.db` 主文件。恢复后检查登录、站点入口、播放、Telegram、TLS 和流量数据。
 
 跨结构版本降级时，恢复升级前对应版本的数据库与环境备份，再使用旧程序。不要仅替换二进制并继续使用新版本修改过的数据库。
 

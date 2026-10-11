@@ -861,6 +861,60 @@ wait_for_health() {
     return 1
 }
 
+# Refuse an update when the persisted panel endpoint and the installation
+# configuration disagree.  Meridian keeps the configured endpoint in SQLite
+# after first bootstrap, while the installer keeps PORT in .env; a stale
+# database port can otherwise make a successful update restart into a loop of
+# bind failures (most often when Nginx already owns 443).
+validate_panel_endpoint_consistency() {
+    local configured marker marker_port domain proxy_port
+    configured=$(read_config_port)
+    marker="${DATA_DIR}/panel-port"
+    if as_root test -f "$marker"; then
+        marker_port=$(as_root cat "$marker" 2>/dev/null || true)
+        marker_port=$(normalize_port "$(printf '%s' "$marker_port" | tr -d '[:space:]')") || {
+            warn "Meridian 面板端口标记无效: $marker"
+            return 1
+        }
+        if [ "$marker_port" != "$configured" ]; then
+            warn "面板端口配置不一致：.env 为 ${configured}，运行时标记为 ${marker_port}；已停止更新以避免服务中断"
+            warn "请先在面板设置中保存实际内部端口，或恢复 ${marker} 对应的数据库配置"
+            return 1
+        fi
+    fi
+
+    domain=$(read_env_value PANEL_DOMAIN)
+    [ -n "$domain" ] || return 0
+    [ "$(read_env_value PANEL_TLS_ENABLED)" = true ] && return 0
+    validate_nginx_config_path
+    if ! as_root test -f "$NGINX_CONFIG" || as_root test -L "$NGINX_CONFIG" \
+        || ! as_root grep -Fqx "$NGINX_MARKER" "$NGINX_CONFIG"; then
+        return 0
+    fi
+    # The managed vhost must proxy to the same loopback port that the service
+    # configuration advertises.  More than one target is ambiguous, so let
+    # the existing migration/validation path handle that case conservatively.
+    # The awk program intentionally uses literal shell-independent fields.
+    # shellcheck disable=SC2016
+    proxy_port=$(LC_ALL=C as_root awk '
+        /^[[:space:]]*proxy_pass[[:space:]]+http:\/\/127\.0\.0\.1:[0-9]+;/ {
+            value=$0
+            sub(/^.*http:\/\/127\.0\.0\.1:/, "", value)
+            sub(/;.*/, "", value)
+            count++
+            port=value
+        }
+        END { if (count == 1) print port; else if (count > 1) exit 2 }
+    ' "$NGINX_CONFIG" 2>/dev/null) || {
+        warn "无法确认安装器管理的 Nginx 面板回源端口，已停止更新以保护现有服务"
+        return 1
+    }
+    if [ -n "$proxy_port" ] && [ "$proxy_port" != "$configured" ]; then
+        warn "Nginx 面板回源端口 ${proxy_port} 与 .env 端口 ${configured} 不一致，已停止更新以避免 502"
+        return 1
+    fi
+}
+
 ensure_service_user() {
     local nologin_shell
     nologin_shell=$(command -v nologin || true)
@@ -2208,6 +2262,8 @@ do_update() {
     as_root test -L "$(env_file_path)" \
         && fail "拒绝修改符号链接形式的配置文件: $(env_file_path)"
     validate_existing_secret_configuration || return 1
+    validate_panel_endpoint_consistency \
+        || fail "面板端点配置不一致；为避免更新后出现 502，请先修复面板监听端口"
     migrate_managed_nginx_redaction \
         || fail "Nginx URI 脱敏日志迁移失败；原配置已恢复"
     current_version=$(get_current_version)

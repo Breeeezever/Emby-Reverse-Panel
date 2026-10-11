@@ -65,6 +65,31 @@ https://panel.example.com:8443/cinema/
 
 只配置外部网关 HTTPS，不会自动开启新建表单的原生 TLS 能力。暂时不能选择域名前缀时，可先用路径入口。
 
+## 面板域名与站点域名分开 {#separate-panel-and-site-domains}
+
+面板域名和站点反代域名可以是两个地址。面板域名只负责登录和管理 API；站点的 `public_host` 负责按 Host 将请求交给对应的 Emby 代理。两者共用 Meridian 的面板监听器，但必须在 DNS 和反向代理中同时指向这台 Meridian。
+
+例如：
+
+```text
+面板：panel.example.com
+反代：media.example.com
+节点泛域名：*.example.com
+```
+
+配置步骤：
+
+1. 将 `panel.example.com` 和 `media.example.com` 都解析到入口服务器。
+2. 在“全局设置 → TLS 设置”保存面板域名 `panel.example.com`、节点泛域名 `*.example.com` 和 Meridian 的**内部监听端口**。
+3. 在 Nginx 等网关中为两个域名配置 HTTPS，并把请求转发到同一个 Meridian 监听端口，保留原始 `Host`。证书必须覆盖两个域名；使用 `*.example.com` 时，它会覆盖这两个一层子域名。
+4. 添加站点时选择“域名前缀”，填写 `media`。Meridian 会生成 `media.example.com`，客户端使用该地址访问站点。
+
+如果站点域名不在 `PANEL_ROUTE_DOMAIN` 对应的基础域名下，也可以通过 API 直接填写完整 `public_host`，但仍需自行准备 DNS、证书和网关路由；面板表单的“域名前缀”只生成 `前缀.PANEL_ROUTE_DOMAIN`。
+
+`PANEL_DOMAIN` 和 `PANEL_ROUTE_DOMAIN` 只用于首次启动时初始化数据库。数据库已经有面板设置时，单独修改 `.env` 不会可靠覆盖已保存值；请在 TLS 设置中保存新值，并按页面提示重启。修改基础域名后，Meridian 会同步迁移由旧基础域名生成的站点域名，并检查冲突。
+
+面板和站点域名共用入口时，外部端口可以相同或不同。客户端填写公开网关地址；`PORT`、面板设置中的监听端口和 Nginx 的 `listen` 端口分别属于内部监听、应用配置和公开入口，不能混为一谈。
+
 ## 旧版本配置
 
 旧数据库或 API 可能保留 `both`（域名与端口同时提供）或未配置状态。当前新增表单提供上表三种模式。编辑旧站点时，应核对最终访问地址并明确选择所需入口。

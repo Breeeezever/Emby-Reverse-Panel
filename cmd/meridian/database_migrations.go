@@ -123,6 +123,19 @@ func (d *DB) migrateOnce() error {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
+	CREATE TABLE IF NOT EXISTS site_accounts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+		account_name TEXT NOT NULL DEFAULT '',
+		username TEXT NOT NULL DEFAULT '',
+		password_ciphertext TEXT NOT NULL DEFAULT '',
+		security_password_ciphertext TEXT NOT NULL DEFAULT '',
+		expires_at TEXT NOT NULL DEFAULT '',
+		note TEXT NOT NULL DEFAULT '',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_site_accounts_site ON site_accounts(site_id, id);
 	CREATE TABLE IF NOT EXISTS traffic_logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
