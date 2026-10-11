@@ -18,9 +18,9 @@ function renderDashboard() {
   if (!page) return;
   if (!page.querySelector('#dash-stats')) {
     page.innerHTML = `
-      <h1 class="section-title">仪表盘</h1>
-      <p class="section-sub">Emby 反代服务运行概览 <span class="live-indicator" id="sse-status">● 实时</span></p>
-      <div class="form-help" style="margin:-4px 0 18px">当前面板域名：<span class="mono" id="s-panel-domain">—</span></div>
+      <div class="dashboard-page-head">
+        <div class="dashboard-page-meta"><span class="live-indicator" id="sse-status">● 实时</span><span class="mono" id="s-panel-domain">—</span></div>
+      </div>
       <div class="stats-row" id="dash-stats">
         <div class="stat-card c-blue">
           <div class="stat-icon-wrap blue">
@@ -61,7 +61,7 @@ function renderDashboard() {
       <div class="dashboard-trend-toolbar">
         <div>
           <div class="glass-card-title">数据趋势</div>
-          <div class="dashboard-trend-help" id="dashboard-trend-help">默认显示全部站点；“本月”按自然月 1 日至当前时间统计 · 数据时间 <span id="dashboard-trend-timezone">UTC+08:00</span></div>
+          <div class="dashboard-trend-help" id="dashboard-trend-help">数据时间 <span id="dashboard-trend-timezone">UTC+08:00</span></div>
         </div>
         <div class="dashboard-trend-controls">
           <div class="dashboard-trend-control"><label for="dashboard-trend-site">站点</label><select id="dashboard-trend-site" class="form-select" aria-label="选择趋势站点"><option value="all">全部站点</option></select></div>
@@ -89,7 +89,7 @@ function renderDashboard() {
       <div class="glass-card dashboard-site-status">
         <div class="glass-card-header">
           <div class="glass-card-title"><span class="live-dot"></span>站点实时状态</div>
-          <div class="glass-card-title" style="font-size:.72rem;color:var(--white-38)" id="s-requests">0 请求</div>
+          <div class="glass-card-title" style="font-size:12px;color:var(--white-38)" id="s-requests">0 请求</div>
         </div>
         <div style="overflow-x:auto">
           <table>
@@ -106,6 +106,9 @@ function renderDashboard() {
   startDashSSE();
   setupDashboardTrendControls();
   observeDashboardTrendResize();
+  if (document.fonts) document.fonts.ready.then(() => {
+    if (Router.current === 'dashboard') renderDashboardTrendCharts();
+  });
   loadDashboardTable();
   loadDashboardInsights();
   loadDashboardTrends();
@@ -327,8 +330,8 @@ function dashboardUpdateTrendHelp(resetEnabled) {
   const help = document.getElementById('dashboard-trend-help');
   if (!help) return;
   const prefix = resetEnabled
-    ? '默认显示全部站点；“本月”为自然月 1 日至当前时间，已用流量按全局重置日统计'
-    : '默认显示全部站点；“本月”为自然月 1 日至当前时间，已用流量累计不重置';
+    ? '本月按自然月统计；已用流量按重置日统计'
+    : '本月按自然月统计；已用流量累计不重置';
   help.textContent = `${prefix} · 数据时间 `;
   const timezone = document.createElement('span');
   timezone.id = 'dashboard-trend-timezone';
@@ -356,26 +359,42 @@ function dashboardRoundRect(ctx, x, y, width, height, radius) {
 
 function dashboardTraceSmoothLine(ctx, points) {
   if (!points.length) return;
-  if (points.length === 1) {
-    ctx.moveTo(points[0].x, points[0].y);
-    return;
-  }
   ctx.moveTo(points[0].x, points[0].y);
-  for (let index = 0; index < points.length - 1; index++) {
-    const previous = points[index - 1] || points[index];
-    const current = points[index];
-    const next = points[index + 1];
-    const following = points[index + 2] || next;
-    const tension = 1 / 6;
-    const minX = Math.min(current.x, next.x);
-    const maxX = Math.max(current.x, next.x);
-    const minY = Math.min(current.y, next.y);
-    const maxY = Math.max(current.y, next.y);
-    const control1X = Math.max(minX, Math.min(maxX, current.x + (next.x - previous.x) * tension));
-    const control1Y = Math.max(minY, Math.min(maxY, current.y + (next.y - previous.y) * tension));
-    const control2X = Math.max(minX, Math.min(maxX, next.x - (following.x - current.x) * tension));
-    const control2Y = Math.max(minY, Math.min(maxY, next.y - (following.y - current.y) * tension));
-    ctx.bezierCurveTo(control1X, control1Y, control2X, control2Y, next.x, next.y);
+  if (points.length === 1) return;
+
+  // Shape-preserving cubic interpolation. Shared tangents keep adjacent
+  // segments smooth, while zero tangents at extrema preserve actual peaks.
+  const widths = [], slopes = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const width = points[i + 1].x - points[i].x;
+    // Duplicate or unordered x coordinates have no well-defined derivative.
+    if (width <= 0) {
+      points.slice(1).forEach(point => ctx.lineTo(point.x, point.y));
+      return;
+    }
+    widths.push(width);
+    slopes.push((points[i + 1].y - points[i].y) / width);
+  }
+  const tangents = [slopes[0]];
+  for (let i = 1; i < points.length - 1; i++) {
+    const before = slopes[i - 1], after = slopes[i];
+    if (before * after <= 0) {
+      tangents.push(0);
+    } else {
+      const w1 = 2 * widths[i] + widths[i - 1];
+      const w2 = widths[i] + 2 * widths[i - 1];
+      tangents.push((w1 + w2) / (w1 / before + w2 / after));
+    }
+  }
+  tangents.push(slopes[slopes.length - 1]);
+  for (let i = 0; i < points.length - 1; i++) {
+    const current = points[i], next = points[i + 1];
+    const handleWidth = widths[i] / 3;
+    ctx.bezierCurveTo(
+      current.x + handleWidth, current.y + tangents[i] * handleWidth,
+      next.x - handleWidth, next.y - tangents[i + 1] * handleWidth,
+      next.x, next.y,
+    );
   }
 }
 
@@ -397,7 +416,8 @@ function drawDashboardTrendChart(metric) {
     ? [{ values: points.map(point => dashboardSafeNonNegative(point.download_bps)), color: '#3b9cff' }, { values: points.map(point => dashboardSafeNonNegative(point.upload_bps)), color: '#a78bfa' }]
     : [{ values: points.map(point => dashboardTrendMetricValue(point, metric)), color: metric === 'requests' ? '#3b82f6' : '#10b981' }];
   const scale = dashboardRequestScale(Math.max(0, ...series.flatMap(item => item.values)));
-  ctx.font = `${width < 360 ? 10 : 11}px system-ui`;
+  const chartFont = typeof getComputedStyle === 'function' ? getComputedStyle(canvas).fontFamily : 'system-ui';
+  ctx.font = `400 12px ${chartFont}`;
   const yLabelWidth = Math.max(...Array.from({ length: scale.ticks + 1 }, (_, index) => ctx.measureText(dashboardTrendValueLabel(scale.max - scale.step * index, metric)).width));
   const left = Math.min(Math.max(50, Math.ceil(yLabelWidth) + 16), Math.floor(width * .36));
   const right = 12, top = 14, bottom = 30;
@@ -425,7 +445,10 @@ function drawDashboardTrendChart(metric) {
     dashboardTraceSmoothLine(ctx, pointsOnCanvas);
     if (metric !== 'speed') {
       ctx.lineTo(pointsOnCanvas[pointsOnCanvas.length - 1].x, top + plotH); ctx.lineTo(pointsOnCanvas[0].x, top + plotH); ctx.closePath();
-      ctx.globalAlpha = .12; ctx.fillStyle = item.color; ctx.fill(); ctx.globalAlpha = 1;
+      const fill = ctx.createLinearGradient(0, top, 0, top + plotH);
+      fill.addColorStop(0, `${item.color}38`);
+      fill.addColorStop(1, `${item.color}03`);
+      ctx.fillStyle = fill; ctx.fill();
       ctx.beginPath();
       dashboardTraceSmoothLine(ctx, pointsOnCanvas);
     }
@@ -455,7 +478,7 @@ function drawDashboardTrendChart(metric) {
     ctx.beginPath(); ctx.moveTo(crosshairX, top); ctx.lineTo(crosshairX, top + plotH); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(left, crosshairY); ctx.lineTo(width - right, crosshairY); ctx.stroke();
     if (ctx.setLineDash) ctx.setLineDash([]);
-    ctx.font = `${width < 360 ? 11 : 12}px system-ui, sans-serif`;
+    ctx.font = `500 12px ${chartFont}`;
     const yValue = scale.max * (1 - (crosshairY - top) / Math.max(1, plotH));
     const yLabel = dashboardTrendValueLabel(yValue, metric);
     const measureText = text => typeof ctx.measureText === 'function' ? ctx.measureText(text).width : String(text).length * 7;

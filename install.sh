@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Meridian one-click installer.
-# Public operations are intentionally limited to install, update, password,
-# and uninstall. Backups and rollback remain internal safety mechanisms.
+# Install, update, TLS configuration, password reset and uninstall.
+# Backups and rollback remain internal safety mechanisms.
 
 REPO="${MERIDIAN_REPO:-snnabb/Meridian}"
 INSTALL_DIR="${MERIDIAN_INSTALL_DIR:-/usr/local/bin}"
@@ -33,6 +33,8 @@ PURGE_DATA=0
 DOMAIN_MODE="ask"
 REQUESTED_DOMAIN=""
 REQUESTED_PORT=""
+REQUESTED_WILDCARD=""
+DNS_TOKEN_FILE=""
 CERTBOT_EMAIL=""
 INITIAL_SETUP_TOKEN=""
 SETUP_TOKEN_ORIGIN=""
@@ -1955,6 +1957,179 @@ print_setup_token_notice() {
     esac
 }
 
+
+panel_updater_supported_install() {
+    # The root helper is offered only for the standard installation layout.
+    # Manual/container/custom deployments still have release checks in the UI.
+    is_systemd || return 1
+    [ "$INSTALL_DIR" = /usr/local/bin ] && [ "$DATA_DIR" = /opt/meridian ] \
+        && [ "$SERVICE_FILE" = /etc/systemd/system/meridian.service ] \
+        && [ "$SERVICE_NAME" = meridian ] && [ "$REPO" = snnabb/Meridian ]
+}
+
+setup_panel_updater() {
+    panel_updater_supported_install || return 0
+    "${INSTALL_DIR}/${BIN_NAME}" --version --features 2>/dev/null | grep -x panel-updater-v1 >/dev/null || { warn "当前二进制尚不支持面板更新服务，请更新到包含此功能的版本后重新运行 install -y"; return 0; }
+    local tmp_dir source_script version socket_changed=0
+    tmp_dir=$(mktemp -d)
+    chmod 0700 "$tmp_dir"
+    source_script="${BASH_SOURCE[0]:-}"
+    if [ -f "$source_script" ]; then
+        cp -- "$source_script" "${tmp_dir}/install.sh" || { rm -rf -- "$tmp_dir"; return 1; }
+    else
+        version=$(get_current_version)
+        valid_version "$version" || { rm -rf -- "$tmp_dir"; return 1; }
+        download "https://raw.githubusercontent.com/${REPO}/${version}/install.sh" "${tmp_dir}/install.sh" \
+            || { rm -rf -- "$tmp_dir"; return 1; }
+    fi
+    bash -n "${tmp_dir}/install.sh" || { rm -rf -- "$tmp_dir"; return 1; }
+    as_root install -d -o root -g root -m 0755 /usr/local/libexec/meridian || return 1
+    as_root install -o root -g root -m 0755 "${tmp_dir}/install.sh" /usr/local/libexec/meridian/install.sh.new || return 1
+    as_root mv -f /usr/local/libexec/meridian/install.sh.new /usr/local/libexec/meridian/install.sh || return 1
+    as_root install -o root -g root -m 0755 "${INSTALL_DIR}/${BIN_NAME}" /usr/local/libexec/meridian/updater.new || return 1
+    as_root mv -f /usr/local/libexec/meridian/updater.new /usr/local/libexec/meridian/updater || return 1
+    cat > "${tmp_dir}/meridian-updater.service" <<'UNIT'
+[Unit]
+Description=Meridian trusted local updater
+Wants=network-online.target
+After=network-online.target
+[Service]
+Type=simple
+User=root
+Group=meridian
+UMask=0077
+RuntimeDirectory=meridian-updater
+RuntimeDirectoryMode=0750
+StateDirectory=meridian-updater
+StateDirectoryMode=0700
+ExecStart=/usr/local/libexec/meridian/updater update-agent --socket /run/meridian-updater/control.sock --installer /usr/local/libexec/meridian/install.sh
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target
+UNIT
+    as_root install -o root -g root -m 0644 "${tmp_dir}/meridian-updater.service" /etc/systemd/system/meridian-updater.service || return 1
+    if [ "$(read_env_value MERIDIAN_UPDATER_SOCKET)" != /run/meridian-updater/control.sock ]; then
+        replace_tls_env MERIDIAN_UPDATER_SOCKET /run/meridian-updater/control.sock "$tmp_dir" || { rm -rf -- "$tmp_dir"; return 1; }
+        socket_changed=1
+    fi
+    rm -rf -- "$tmp_dir"
+    as_root systemctl daemon-reload || return 1
+    as_root systemctl enable meridian-updater.service || return 1
+    # Restarting the agent from its own child installer would interrupt the
+    # update before the agent can persist its completed status.
+    if [ -z "${MERIDIAN_EXPECTED_UPDATE_VERSION:-}" ]; then
+        as_root systemctl restart meridian-updater.service || return 1
+    fi
+    if [ "$socket_changed" = 1 ] && service_is_active; then
+        as_root systemctl restart "$SERVICE_NAME" || return 1
+        wait_for_health 20 || return 1
+    fi
+    ok "面板更新服务已启用"
+}
+
+print_panel_address() {
+    local domain port
+    domain=$(read_env_value PANEL_DOMAIN)
+    port=$(read_config_port)
+    if [ "$(read_env_value PANEL_TLS_ENABLED)" = true ]; then
+        printf '  面板地址: https://%s%s\n' "$domain" "$( [ "$port" = 443 ] || printf ':%s' "$port" )"
+    elif [ -n "$domain" ] && as_root test -f "$NGINX_CONFIG"; then
+        printf '  面板地址: https://%s\n' "$domain"
+    else
+        printf '  面板地址: http://127.0.0.1:%s（默认仅本机；公网请配置 HTTPS）\n' "$port"
+    fi
+}
+
+do_tls() (
+    local domain wildcard email token port tmp_dir snapshot active=0 transaction=0 snapshot_ready=0
+    init_privilege
+    ensure_cli_dependencies update
+    validate_install_dir; validate_data_dir; validate_backup_dir
+    is_systemd || fail "自动配置泛域名证书需要 systemd"
+    need_cmd systemd-run
+    [ -x "${INSTALL_DIR}/${BIN_NAME}" ] || fail "请先安装 Meridian"
+    "${INSTALL_DIR}/${BIN_NAME}" --version --features 2>/dev/null | grep -x managed-tls-v1 >/dev/null || fail "请先更新到支持泛域名证书命令的 Meridian 版本"
+    domain="$REQUESTED_DOMAIN"; wildcard="$REQUESTED_WILDCARD"; email="$CERTBOT_EMAIL"
+    if [ "$ASSUME_YES" != 1 ]; then
+        [ -n "$domain" ] || read -r -p "面板完整域名（例如 panel.example.com）: " domain
+        [ -n "$wildcard" ] || read -r -p "节点泛域名（例如 *.example.com）: " wildcard
+        [ -n "$email" ] || read -r -p "ACME 邮箱: " email
+    fi
+    valid_domain "$domain" || fail "请填写有效的面板完整域名"
+    wildcard="${wildcard#\*.}"
+    valid_domain "$wildcard" || fail "请填写有效泛域名"
+    [[ "$domain" == *".${wildcard}" ]] || fail "面板域名必须属于节点泛域名"
+    if [ -z "$email" ] || ! valid_certbot_email "$email"; then fail "请填写有效邮箱"; fi
+    port="${REQUESTED_PORT:-$(read_config_port)}"
+    port=$(normalize_port "$port") || fail "端口必须为 1–65535"
+    [ "$port" != 443 ] || ! as_root test -f "$NGINX_CONFIG" || fail "443 正由安装器配置的 Nginx 使用，请选择其他端口（例如 9090）"
+    if [ -n "$DNS_TOKEN_FILE" ]; then
+        if [ ! -f "$DNS_TOKEN_FILE" ] || [ "$(wc -c < "$DNS_TOKEN_FILE")" -gt 513 ]; then fail "DNS Token 文件无效或过大"; fi
+        token=$(cat -- "$DNS_TOKEN_FILE")
+    elif [ "$ASSUME_YES" != 1 ]; then
+        IFS= read -r -s -p "Cloudflare DNS API Token（Zone:Read、DNS:Edit）: " token
+        printf '\n'
+    else
+        fail "非交互申请需要 --dns-token-file"
+    fi
+    [ -n "$token" ] || fail "DNS API Token 不能为空"
+    tmp_dir=$(mktemp -d) || exit 1; chmod 0700 "$tmp_dir" || exit 1; snapshot="${tmp_dir}/snapshot"
+    # Invoked by the EXIT trap in this subshell.
+    # shellcheck disable=SC2317
+    cleanup_tls() {
+        local code=$?
+        unset token
+        if [ "$transaction" = 1 ]; then
+            as_root systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+            if [ "$snapshot_ready" = 1 ]; then restore_data_snapshot "$snapshot" || warn "恢复失败，请保留并检查快照: $snapshot"; fi
+            if [ "$active" = 1 ]; then as_root systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true; fi
+        fi
+        if [ "$transaction" = 0 ]; then as_root rm -rf -- "$tmp_dir"; fi
+        return "$code"
+    }
+    trap cleanup_tls EXIT
+    trap 'exit 130' INT TERM
+    service_is_active && active=1
+    transaction=1
+    as_root systemctl stop "$SERVICE_NAME" || exit 1
+    # Mark the stop immediately so a backup failure still restores availability.
+    if ! create_backup_archive pre-tls || ! snapshot_data_dir "$snapshot"; then
+        [ "$active" = 0 ] || as_root systemctl start "$SERVICE_NAME"
+        fail "证书配置前备份失败"
+    fi
+    snapshot_ready=1
+    replace_tls_env PANEL_TLS_CERT_FILE "" "$tmp_dir" || exit 1
+    replace_tls_env PANEL_TLS_KEY_FILE "" "$tmp_dir" || exit 1
+    info "正在申请泛域名证书，DNS 验证可能需要数分钟…"
+    printf '%s\n' "$token" | as_root systemd-run --quiet --wait --pipe --collect \
+        --unit="meridian-certificate-$$" --property="User=${SERVICE_USER}" --property="Group=${SERVICE_GROUP}" \
+        --property="UMask=0077" --property="EnvironmentFile=$(env_file_path)" \
+        "${INSTALL_DIR}/${BIN_NAME}" tls issue --domain "$domain" --wildcard "*.${wildcard}" \
+        --email "$email" --port "$port" --token-stdin || fail "证书申请失败，正在恢复原配置"
+    unset token
+    set_panel_env 0.0.0.0 "$domain" "$(read_env_value TRUSTED_PROXY_CIDRS)" false "$tmp_dir" "$port" || exit 1
+    replace_tls_env PANEL_TLS_ENABLED true "$tmp_dir" || exit 1
+    replace_tls_env PANEL_ROUTE_DOMAIN "$wildcard" "$tmp_dir" || exit 1
+    as_root systemctl start "$SERVICE_NAME" || exit 1
+    wait_for_health 20 || fail "HTTPS 健康检查失败，正在恢复原配置"
+    transaction=0
+    # Native HTTPS now owns the panel endpoint; remove only our managed proxy.
+    remove_managed_nginx_config || warn "请手动移除旧的 Meridian Nginx 面板配置"
+    print_panel_address
+    ok "泛域名证书已启用并配置自动续期，请放行 TCP ${port}"
+)
+
+replace_tls_env() {
+    local key="$1" value="$2" tmp_dir="$3"
+    # awk field references are intentionally literal.
+    # shellcheck disable=SC2016
+    as_root awk -F= -v wanted="$key" '$1 != wanted {print}' "$(env_file_path)" > "${tmp_dir}/tls.env"
+    printf '%s=%s\n' "$key" "$value" >> "${tmp_dir}/tls.env"
+    install_env_file "${tmp_dir}/tls.env"
+}
+
 do_install() {
     local current_binary="${INSTALL_DIR}/${BIN_NAME}" tmp_dir version
     INITIAL_SETUP_TOKEN=""
@@ -1978,7 +2153,8 @@ do_install() {
                 || fail "面板端口修改失败；原配置已恢复"
         fi
         print_setup_token_notice || return 1
-        apply_domain_choice 1
+        setup_panel_updater || warn "更新服务安装失败，可稍后重新运行 install -y"
+        if [ -n "$REQUESTED_WILDCARD" ]; then do_tls; else apply_domain_choice 1; fi
         return 0
     fi
 
@@ -2008,13 +2184,10 @@ do_install() {
     fi
     rm -rf -- "$tmp_dir"
 
-    apply_domain_choice 0
+    setup_panel_updater || warn "更新服务安装失败，可稍后重新运行 install -y"
+    if [ -n "$REQUESTED_WILDCARD" ]; then do_tls; else apply_domain_choice 0; fi
     printf '\n%s\n' "Meridian ${version} 安装完成"
-    if [ -n "$(read_env_value PANEL_DOMAIN)" ]; then
-        printf '  面板地址: https://%s\n' "$(read_env_value PANEL_DOMAIN)"
-    else
-        printf '  面板地址: http://127.0.0.1:%s（默认仅本机；公网请配置 HTTPS 域名）\n' "$(read_config_port)"
-    fi
+    print_panel_address
     printf '  数据目录: %s\n' "$DATA_DIR"
     print_setup_token_notice || return 1
 }
@@ -2039,7 +2212,11 @@ do_update() {
         || fail "Nginx URI 脱敏日志迁移失败；原配置已恢复"
     current_version=$(get_current_version)
     latest_version=$(resolve_latest_version)
+    if [ -n "${MERIDIAN_EXPECTED_UPDATE_VERSION:-}" ] && [ "$latest_version" != "$MERIDIAN_EXPECTED_UPDATE_VERSION" ]; then
+        fail "最新版本已发生变化，请重新检查更新后再试"
+    fi
     if [ "$current_version" = "$latest_version" ]; then
+        setup_panel_updater || warn "更新服务安装失败，可稍后重新运行 update -y"
         ok "当前已是最新版本: $latest_version"
         return 0
     fi
@@ -2130,9 +2307,10 @@ do_update() {
         warn "无法清理更新临时目录（可能残留敏感快照），请手动删除: $tmp_dir"
     fi
     trap - EXIT INT TERM
+    setup_panel_updater || warn "版本已更新，但更新服务安装失败，可稍后重新运行 update -y"
     ok "已更新到最新版本: $latest_version"
     info "现有 .env、面板域名和证书均已保留；安装器管理的 Nginx 配置已按需完成 URI 日志脱敏迁移"
-    print_setup_token_notice || return 1
+    [ -n "${MERIDIAN_EXPECTED_UPDATE_VERSION:-}" ] || print_setup_token_notice || return 1
 }
 
 password_byte_length() {
@@ -2227,15 +2405,15 @@ do_password() {
     init_privilege
     ensure_cli_dependencies password
     [ -f "$SERVICE_FILE" ] || fail "找不到 Meridian systemd 服务，请重新运行 install 修复安装"
-    IFS= read -r -s -p "请输入新管理员密码（12-72 字节）: " password
+    IFS= read -r -s -p "请输入新管理员密码（至少 6 个字符，最多 72 字节）: " password
     printf '\n'
     IFS= read -r -s -p "请再次输入新密码: " password_again
     printf '\n'
     [ "$password" = "$password_again" ] || { unset password password_again; fail "两次输入的密码不一致"; }
     length=$(password_byte_length "$password")
-    if [ "$length" -lt 12 ] || [ "$length" -gt 72 ]; then
+    if [ "$(printf '%s' "$password" | LC_ALL=C.UTF-8 wc -m)" -lt 6 ] || [ "$length" -gt 72 ]; then
         unset password password_again
-        fail "密码必须为 12-72 字节"
+        fail "密码至少 6 个字符，最多 72 字节"
     fi
 
     db_path=$(read_env_value DB_PATH)
@@ -2341,6 +2519,12 @@ do_uninstall() {
         as_root rm -f -- "$SERVICE_FILE"
         as_root systemctl daemon-reload
     fi
+    if is_systemd && [ "$INSTALL_DIR" = /usr/local/bin ] && [ "$SERVICE_NAME" = meridian ]; then
+        as_root systemctl disable --now meridian-updater.service 2>/dev/null || true
+        as_root rm -f -- /etc/systemd/system/meridian-updater.service
+        as_root rm -rf -- /usr/local/libexec/meridian
+        as_root systemctl daemon-reload
+    fi
     as_root rm -f -- "${INSTALL_DIR}/${BIN_NAME}" "$PREVIOUS_BIN" \
         "${INSTALL_DIR}/${BIN_NAME}.new" "${INSTALL_DIR}/${BIN_NAME}.rollback"
 
@@ -2365,6 +2549,8 @@ Meridian 一键安装工具
       首次安装最新版本；已安装时只补充或重新配置管理面板域名。
   install.sh update [-y]
       更新到最新 Release，自动备份、健康检查并在失败时回滚。
+  install.sh tls [--domain panel.example.com] [--wildcard '*.example.com'] [--email EMAIL] [--port PORT] [--dns-token-file PATH] [-y]
+      Cloudflare DNS 验证申请泛域名证书，切换原生 HTTPS 并自动续期。
   install.sh password
       隐藏输入并修改唯一管理员密码，同时轮换 JWT 密钥。
   install.sh uninstall [-y] [--purge]
@@ -2376,11 +2562,13 @@ Meridian 一键安装工具
   --port PORT      管理面板监听端口，范围 1-65535；首次安装默认 9090，已有安装可安全切换
   --domain DOMAIN  仅为管理面板配置 HTTPS 域名，代理到 127.0.0.1:PORT
   --email EMAIL    Certbot 证书邮箱，可留空
+  --wildcard NAME  使用泛域名证书和原生 HTTPS；可用于 install 或 tls
+  --dns-token-file PATH  从文件读取 Cloudflare DNS Token，不在命令参数中传入密钥
   --no-domain      不配置或取消安装器管理的面板域名
   -y, --yes        非交互确认；安装未指定域名时保留现有配置，首次安装则使用 IP
   --purge          卸载时删除数据目录；不会删除备份、Nginx、Certbot 或证书
 
-不带参数运行时进入四项菜单。
+不带参数运行时进入菜单。标准 systemd 安装会同时启用面板内更新。
 选择“安装”后可交互输入管理面板端口；直接回车时，首次安装使用 9090，已有安装保留当前端口。
 USAGE
 }
@@ -2408,8 +2596,9 @@ main_menu() {
     printf '  2) 更新到最新版\n'
     printf '  3) 修改管理员密码\n'
     printf '  4) 卸载\n'
+    printf '  5) 配置泛域名证书\n'
     printf '  0) 退出\n\n'
-    read -r -p "请选择 [0-4]: " choice
+    read -r -p "请选择 [0-5]: " choice
     case "$choice" in
         1)
             prompt_panel_port
@@ -2418,6 +2607,7 @@ main_menu() {
         2) do_update ;;
         3) do_password ;;
         4) do_uninstall ;;
+        5) do_tls ;;
         0) exit 0 ;;
         *) fail "无效选项" ;;
     esac
@@ -2436,7 +2626,7 @@ run_cli() {
                 PURGE_DATA=1
                 ;;
             --domain)
-                [ "$action" = "install" ] || fail "--domain 仅用于 install"
+                [[ "$action" = install || "$action" = tls ]] || fail "--domain 仅用于 install 或 tls"
                 [ "$#" -ge 2 ] || fail "--domain 需要一个域名"
                 [ "$DOMAIN_MODE" = "ask" ] || fail "域名选项不能重复"
                 REQUESTED_DOMAIN=$(normalize_domain "$2")
@@ -2445,7 +2635,7 @@ run_cli() {
                 shift
                 ;;
             --port|-p)
-                [ "$action" = "install" ] || fail "--port 仅用于 install"
+                [[ "$action" = install || "$action" = tls ]] || fail "--port 仅用于 install 或 tls"
                 [ "$#" -ge 2 ] || fail "--port 需要一个端口"
                 [ -z "$REQUESTED_PORT" ] || fail "端口选项不能重复"
                 REQUESTED_PORT=$(normalize_port "$2") \
@@ -2453,11 +2643,21 @@ run_cli() {
                 shift
                 ;;
             --email)
-                [ "$action" = "install" ] || fail "--email 仅用于 install"
+                [[ "$action" = install || "$action" = tls ]] || fail "--email 仅用于 install 或 tls"
                 [ "$#" -ge 2 ] || fail "--email 需要一个邮箱；留空时请省略该选项"
                 CERTBOT_EMAIL="$2"
                 valid_certbot_email "$CERTBOT_EMAIL" || fail "证书邮箱格式无效"
                 shift
+                ;;
+            --wildcard)
+                [[ "$action" = install || "$action" = tls ]] || fail "--wildcard 仅用于 install 或 tls"
+                [ "$#" -ge 2 ] || fail "--wildcard 需要域名"
+                REQUESTED_WILDCARD="$2"; shift
+                ;;
+            --dns-token-file)
+                [[ "$action" = install || "$action" = tls ]] || fail "--dns-token-file 仅用于 install 或 tls"
+                [ "$#" -ge 2 ] || fail "--dns-token-file 需要文件路径"
+                DNS_TOKEN_FILE="$2"; shift
                 ;;
             --no-domain)
                 [ "$action" = "install" ] || fail "--no-domain 仅用于 install"
@@ -2474,12 +2674,13 @@ run_cli() {
         || fail "--email 必须与 --domain 一起使用"
     case "$action" in
         install) do_install ;;
+        tls) do_tls ;;
         update) do_update ;;
         password) do_password ;;
         uninstall) do_uninstall ;;
         help) usage ;;
         menu) main_menu ;;
-        *) fail "未知操作: $action（仅支持 install、update、password、uninstall、help）" ;;
+        *) fail "未知操作: $action（仅支持 install、update、tls、password、uninstall、help）" ;;
     esac
 }
 

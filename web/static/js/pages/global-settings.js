@@ -7,8 +7,7 @@ function applySystemUISettings(settings) {
   if (!settings) return;
   if (typeof meridianSetTimezoneName === 'function' && settings.schedule_timezone) meridianSetTimezoneName(settings.schedule_timezone);
   if (typeof meridianSetTimezoneOffset === 'function') meridianSetTimezoneOffset(settings.schedule_timezone_offset);
-  const radius = Math.max(0, Math.min(24, Number(settings.ui_radius || 0)));
-  document.documentElement.style.setProperty('--ui-radius', `${radius}px`);
+  document.documentElement.style.setProperty('--ui-radius', '24px');
 }
 
 async function loadAppliedSystemSettings() {
@@ -24,11 +23,9 @@ async function loadAppliedSystemSettings() {
 function globalSettingsNav(active) {
   const button = (id, label) => `<button type="button" class="settings-nav-item ${active === id ? 'active' : ''}" data-settings-section="${id}">${label}</button>`;
   return `<aside class="settings-section-nav">
-    <span>SETTINGS</span><strong>全局设置导航</strong>
-    ${button('system-ui', '系统设置')}${button('logs', '日志设置')}
+    ${button('system-ui', '系统设置')}${button('logs', '日志设置')}${button('updates', '版本更新')}
     <a href="#settings-tls" class="settings-nav-item ${active === 'tls' ? 'active' : ''}">TLS 设置</a>
-    <a href="#telegram-report" class="settings-nav-item ${active === 'telegram' ? 'active' : ''}">Telegram 通知</a>
-    <a href="#diagnostics" class="settings-nav-item ${active === 'diagnostics' ? 'active' : ''}">故障诊断</a>
+    <a href="#telegram-report" class="settings-nav-item ${active === 'telegram' ? 'active' : ''}">Telegram Bot</a>
     <a href="#backup-restore" class="settings-nav-item ${active === 'backup' ? 'active' : ''}">备份与恢复</a>
   </aside>`;
 }
@@ -41,20 +38,20 @@ function renderBackupRestore() {
   const page = document.getElementById('page-backup-restore');
   if (!page) return;
   page.innerHTML = `<div class="settings-layout fade-up">${globalSettingsNav('backup')}<main class="settings-content backup-restore-content">
-    <section class="settings-panel"><header><span>BACKUP</span><h2>数据备份</h2><b>密码加密</b></header>
+    <section class="settings-panel"><header><h2>数据备份</h2><b>密码加密</b></header>
       <p class="settings-panel-help">备份包含站点、账户、流量与请求日志、全局设置及 Telegram 配置；不包含缓存、.env 或部署密钥文件。</p>
       <div class="settings-grid">${backupPasswordField('backup-password', '备份密码')}${backupPasswordField('backup-password-confirm', '确认备份密码')}</div>
-      ${settingsCheck('backup-include-tls', '包含 TLS 设置与证书', false, '默认不包含。勾选后才会备份面板域名、监听端口、TLS 开关、证书与 ACME 账户；未勾选时，恢复会保留目标服务器现有 TLS 配置。')}
-      <div class="backup-warning">备份中含管理员账户、站点地址及加密凭据，必须妥善保存密码和备份文件。忘记密码后无法恢复。</div>
+      ${settingsCheck('backup-include-tls', '包含 TLS 设置与证书', false, '勾选后包含域名、端口、证书和 ACME 账户；恢复时会覆盖目标服务器的 TLS 配置。')}
+      <div class="backup-warning">备份含账户和凭据，请妥善保管。忘记备份密码后无法恢复。</div>
       <div class="settings-save-bar"><button class="telegram-btn primary" type="button" id="backup-download">下载加密备份</button></div>
     </section>
-    <section class="settings-panel backup-restore-danger"><header><span>RESTORE</span><h2>数据恢复</h2><b>自动重启</b></header>
-      <p class="settings-panel-help">恢复会替换当前数据库并使用备份中的管理员账户；只有备份明确包含 TLS 时才会替换 TLS 数据，否则保留当前服务器的 TLS 设置与证书。文件通过解密、结构检查和 SQLite 完整性检查后，Meridian 才会重启应用。</p>
+    <section class="settings-panel backup-restore-danger"><header><h2>数据恢复</h2><b>自动重启</b></header>
+      <p class="settings-panel-help">恢复将覆盖当前数据并重启；备份未包含 TLS 时，保留现有证书与 TLS 设置。</p>
       <div class="settings-grid">
         <label class="settings-field"><span>Meridian 备份文件</span><div><input class="form-input backup-file-input" id="restore-file" type="file" accept=".mrbak,application/octet-stream"></div></label>
         ${backupPasswordField('restore-password', '备份密码')}
       </div>
-      <label class="settings-field backup-confirm-field"><span>确认操作</span><div><input class="form-input" id="restore-confirm" type="text" autocomplete="off" placeholder="请输入：恢复"></div><small>输入“恢复”后才能提交。开始恢复前建议先下载一份当前数据备份。</small></label>
+      <label class="settings-field backup-confirm-field"><span>输入“恢复”确认</span><div><input class="form-input" id="restore-confirm" type="text" autocomplete="off" placeholder="恢复"></div><small>恢复前建议先备份当前数据。</small></label>
       <div class="backup-warning danger">恢复后当前登录会失效；请使用备份中的管理员用户名和密码重新登录。</div>
       <div class="settings-save-bar"><button class="telegram-btn danger" type="button" id="backup-restore-submit">校验并恢复</button></div>
     </section>
@@ -123,7 +120,7 @@ async function restoreMeridianBackup() {
 }
 
 function settingsNumber(id, label, value, min, max, unit, help) {
-  return `<label class="settings-field"><span>${label}</span><div><input class="form-input" id="${id}" type="number" min="${min}" max="${max}" value="${value}"><em>${unit}</em></div>${help ? `<small>${help}</small>` : ''}</label>`;
+  return `<label class="settings-field"><span>${label}</span><div><input class="form-input" id="${id}" type="number" min="${min}" max="${max}" step="1" inputmode="numeric" required value="${value}"><em>${unit}</em></div>${help ? `<small>${help}</small>` : ''}</label>`;
 }
 
 function trafficResetDaySelect(value) {
@@ -131,7 +128,7 @@ function trafficResetDaySelect(value) {
   const options = ['<option value="0">不重置（累计流量）</option>'];
   for (let day = 1; day <= 31; day++) options.push(`<option value="${day}" ${selected === day ? 'selected' : ''}>每月 ${day} 日</option>`);
   if (selected === 0) options[0] = '<option value="0" selected>不重置（累计流量）</option>';
-  return `<label class="settings-field"><span>流量周期</span><div><select class="form-select settings-reset-select" id="setting-traffic-reset-day">${options.join('')}</select></div><small>默认每月 1 日；选择不重置后，额度和流量统计使用全部累计值。</small></label>`;
+  return `<label class="settings-field"><span>流量周期</span><div><select class="form-select settings-reset-select" id="setting-traffic-reset-day">${options.join('')}</select></div><small>短月按最后一天重置；选择不重置时使用累计流量。</small></label>`;
 }
 
 const COMMON_TIMEZONES = [
@@ -147,7 +144,7 @@ function timezoneSelect(value, legacyOffset) {
   const numericOffset = Number(legacyOffset);
   const offset = Number.isFinite(numericOffset) ? Math.trunc(numericOffset) : 480;
   const options = COMMON_TIMEZONES.map(([name, label]) => `<option value="${name}" ${name === selected ? 'selected' : ''}>${label} · ${name}</option>`);
-  return `<label class="settings-field"><span>时区</span><div><select class="form-select" id="setting-schedule-timezone">${options.join('')}</select><input type="hidden" id="setting-schedule-timezone-offset" value="${offset}"></div><small>使用标准 IANA 时区；夏令时由服务端和浏览器自动处理。旧版 UTC 偏移仍会兼容读取。</small></label>`;
+  return `<label class="settings-field"><span>时区</span><div><select class="form-select" id="setting-schedule-timezone">${options.join('')}</select><input type="hidden" id="setting-schedule-timezone-offset" value="${offset}"></div><small>用于流量重置、日志时间和定时通知。</small></label>`;
 }
 
 function settingsCheck(id, label, checked, help) {
@@ -168,6 +165,7 @@ function renderGlobalSettings() {
 }
 
 function bindGlobalSettingsNav(root = document) {
+  bindFieldValidation(root);
   root.querySelectorAll('[data-settings-section]').forEach(button => {
     button.onclick = () => {
       globalSettingsSection = button.dataset.settingsSection;
@@ -199,9 +197,10 @@ function paintGlobalSettings(page = document.getElementById('page-global-setting
   bindGlobalSettingsNav(page);
   const content = page.querySelector('.settings-content');
   if (!content) return;
-  content.innerHTML = globalSettingsSection === 'logs'
+  content.innerHTML = globalSettingsSection === 'updates' ? renderUpdateSettings() : globalSettingsSection === 'logs'
     ? renderLogSettingsForm(globalSettingsCache)
     : renderSystemUIForm(globalSettingsCache);
+  bindUpdateSettings(page);
   const saveButton = page.querySelector('#settings-save');
   if (saveButton) saveButton.onclick = saveGlobalSettings;
   page.querySelectorAll('[data-setting-choice]').forEach(button => {
@@ -213,36 +212,26 @@ function paintGlobalSettings(page = document.getElementById('page-global-setting
 }
 
 function renderSystemUIForm(s) {
-  return `<section class="settings-panel"><header><span>SYSTEM</span><h2>系统设置</h2><b>全局运行参数</b></header>
-    <p class="settings-panel-help">单向计出站下载；双向计入站与出站流量。</p>
+  return `<section class="settings-panel"><header><h2>流量与时间</h2></header>
     <span class="settings-label">计费方向</span><div class="settings-choice" id="traffic-billing-mode-choice"><button data-setting-choice="outbound" class="${s.traffic_billing_mode === 'outbound' ? 'active' : ''}">单向（仅下载）</button><button data-setting-choice="bidirectional" class="${s.traffic_billing_mode !== 'outbound' ? 'active' : ''}">双向（下载 + 上传）</button></div>
-  </section>
-  <section class="settings-panel"><header><span>TRAFFIC RESET</span><h2>流量周期</h2><b>可重置或累计</b></header>
-    <p class="settings-panel-help">按每月指定日期重置周期流量；短月自动使用该月最后一天。</p>
+    <div class="settings-grid settings-system-fields">
     ${trafficResetDaySelect(s.traffic_reset_day == null ? 1 : s.traffic_reset_day)}
-  </section>
-  <section class="settings-panel"><header><span>RADIUS</span><h2>UI 圆角弧度</h2><b>0-24 px</b></header>
-    ${settingsNumber('setting-ui-radius', '圆角弧度', s.ui_radius, 0, 24, 'px', '即时应用到管理面板。')}
-  </section>
-  <section class="settings-panel"><header><span>PROBE</span><h2>健康检查探测</h2><b>1000-180000 ms</b></header>
-    <div class="settings-grid">${settingsNumber('setting-probe-timeout', 'GET 超时时间', s.probe_timeout_ms, 1000, 180000, 'ms', '健康探测超时时间。')}${settingsNumber('setting-ping-cache', 'Ping 缓存时间', s.ping_cache_minutes, 0, 1440, '分钟', '0 为关闭复用。')}</div>
-  </section>
-  <section class="settings-panel"><header><span>SCHEDULE</span><h2>调度时区</h2><b>默认 Asia/Shanghai</b></header>
     ${timezoneSelect(s.schedule_timezone, s.schedule_timezone_offset)}
+    </div>
   </section>${settingsSaveBar()}`;
 }
 
 function renderLogSettingsForm(s) {
-  return `<section class="settings-panel"><header><span>MASTER SWITCH</span><h2>日志功能总开关</h2><b>写入与查询统一控制</b></header>
-    ${settingsCheck('setting-log-enabled', '开启日志写入与日志页显示', s.log_enabled)}
+  return `<section class="settings-panel"><header><h2>日志设置</h2></header>
+    ${settingsCheck('setting-log-enabled', '开启日志记录与查询', s.log_enabled)}
     <span class="settings-label">日志写入模式</span><div class="settings-choice" id="log-level-choice"><button data-setting-choice="info" class="${s.log_level === 'info' ? 'active' : ''}">INFO（常规记录）</button><button data-setting-choice="error" class="${s.log_level === 'error' ? 'active' : ''}">ERROR（仅异常错误）</button></div>
   </section>
-  <section class="settings-panel"><header><span>RETENTION</span><h2>日志保留天数</h2><b>自动清理过期数据</b></header>
+  <section class="settings-panel"><header><h2>日志保留</h2></header>
     <div class="settings-grid">
       ${settingsNumber('setting-log-retention', '保存周期', s.log_retention_days, 1, 365, '天', '超过设定天数的历史记录将被自动清理。')}
     </div>
   </section>
-  <section class="settings-panel"><header><span>RESOURCE CATEGORIES</span><h2>记录请求类别</h2><b>按需记录，降低开销</b></header>
+  <section class="settings-panel"><header><h2>记录请求类别</h2></header>
     <div class="settings-check-grid">
       ${settingsCheck('setting-write-playback', '播放与串流信息', s.log_write_playback !== false)}
       ${settingsCheck('setting-write-video', '主视频流与分片', s.log_write_video !== false)}
@@ -252,9 +241,9 @@ function renderLogSettingsForm(s) {
     </div>
   </section>
   <details class="settings-panel settings-advanced-details" style="margin-top:14px;cursor:pointer;">
-    <summary style="font-size:.88rem;font-weight:600;color:var(--white-87);padding:4px 0;">▸ 高级队列与字段微调（存储队列、细粒度类型与展示列）</summary>
+    <summary style="font-size:.88rem;font-weight:600;color:var(--white-87);padding:4px 0;">高级日志设置</summary>
     <div style="margin-top:16px;">
-      <h3 style="font-size:.84rem;margin:12px 0 8px;color:var(--white-60);">高级存储队列参数</h3>
+      <h3 style="font-size:12px;margin:12px 0 8px;color:var(--white-60);">高级存储队列参数</h3>
       <div class="settings-grid">
         ${settingsNumber('setting-log-delay', '写入延迟', s.log_write_delay_minutes, 0, 60, '分钟')}
         ${settingsNumber('setting-log-threshold', '提前写入阈值', s.log_flush_threshold, 1, 1000, '条')}
@@ -263,7 +252,7 @@ function renderLogSettingsForm(s) {
         ${settingsNumber('setting-log-backoff', '重试退避', s.log_retry_backoff_ms, 0, 5000, 'ms')}
         ${settingsNumber('setting-log-lease', '定时任务租约时长', s.log_task_lease_ms, 1000, 900000, 'ms')}
       </div>
-      <h3 style="font-size:.84rem;margin:16px 0 8px;color:var(--white-60);">更多请求类别</h3>
+      <h3 style="font-size:12px;margin:16px 0 8px;color:var(--white-60);">更多请求类别</h3>
       <div class="settings-check-grid">
         ${settingsCheck('setting-write-image', '图片海报', s.log_write_image === true)}
         ${settingsCheck('setting-write-metadata', '媒体元数据', s.log_write_metadata === true)}
@@ -272,7 +261,7 @@ function renderLogSettingsForm(s) {
       </div>
       <div class="settings-two-column" style="margin-top:16px;">
         <div style="background:rgba(255,255,255,0.03);padding:14px;border-radius:12px;">
-          <h4 style="font-size:.82rem;margin:0 0 10px;color:var(--white-87);">写入数据库的字段</h4>
+          <h4 style="font-size:12px;margin:0 0 10px;color:var(--white-87);">写入数据库的字段</h4>
           <div class="settings-check-grid">
             ${settingsCheck('setting-write-node', '节点', s.log_write_node !== false)}
             ${settingsCheck('setting-write-status', '状态码', s.log_write_status !== false)}
@@ -285,7 +274,7 @@ function renderLogSettingsForm(s) {
           </div>
         </div>
         <div style="background:rgba(255,255,255,0.03);padding:14px;border-radius:12px;">
-          <h4 style="font-size:.82rem;margin:0 0 10px;color:var(--white-87);">日志列表展示的列</h4>
+          <h4 style="font-size:12px;margin:0 0 10px;color:var(--white-87);">日志列表展示的列</h4>
           <div class="settings-check-grid">
             ${settingsCheck('setting-display-node', '节点', s.log_display_node !== false)}
             ${settingsCheck('setting-display-status', '状态码', s.log_display_status !== false)}
@@ -321,13 +310,12 @@ function checkedSetting(id, fallback) {
 }
 
 async function saveGlobalSettings() {
+  const button = document.getElementById('settings-save');
+  if (button.disabled || !validateFields(document.getElementById('page-global-settings'))) return;
   const s = { ...globalSettingsCache };
   if (globalSettingsSection === 'system-ui') {
     s.traffic_billing_mode = activeSettingChoice('traffic-billing-mode-choice', s.traffic_billing_mode || 'bidirectional');
     s.traffic_reset_day = numericSetting('setting-traffic-reset-day', s.traffic_reset_day == null ? 1 : s.traffic_reset_day);
-    s.ui_radius = numericSetting('setting-ui-radius', s.ui_radius);
-    s.probe_timeout_ms = numericSetting('setting-probe-timeout', s.probe_timeout_ms);
-    s.ping_cache_minutes = numericSetting('setting-ping-cache', s.ping_cache_minutes);
     const timezoneInput = document.getElementById('setting-schedule-timezone');
     s.schedule_timezone = timezoneInput ? timezoneInput.value : (s.schedule_timezone || 'Asia/Shanghai');
     s.schedule_timezone_offset = numericSetting('setting-schedule-timezone-offset', s.schedule_timezone_offset);
@@ -370,8 +358,8 @@ async function saveGlobalSettings() {
     s.log_display_timeline = checkedSetting('setting-display-timeline', true);
     // Search mode is intentionally kept at its server default; the log page uses one simple search box.
   }
-  const button = document.getElementById('settings-save');
   button.disabled = true;
+  button.textContent = '保存中…';
   try {
     globalSettingsCache = await API.saveSystemSettings(s);
     applySystemUISettings(globalSettingsCache);
@@ -380,142 +368,200 @@ async function saveGlobalSettings() {
   } catch (error) {
     Toast.error('保存失败：' + error.message);
   } finally {
-    if (button.isConnected) button.disabled = false;
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = '保存设置';
+    }
   }
+}
+
+function currentPanelAccessPort(location = typeof window !== 'undefined' ? window.location : null) {
+  if (!location || !['http:', 'https:'].includes(location.protocol)) return null;
+  return parseBoundedInteger(location.port || (location.protocol === 'https:' ? '443' : '80'), 1, 65535);
+}
+
+function panelEndpointFormPort(status, location) {
+  const saved = parseBoundedInteger(status.listen_port, 1, 65535);
+  // Keep an explicitly saved port that is waiting for a restart. Otherwise
+  // suggest the port used to reach the panel, including reverse-proxy ports.
+  if (status.restart_required && saved !== null) return saved;
+  return currentPanelAccessPort(location) || parseBoundedInteger(status.active_listen_port, 1, 65535) || saved || 9090;
 }
 
 async function renderTLSSettings() {
   const page = document.getElementById('page-settings-tls');
   if (!page) return;
-  page.innerHTML = `<div class="settings-layout fade-up">${globalSettingsNav('tls')}<main class="settings-content"><section class="settings-panel"><div class="settings-loading">正在读取 TLS 配置…</div></section></main></div>`;
+  page.innerHTML = `<div class="settings-layout fade-up">${globalSettingsNav('tls')}<main class="settings-content"><div class="settings-loading">正在读取 TLS 配置…</div></main></div>`;
   bindGlobalSettingsNav(page);
   try {
     const status = await API.panelCertificate();
     if (Router.current !== 'settings-tls') return;
-    page.innerHTML = `
-      <div class="settings-layout fade-up">
-        ${globalSettingsNav('tls')}
-        <main class="settings-content">
-        <section class="settings-panel fade-up">
-          <header><span>TLS</span><h2>TLS 设置</h2><b>${status.configured ? '已配置' : '未配置'}</b></header>
-          <div class="global-settings-status" id="p-panel-certificate-status">${renderPanelCertificateStatus(status)}</div>
-          <div class="form-group" style="margin-top:18px">
-            <label>面板访问域名前缀</label>
-            <input type="text" class="form-input" id="p-panel-prefix" maxlength="63" value="${esc(status.panel_prefix || '')}" placeholder="panel" autocomplete="off" autocapitalize="none" spellcheck="false">
-            <div class="form-help">只需填写前缀，例如 <code>panel</code>，不必填写完整域名。</div>
-          </div>
-          <div class="form-group">
-            <label>节点泛域名</label>
-            <input type="text" class="form-input" id="p-wildcard-domain" maxlength="255" value="${esc(status.wildcard_domain || (status.route_domain ? `*.${status.route_domain}` : ''))}" placeholder="*.example.com" autocomplete="off" autocapitalize="none" spellcheck="false">
-            <div class="form-help">仅使用泛域名申请证书，例如 <code>*.example.com</code>；请提前将泛域名解析到本机。</div>
-          </div>
-          <div class="form-group">
-            <label>启用后的面板地址</label>
-            <div class="form-help" id="p-panel-address-preview">${esc(panelHTTPSPreview(status.panel_domain || ''))}</div>
-          </div>
-          <div class="form-group">
-            <label>面板监听端口</label>
-            <input type="number" class="form-input" id="p-panel-listen-port" min="1" max="65535" step="1" value="${esc(String(status.listen_port || status.active_listen_port || 9090))}">
-            <div class="form-help">修改端口后需要重启面板；Docker 请使用 host 网络，并在宿主机防火墙中放行新端口。</div>
-          </div>
-        </section>
-        <section class="settings-panel fade-up">
-          <header><span>ACME</span><h2>申请泛域名证书</h2><b>Cloudflare DNS</b></header>
-          <div class="form-group"><label>ACME 邮箱</label><input type="email" class="form-input" id="p-acme-email" autocomplete="email" maxlength="254" value="${esc(status.acme_email || '')}" placeholder="admin@example.com"><div class="form-help">邮箱会直接显示在面板中，用于 ACME 账户与证书续签通知。</div></div>
-          <div class="form-group"><label>DNS 服务商</label><select class="form-select" id="p-acme-provider"><option value="cloudflare">Cloudflare DNS</option></select></div>
-          <div class="form-group"><label>DNS API Token</label><input type="text" class="form-input mono" id="p-acme-token" autocomplete="off" maxlength="512" value="${esc(status.dns_api_token || '')}" placeholder="Cloudflare DNS API Token"><div class="form-help">Token 会直接显示给已登录管理员；数据库中仍加密保存，并用于证书自动续签。</div></div>
-          <label class="settings-check"><input type="checkbox" id="p-acme-staging" ${status.acme_staging ? 'checked' : ''}><span>ACME 测试环境</span></label>
-          <div class="settings-save-bar tls-settings-actions">
-            ${status.restart_required && ((status.configured && status.certificate_current) || (!status.configured && status.listen_port !== status.active_listen_port)) ? `<button class="telegram-btn primary" type="button" id="p-cert-restart">${status.configured ? '启用 HTTPS 并重启' : '重启应用'}</button>` : ''}
-            <button class="telegram-btn" type="button" id="p-cert-save">保存设置</button>
-            <button class="telegram-btn primary" type="button" id="p-cert-issue" ${status.available === false || status.issuing || !status.settings_configured ? 'disabled' : ''}>申请证书</button>
-          </div>
-        </section>
-        </main>
-      </div>`;
+    const accessPort = currentPanelAccessPort();
+    const portHelp = accessPort && accessPort !== Number(status.active_listen_port)
+      ? `当前访问端口为 ${accessPort}。保存并启用后将按填写的端口监听，使用反向代理时需同步调整转发。`
+      : '修改域名或端口后需要重启，并放行对应端口。';
+    page.innerHTML = `<div class="settings-layout fade-up">${globalSettingsNav('tls')}<main class="settings-content">
+      <section class="settings-panel" id="p-endpoint-settings">
+        <header><h2>TLS 设置</h2></header>
+        <div class="global-settings-status">${renderPanelCertificateStatus(status)}</div>
+        <div class="settings-grid" style="margin-top:20px">
+          <label class="settings-field"><span>面板域名</span><input class="form-input" id="p-panel-domain" value="${esc(status.panel_domain || '')}" placeholder="panel.example.com" required autocomplete="off" autocapitalize="none" spellcheck="false"><small>不含协议和端口。</small></label>
+          <label class="settings-field"><span>节点泛域名（可选）</span><input class="form-input" id="p-wildcard-domain" value="${esc(status.wildcard_domain || '')}" placeholder="*.example.com" autocomplete="off" autocapitalize="none" spellcheck="false"><small>使用域名前缀入口或申请泛域名证书时填写。</small></label>
+          <label class="settings-field"><span>面板监听端口</span><input class="form-input" id="p-panel-listen-port" type="number" min="1" max="65535" step="1" inputmode="numeric" required value="${esc(String(panelEndpointFormPort(status)))}"><small>${esc(portHelp)}</small></label>
+          <div class="settings-field"><span>启用后的 HTTPS 地址</span><div class="form-help mono" id="p-panel-address-preview"></div></div>
+        </div>
+        <div class="settings-save-bar"><button class="telegram-btn" id="p-cert-save" type="button">保存域名与端口</button></div>
+      </section>
+      <section class="settings-panel">
+        <header><h2>配置证书</h2></header>
+        <label class="settings-field"><span>证书来源</span><select class="form-select" id="p-cert-source"><option value="acme">自动申请（Cloudflare DNS）</option><option value="path">服务器文件路径</option><option value="upload">上传证书与私钥</option></select></label>
+        <div id="p-source-acme" class="tls-source-fields">
+          <p class="settings-panel-help">通过 DNS 验证申请泛域名证书，签发后自动续期，无需开放 80 端口。请先保存节点泛域名。</p>
+          <label class="settings-field"><span>ACME 邮箱</span><input class="form-input" id="p-acme-email" type="email" value="${esc(status.acme_email || '')}" autocomplete="email" placeholder="admin@example.com"></label>
+          <label class="settings-field"><span>Cloudflare DNS API Token</span><input class="form-input" id="p-acme-token" type="password" autocomplete="new-password" maxlength="512" placeholder="${status.dns_api_token_configured ? '已保存，留空继续使用' : '填写 DNS API Token'}"><small>需要对应域名的 Zone:Read 与 DNS:Edit 权限。</small></label>
+          <label class="settings-check"><input id="p-acme-staging" type="checkbox" ${status.acme_staging ? 'checked' : ''}><span>使用 ACME 测试环境</span></label>
+        </div>
+        <div id="p-source-path" class="tls-source-fields" hidden>
+          <p class="settings-panel-help">读取服务器上的 PEM 文件；外部续期后会自动重新加载。Meridian 服务账户需要文件读取权限。</p>
+          <label class="settings-field"><span>完整证书链路径</span><input class="form-input" id="p-certificate-path" value="${esc(status.certificate_path || '')}" placeholder="/etc/letsencrypt/live/example.com/fullchain.pem" autocomplete="off" spellcheck="false"></label>
+          <label class="settings-field"><span>私钥路径</span><input class="form-input" id="p-private-key-path" value="${esc(status.private_key_path || '')}" placeholder="/etc/letsencrypt/live/example.com/privkey.pem" autocomplete="off" spellcheck="false"></label>
+        </div>
+        <div id="p-source-upload" class="tls-source-fields" hidden>
+          <p class="settings-panel-help">上传 PEM 格式的完整证书链和未加密私钥。更新证书时再次上传即可。</p>
+          <label class="settings-field"><span>完整证书链文件</span><input class="form-input" id="p-certificate-file" type="file" accept=".pem,.crt,.cer"></label>
+          <label class="settings-field"><span>私钥文件</span><input class="form-input" id="p-private-key-file" type="file" accept=".pem,.key"></label>
+        </div>
+        <div class="settings-save-bar tls-settings-actions">
+          <button class="telegram-btn primary" id="p-cert-apply" type="button" ${status.issuing ? 'disabled' : ''}>应用证书</button>
+          ${status.restart_required && status.configured && status.certificate_current && status.certificate_valid ? '<button class="telegram-btn" type="button" id="p-cert-restart">启用 HTTPS 并重启</button>' : ''}
+        </div>
+        <p class="form-help" id="p-cert-result" role="status"></p>
+      </section>
+    </main></div>`;
     bindGlobalSettingsNav(page);
-    const get = id => document.getElementById(`p-${id}`);
+    const get = id => page.querySelector(`#p-${id}`);
+    const source = get('cert-source');
+    source.value = ['acme', 'path', 'upload'].includes(status.certificate_source) ? status.certificate_source : 'acme';
+    const syncSource = () => {
+      for (const name of ['acme', 'path', 'upload']) get(`source-${name}`).hidden = source.value !== name;
+      get('cert-apply').textContent = source.value === 'acme' ? '申请并应用证书' : source.value === 'path' ? '读取并应用证书' : '上传并应用证书';
+    };
+    source.onchange = syncSource; syncSource();
+    const settingsPayload = () => ({panel_domain: get('panel-domain').value.trim(), wildcard_domain: get('wildcard-domain').value.trim(), listen_port: Number(get('panel-listen-port').value)});
     const refreshPreview = () => {
-      const prefix = get('panel-prefix').value.trim().replace(/^\*\./, '');
-      const wildcard = get('wildcard-domain').value.trim().replace(/^\*\./, '');
-      const domain = prefix && wildcard ? `${prefix}.${wildcard}` : '';
-      const port = Number(get('panel-listen-port').value) || 9090;
-      get('panel-address-preview').textContent = domain ? `https://${domain}${port === 443 ? '' : `:${port}`}` : '—';
+      const port = parseBoundedInteger(get('panel-listen-port').value, 1, 65535);
+      const domain = get('panel-domain').value.trim();
+      get('panel-address-preview').textContent = port === null ? '请填写有效端口（1–65535）' : domain ? `https://${domain}${port === 443 ? '' : `:${port}`}` : '—';
     };
-    ['panel-prefix', 'wildcard-domain', 'panel-listen-port'].forEach(id => get(id).addEventListener('input', refreshPreview));
-    const restartButton = get('cert-restart');
-    if (restartButton) restartButton.onclick = async () => {
-      if (!window.confirm('重启会短暂中断面板和所有站点连接，确定现在重启吗？')) return;
-      restartButton.disabled = true;
-      restartButton.textContent = '正在重启…';
-      try {
-        const result = await API.restartSystem();
-        Toast.success('重启请求已发送，正在等待 HTTPS 服务恢复');
-        await waitForPanelRestart(result.redirect_url);
-      } catch (error) {
-        restartButton.disabled = false;
-        restartButton.textContent = status.configured ? '启用 HTTPS 并重启' : '重启应用';
-        Toast.error(error.message);
-      }
-    };
-    const settingsPayload = () => ({
-      panel_prefix: get('panel-prefix').value.trim(),
-      wildcard_domain: get('wildcard-domain').value.trim(),
-      listen_port: Number(get('panel-listen-port').value),
-    });
+    for (const id of ['panel-domain','panel-listen-port']) get(id).addEventListener('input', refreshPreview);
+    refreshPreview();
     get('cert-save').onclick = async () => {
       const button = get('cert-save');
-      const payload = settingsPayload();
-      if (!payload.panel_prefix || !payload.wildcard_domain || !Number.isInteger(payload.listen_port) || payload.listen_port < 1 || payload.listen_port > 65535) {
-        Toast.error('请填写面板前缀、泛域名和有效监听端口');
-        return;
-      }
-      button.disabled = true;
-      button.textContent = '保存中…';
-      try {
-        await API.savePanelSettings(payload);
-        Toast.success('面板设置已保存；证书不会因修改前缀而重新申请');
-        await renderTLSSettings();
-      } catch (error) {
-        button.disabled = false;
-        button.textContent = '保存设置';
-        Toast.error(error.message);
-      }
+      if (button.disabled || !validateFields(get('endpoint-settings'))) return;
+      button.disabled = true; button.textContent = '保存中…';
+      try { await API.savePanelSettings(settingsPayload()); Toast.success('域名与端口已保存'); await renderTLSSettings(); }
+      catch (error) { Toast.error(error.message); if (button.isConnected) { button.disabled = false; button.textContent = '保存域名与端口'; } }
     };
-    get('cert-issue').onclick = async () => {
-      const button = get('cert-issue');
-      const tokenInput = get('acme-token');
-      const settingsPayloadValue = settingsPayload();
-      const savedWildcard = String(status.wildcard_domain || '').toLowerCase().replace(/^\*\./, '');
-      const formWildcard = settingsPayloadValue.wildcard_domain.toLowerCase().replace(/^\*\./, '');
-      if (settingsPayloadValue.panel_prefix !== status.panel_prefix || formWildcard !== savedWildcard || settingsPayloadValue.listen_port !== Number(status.listen_port)) {
-        Toast.error('请先点击“保存设置”，再申请证书');
-        return;
+    get('cert-apply').onclick = async () => {
+      const button = get('cert-apply'); if (button.disabled) return;
+      const current = settingsPayload();
+      if (current.panel_domain.toLowerCase() !== String(status.panel_domain || '').toLowerCase() || current.wildcard_domain.toLowerCase() !== String(status.wildcard_domain || '').toLowerCase() || current.listen_port !== Number(status.listen_port)) return Toast.error('请先保存域名与端口');
+      let payload;
+      if (source.value === 'acme') {
+        if (!current.wildcard_domain) return Toast.error('申请泛域名证书前，请填写并保存节点泛域名');
+        if (!get('acme-email').value.trim() || !get('acme-email').checkValidity()) return rejectField(get('acme-email'), '请填写有效邮箱');
+        if (!get('acme-token').value.trim() && !status.dns_api_token_configured) return rejectField(get('acme-token'), '请填写 DNS API Token');
+        payload = {email:get('acme-email').value.trim(),dns_provider:'cloudflare',dns_api_token:get('acme-token').value.trim(),staging:get('acme-staging').checked};
+      } else if (source.value === 'path') {
+        if (!get('certificate-path').value.trim() || !get('private-key-path').value.trim()) return Toast.error('请填写证书与私钥路径');
+        payload = {source:'path',certificate_path:get('certificate-path').value.trim(),private_key_path:get('private-key-path').value.trim()};
+      } else {
+        const cert = get('certificate-file').files[0], key = get('private-key-file').files[0];
+        if (!cert || !key) return Toast.error('请选择证书链和私钥文件');
+        if (cert.size > 512*1024 || key.size > 64*1024) return Toast.error('证书不能超过 512 KB，私钥不能超过 64 KB');
+        payload = {source:'upload', certFile:cert, keyFile:key};
       }
-      const payload = {
-        email: get('acme-email').value.trim(),
-        dns_provider: get('acme-provider').value,
-        dns_api_token: tokenInput.value.trim(),
-        staging: get('acme-staging').checked,
-      };
-      if (!payload.email || !payload.dns_api_token) {
-        Toast.error('请填写 ACME 邮箱和 DNS API Token');
-        return;
-      }
-      button.disabled = true;
-      button.textContent = '申请中…';
+      source.disabled = true; button.disabled = true; button.textContent = source.value === 'acme' ? '签发中，请稍候…' : '校验并应用中…';
       try {
-        const updated = await API.requestPanelCertificate(payload);
-        Toast.success(updated.certificate_reused ? '泛域名未改变，继续使用现有证书' : (updated.restart_required ? '证书已签发，请点击重启按钮' : '证书已签发并热加载'));
+        if (payload.source === 'upload') payload = {source:'upload',certificate_pem:await payload.certFile.text(),private_key_pem:await payload.keyFile.text()};
+        const updated = source.value === 'acme' ? await API.requestPanelCertificate(payload) : await API.importPanelCertificate(payload);
+        Toast.success(updated.restart_required ? '证书已保存，请重启以启用 HTTPS' : '证书已应用');
         await renderTLSSettings();
-      } catch (error) {
-        button.disabled = false;
-        button.textContent = '申请证书';
-        Toast.error(error.message);
-      }
+      } catch (error) { Toast.error(error.message); if (button.isConnected) {button.disabled=false;source.disabled=false;syncSource();} }
+    };
+    const restart = get('cert-restart');
+    if (restart) restart.onclick = async () => {
+      if (!window.confirm('重启会短暂中断面板与站点连接，确定继续吗？')) return;
+      restart.disabled = true; restart.textContent = '重启中…';
+      try { const result = await API.restartSystem(); await waitForPanelRestart(result.redirect_url); }
+      catch (error) { Toast.error(error.message); if(restart.isConnected){restart.disabled=false;restart.textContent='启用 HTTPS 并重启';} }
     };
   } catch (error) {
-    page.innerHTML = `<div class="settings-layout fade-up">${globalSettingsNav('tls')}<main class="settings-content"><section class="settings-panel"><div class="settings-loading request-log-error">读取 TLS 状态失败：${esc(error.message)}</div></section></main></div>`;
-    bindGlobalSettingsNav(page);
+    if (Router.current !== 'settings-tls') return;
+    page.querySelector('.settings-content').innerHTML = `<div class="settings-loading request-log-error">读取 TLS 状态失败：${esc(error.message)}</div>`;
   }
+}
+
+function renderUpdateSettings() {
+  return `<section class="settings-panel" id="system-update-panel">
+    <header><h2>版本更新</h2></header>
+    <p class="settings-panel-help">更新前自动备份，启动失败时回滚。</p>
+    <div id="update-summary" class="form-help" role="status"></div>
+    <div class="settings-save-bar"><button type="button" class="telegram-btn" id="update-check">检查更新</button><button type="button" class="telegram-btn primary" id="update-install" hidden>更新并重启</button></div>
+    <details id="update-notes" hidden><summary>版本说明</summary><pre class="update-release-notes"></pre><a target="_blank" rel="noopener noreferrer">在 GitHub 查看发布内容</a></details>
+  </section>`;
+}
+
+function bindUpdateSettings(page) {
+  const panel = page.querySelector('#system-update-panel');
+  if (!panel) return;
+  const check = panel.querySelector('#update-check'), install = panel.querySelector('#update-install');
+  const summary = panel.querySelector('#update-summary'), notes = panel.querySelector('#update-notes');
+  let release = null, polling = false;
+  const poll = async () => {
+    if (polling) return;
+    polling = true; check.disabled = true; install.disabled = true;
+    const deadline = Date.now() + 32 * 60 * 1000;
+    while (panel.isConnected && Router.current === 'global-settings' && globalSettingsSection === 'updates' && Date.now() < deadline) {
+      try {
+        const status = await API.systemUpdateStatus();
+        summary.textContent = status.message;
+        if (status.state !== 'running') {
+          polling = false; check.disabled = false;
+          if (status.state === 'completed') { Toast.success('更新完成'); window.location.reload(); }
+          else if (status.state === 'failed') { Toast.error(status.message); install.hidden = true; }
+          return;
+        }
+      } catch (_) { summary.textContent = '服务正在重启，等待重新连接…'; }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    polling = false;
+    if (panel.isConnected) { summary.textContent = '等待超时，请刷新查看服务状态。'; check.disabled = false; }
+  };
+  check.onclick = async () => {
+    if (check.disabled) return;
+    check.disabled = true; check.textContent = '检查中…'; install.hidden = true;
+    try {
+      release = await API.checkSystemUpdate();
+      if (!panel.isConnected) return;
+      summary.textContent = `当前 ${release.current_version} · 最新 ${release.latest_version}。${release.update_available ? '有新版本可用。' : '当前无需更新。'}${release.update_supported ? '' : release.unsupported_reason || ''}`;
+      install.hidden = !(release.update_available && release.update_supported);
+      install.disabled = false;
+      notes.hidden = !release.notes;
+      notes.querySelector('pre').textContent = release.notes || '';
+      notes.querySelector('a').href = release.release_url;
+    } catch (error) { summary.textContent = '检查失败：' + error.message; }
+    finally { if (check.isConnected) { check.disabled = false; check.textContent = '检查更新'; } }
+  };
+  install.onclick = async () => {
+    if (!release || install.disabled || !window.confirm(`更新到 ${release.latest_version}？面板与站点会短暂重启，现有配置会保留。`)) return;
+    install.disabled = true; check.disabled = true;
+    try { await API.startSystemUpdate(release.latest_version); await poll(); }
+    catch (error) { summary.textContent = error.message; install.disabled = false; check.disabled = false; }
+  };
+  API.systemUpdateStatus().then(status => {
+    if (!panel.isConnected) return;
+    if (status.state === 'running') { summary.textContent = status.message; poll(); }
+    else if (status.state === 'failed') summary.textContent = status.message;
+  }).catch(() => {});
 }

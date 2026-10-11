@@ -45,6 +45,9 @@ const (
 var errCertificateIssuanceBusy = errors.New("a certificate request is already running")
 
 type panelCertificateStatus struct {
+	CertificateSource         string `json:"certificate_source"`
+	CertificatePath           string `json:"certificate_path,omitempty"`
+	PrivateKeyPath            string `json:"private_key_path,omitempty"`
 	Available                 bool   `json:"available"`
 	TLSEnabled                bool   `json:"tls_enabled"`
 	PanelDomain               string `json:"panel_domain"`
@@ -77,6 +80,7 @@ type panelCertificateManager struct {
 	accountDir string
 	httpClient *http.Client
 
+	operationMu        sync.Mutex
 	mu                 sync.Mutex
 	issuing            bool
 	currentCertificate *tls.Certificate
@@ -144,6 +148,9 @@ func newPanelCertificateManager(dbPath string, httpClient *http.Client) *panelCe
 
 func (m *panelCertificateManager) status(settings PanelSettings, activePanelDomain, activeRouteDomain string, activeListenPort int, tlsEnabled bool) panelCertificateStatus {
 	status := panelCertificateStatus{
+		CertificateSource:  settings.CertificateSource,
+		CertificatePath:    settings.CertificatePath,
+		PrivateKeyPath:     settings.PrivateKeyPath,
 		Available:          m != nil && m.certFile != "" && m.keyFile != "",
 		TLSEnabled:         tlsEnabled,
 		PanelDomain:        settings.PanelDomain,
@@ -153,7 +160,7 @@ func (m *panelCertificateManager) status(settings PanelSettings, activePanelDoma
 		ListenPort:         settings.ListenPort,
 		ActiveListenPort:   activeListenPort,
 		RestartRequired:    settings.TLSEnabled != tlsEnabled || settings.PanelDomain != activePanelDomain || settings.RouteDomain != activeRouteDomain || settings.ListenPort != activeListenPort,
-		SettingsConfigured: settings.Configured && settings.PanelDomain != "" && settings.RouteDomain != "" && settings.ListenPort != 0,
+		SettingsConfigured: settings.Configured && settings.PanelDomain != "" && settings.ListenPort != 0,
 	}
 	if m == nil {
 		return status
@@ -180,8 +187,8 @@ func (m *panelCertificateManager) status(settings PanelSettings, activePanelDoma
 			break
 		}
 	}
-	status.CertificateCurrent = status.CertificateWildcardDomain != "" && status.CertificateWildcardDomain == status.WildcardDomain
-	status.CertificateValid = time.Now().Before(certificate.NotAfter)
+	status.CertificateCurrent = certificateCoversPanel(certificate, settings.PanelDomain, settings.RouteDomain) == nil
+	status.CertificateValid = !time.Now().Before(certificate.NotBefore) && time.Now().Before(certificate.NotAfter)
 	status.Subject = certificate.Subject.CommonName
 	status.ExpiresAt = certificate.NotAfter.UTC().Format(time.RFC3339)
 	days := int(time.Until(certificate.NotAfter).Hours() / 24)
@@ -464,6 +471,9 @@ func readOptionalFile(filename string) ([]byte, bool, error) {
 	}
 	root, err := os.OpenRoot(filepath.Dir(filename))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
 		return nil, false, err
 	}
 	file, err := root.Open(filepath.Base(filename))

@@ -39,10 +39,9 @@ test('dashboard realtime trend keeps historical points after a page refresh', ()
   assert.match(dashboardSource, /if \(!realtimePoints\.length \|\| !historicalPoints\.length\) return realtimePoints\.length \? realtimePoints : historicalPoints/);
 });
 
-test('dashboard trend rendering clamps invalid values and bounds smoothing controls', () => {
+test('dashboard trend rendering handles invalid values and live samples', () => {
   assert.match(dashboardSource, /function dashboardSafeNonNegative\(value\)/);
   assert.match(dashboardSource, /Number\.isFinite\(numeric\)/);
-  assert.match(dashboardSource, /Math\.max\(minY, Math\.min\(maxY/);
   assert.match(dashboardSource, /if \(liveMap\.size > 0\) appendRealtimeTrendSample/);
   assert.match(dashboardSource, /const unit = units\[i\] \|\| units\[0\]/);
   assert.match(dashboardSource, /bucketSeconds > 0 && bucketSeconds < 3600/);
@@ -72,4 +71,69 @@ test('dashboard renders a numeric zero over the initial placeholder', () => {
 
   sandbox.animateValue('s-total', 0);
   assert.equal(element.textContent, '0');
+});
+
+function traceCurve(points) {
+  const sandbox = {};
+  vm.runInNewContext(dashboardSource, sandbox);
+  const segments = [];
+  let start;
+  const context = {
+    moveTo(x, y) { start = { x, y }; },
+    lineTo(x, y) { segments.push({ start, end: { x, y } }); start = { x, y }; },
+    bezierCurveTo(x1, y1, x2, y2, x, y) {
+      segments.push({ start, first: { x: x1, y: y1 }, second: { x: x2, y: y2 }, end: { x, y } });
+      start = { x, y };
+    },
+  };
+  sandbox.dashboardTraceSmoothLine(context, points);
+  return segments;
+}
+
+function cubic(a, b, c, d, t) {
+  return (1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t ** 2 * c + t ** 3 * d;
+}
+
+test('smooth trends pass through samples without inventing peaks or negative values', () => {
+  const sequences = [[0, 0, 100, 0, 0], [0, 1, 1000, 1001, 10, 0], [5, 5, 5, 5], [100, 25, 5, 0]];
+  for (const values of sequences) {
+    // Uneven x spacing also exercises monotonicity at narrow intervals.
+    const points = values.map((y, i) => ({ x: i * i + i, y }));
+    const segments = traceCurve(points);
+    assert.equal(segments.length, points.length - 1);
+    segments.forEach((segment, i) => {
+      assert.deepEqual(segment.start, points[i]);
+      assert.deepEqual(segment.end, points[i + 1]);
+      const lo = Math.min(segment.start.y, segment.end.y), hi = Math.max(segment.start.y, segment.end.y);
+      let previousX = segment.start.x;
+      for (let step = 0; step <= 100; step++) {
+        const t = step / 100;
+        const y = cubic(segment.start.y, segment.first.y, segment.second.y, segment.end.y, t);
+        const x = cubic(segment.start.x, segment.first.x, segment.second.x, segment.end.x, t);
+        assert.ok(y >= lo - 1e-9 && y <= hi + 1e-9, `overshoot at segment ${i}: ${y}`);
+        assert.ok(x >= previousX - 1e-9, 'the curve must not double back in time');
+        previousX = x;
+      }
+    });
+  }
+});
+
+test('neighboring curves share a tangent and flatten smoothly at peaks', () => {
+  const segments = traceCurve([0, 2, 10, 8, 8, 3, 1].map((y, i) => ({ x: i * 20, y })));
+  for (let i = 0; i < segments.length - 1; i++) {
+    const left = segments[i], right = segments[i + 1];
+    const incoming = (left.end.y - left.second.y) / (left.end.x - left.second.x);
+    const outgoing = (right.first.y - right.start.y) / (right.first.x - right.start.x);
+    assert.ok(Math.abs(incoming - outgoing) < 1e-10, 'no sharp join between segments');
+  }
+  assert.equal(segments[1].second.y, 10);
+  assert.equal(segments[2].first.y, 10);
+  assert.notEqual(segments[0].second.y, 4 / 3, 'a changing trend should curve away from the straight chord');
+});
+
+test('empty, single-point and duplicate-time trends remain drawable', () => {
+  assert.deepEqual(traceCurve([]), []);
+  assert.deepEqual(traceCurve([{ x: 10, y: 4 }]), []);
+  const points = [{ x: 10, y: 4 }, { x: 10, y: 8 }, { x: 20, y: 0 }];
+  assert.deepEqual(traceCurve(points).map(segment => segment.end), points.slice(1));
 });

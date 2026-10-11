@@ -220,7 +220,7 @@ func (pm *ProxyManager) StartSite(site Site) error {
 					ctx = context.WithValue(ctx, dynamicPlaybackInfoBaseContextKey{}, &clientBase)
 				}
 				proxyReq.Out = proxyReq.Out.WithContext(ctx)
-				if redirectPolicy.sourceEnabled(source) {
+				if redirectPolicy.sourceEnabled(source) || (site.MainVideoStreamMode == mainVideoStreamModeDirect && source == dynamicDiscoverySourcePlaybackInfo) {
 					proxyReq.Out.Header.Set("Accept-Encoding", "identity")
 					for _, name := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match"} {
 						proxyReq.Out.Header.Del(name)
@@ -229,10 +229,16 @@ func (pm *ProxyManager) StartSite(site Site) error {
 			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// A direct playback redirect must retain its external URL. Applying
+			// the shared path prefix here would send the client back to itself.
+			if site.MainVideoStreamMode == mainVideoStreamModeDirect && resp.Request != nil && mainVideoDirectFallbackTarget(resp.Request.Context()) != nil {
+				stripPanelSessionSetCookies(resp.Header)
+				return nil
+			}
 			dynamicResponse := responseIsDynamic(resp)
 			expectedSource := dynamicResponseExpectedStructuredSource(resp)
 			rewriteRelative := ingressUsesPath(site.IngressMode) && dynamicIssuer != nil
-			if err := rewriteDynamicStructuredResponseExpected(resp, dynamicIssuer, dynamicResponse || rewriteRelative, expectedSource, 0, false); err != nil {
+			if err := rewriteSiteStructuredResponse(resp, site.MainVideoStreamMode == mainVideoStreamModeDirect, dynamicIssuer, dynamicResponse || rewriteRelative, expectedSource); err != nil {
 				rollbackDynamicResponseAuthorities(resp)
 				return err
 			}
@@ -273,7 +279,7 @@ func (pm *ProxyManager) StartSite(site Site) error {
 			_, _ = w.Write([]byte(`{"error":"upstream unavailable"}`))
 		},
 	}
-	if isRedirectMode || redirectPolicy.configured || len(playbackHostsSet) > 0 {
+	if isRedirectMode || redirectPolicy.configured || len(playbackHostsSet) > 0 || site.MainVideoStreamMode == mainVideoStreamModeDirect {
 		proxy.Transport = &redirectFollowTransport{
 			base:                    proxy.Transport,
 			playbackHosts:           playbackHostsSet,

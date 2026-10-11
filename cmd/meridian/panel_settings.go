@@ -9,6 +9,9 @@ import (
 const panelSettingsRowID = 1
 
 type PanelSettings struct {
+	CertificateSource   string `json:"certificate_source"`
+	CertificatePath     string `json:"certificate_path,omitempty"`
+	PrivateKeyPath      string `json:"private_key_path,omitempty"`
 	PanelDomain         string `json:"panel_domain"`
 	RouteDomain         string `json:"route_domain"`
 	ListenPort          int    `json:"listen_port"`
@@ -65,7 +68,7 @@ func scanPanelSettings(scanner interface{ Scan(...any) error }) (PanelSettings, 
 	var tlsEnabled, configured, acmeStaging int
 	err := scanner.Scan(
 		&settings.PanelDomain, &settings.RouteDomain, &settings.ListenPort, &tlsEnabled, &configured,
-		&settings.ACMEEmail, &settings.ACMEDNSProvider, &settings.ACMETokenCiphertext, &acmeStaging,
+		&settings.ACMEEmail, &settings.ACMEDNSProvider, &settings.ACMETokenCiphertext, &acmeStaging, &settings.CertificateSource, &settings.CertificatePath, &settings.PrivateKeyPath,
 	)
 	settings.TLSEnabled = tlsEnabled != 0
 	settings.Configured = configured != 0
@@ -79,7 +82,7 @@ func (d *DB) PanelSettings() (PanelSettings, error) {
 	}
 	return scanPanelSettings(d.db.QueryRow(`
 		SELECT panel_domain, route_domain, listen_port, tls_enabled, configured,
-			acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging
+			acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging, certificate_source, certificate_path, private_key_path
 		FROM panel_settings WHERE id=?`, panelSettingsRowID))
 }
 
@@ -195,11 +198,26 @@ type panelHostMigration struct {
 }
 
 func (d *DB) SaveManagedPanelSettings(panelDomain, routeDomain string, listenPort int, tlsEnabled bool) (PanelSettings, int, error) {
-	if err := validatePanelListenPort(listenPort); err != nil {
-		return PanelSettings{}, 0, err
-	}
 	candidate, err := normalizeManagedPanelSettings(panelDomain, routeDomain)
 	if err != nil {
+		return PanelSettings{}, 0, err
+	}
+	return d.savePanelEndpointSettings(candidate, listenPort, tlsEnabled)
+}
+
+func (d *DB) SavePanelEndpointSettings(panelDomain, routeDomain string, listenPort int, tlsEnabled bool) (PanelSettings, int, error) {
+	candidate, err := normalizeStoredPanelSettings(panelDomain, routeDomain, tlsEnabled)
+	if err != nil {
+		return PanelSettings{}, 0, err
+	}
+	if candidate.PanelDomain == "" {
+		return PanelSettings{}, 0, errors.New("面板域名不能为空")
+	}
+	return d.savePanelEndpointSettings(candidate, listenPort, tlsEnabled)
+}
+
+func (d *DB) savePanelEndpointSettings(candidate PanelSettings, listenPort int, tlsEnabled bool) (PanelSettings, int, error) {
+	if err := validatePanelListenPort(listenPort); err != nil {
 		return PanelSettings{}, 0, err
 	}
 	candidate.ListenPort = listenPort
@@ -212,7 +230,7 @@ func (d *DB) SaveManagedPanelSettings(panelDomain, routeDomain string, listenPor
 
 	current, err := scanPanelSettings(tx.QueryRow(`
 		SELECT panel_domain, route_domain, listen_port, tls_enabled, configured,
-			acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging
+			acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging, certificate_source, certificate_path, private_key_path
 		FROM panel_settings WHERE id=?`, panelSettingsRowID))
 	if err != nil {
 		return PanelSettings{}, 0, err
@@ -317,8 +335,13 @@ func (d *DB) restorePanelSettings(settings PanelSettings) error {
 	_, err := d.db.Exec(`
 		UPDATE panel_settings
 		SET panel_domain=?, route_domain=?, listen_port=?, tls_enabled=?, configured=?,
-			acme_email=?, acme_dns_provider=?, acme_token_ciphertext=?, acme_staging=?, updated_at=CURRENT_TIMESTAMP
+			acme_email=?, acme_dns_provider=?, acme_token_ciphertext=?, acme_staging=?, certificate_source=?, certificate_path=?, private_key_path=?, updated_at=CURRENT_TIMESTAMP
 		WHERE id=?`, settings.PanelDomain, settings.RouteDomain, settings.ListenPort, sqliteBool(settings.TLSEnabled), sqliteBool(settings.Configured),
-		settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, sqliteBool(settings.ACMEStaging), panelSettingsRowID)
+		settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, sqliteBool(settings.ACMEStaging), settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath, panelSettingsRowID)
+	return err
+}
+
+func (d *DB) setPanelCertificateSource(source, certPath, keyPath string) error {
+	_, err := d.db.Exec(`UPDATE panel_settings SET certificate_source=?, certificate_path=?, private_key_path=?, tls_enabled=1, updated_at=CURRENT_TIMESTAMP WHERE id=1`, source, certPath, keyPath)
 	return err
 }

@@ -493,10 +493,10 @@ test('setup username validation enforces exact 1-64 UTF-8 byte boundaries', asyn
   }
 });
 
-test('setup password validation enforces exact 12-72 UTF-8 byte boundaries', async () => {
+test('setup password validation enforces six Unicode characters and a 72-byte upper limit', async () => {
   const cases = [
     { password: '🙂'.repeat(2), accepted: false },
-    { password: '🙂'.repeat(3), accepted: true },
+    { password: '🙂'.repeat(6), accepted: true },
     { password: '🙂'.repeat(18), accepted: true },
     { password: '🙂'.repeat(19), accepted: false },
   ];
@@ -505,7 +505,7 @@ test('setup password validation enforces exact 12-72 UTF-8 byte boundaries', asy
     const harness = await attemptSetup({ password: contract.password });
     assert.equal(harness.state.setups.length, contract.accepted ? 1 : 0, JSON.stringify(contract));
     if (!contract.accepted) {
-      assert.equal(harness.state.errors.at(-1), '管理员密码必须为 12-72 字节');
+      assert.equal(harness.state.errors.at(-1), '密码至少需要 6 个字符，且不能超过 72 字节');
     }
   }
 });

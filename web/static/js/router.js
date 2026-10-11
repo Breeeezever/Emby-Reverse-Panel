@@ -3,17 +3,17 @@ const Router = {
   current: null,
   initialized: false,
   pageMeta: {
-    dashboard: ['仪表盘', '反代服务运行概览'],
-    sites: ['站点管理', '管理入口、回源与站点策略'],
-    'request-logs': ['日志记录', '检索客户端请求与视频流记录'],
-    'telegram-report': ['Telegram 日报', '配置请求与流量数据的定时通知'],
-    'settings-tls': ['TLS 设置', '管理面板域名、监听端口与证书'],
-    'global-settings': ['全局设置', ''],
-    'backup-restore': ['备份与恢复', '创建加密备份或恢复 Meridian 数据'],
-    account: ['账户', '查看账户信息并修改用户名或密码'],
-    diagnostics: ['故障诊断', '检查入口、回源与运行状态'],
+    dashboard: '仪表盘',
+    sites: '站点管理',
+    'request-logs': '日志记录',
+    'telegram-report': 'Telegram Bot',
+    'settings-tls': 'TLS 设置',
+    'global-settings': '全局设置',
+    'backup-restore': '备份与恢复',
+    account: '账户',
+    diagnostics: '故障诊断',
   },
-  parentRoutes: new Set(['settings-tls', 'telegram-report', 'diagnostics', 'backup-restore']),
+  parentRoutes: new Set(['settings-tls', 'telegram-report', 'backup-restore']),
 
   register(path, handler) {
     this.routes[path] = handler;
@@ -68,16 +68,11 @@ const Router = {
       }
     });
 
-    const meta = this.parentRoutes.has(hash) ? this.pageMeta['global-settings'] : (this.pageMeta[hash] || [hash, '']);
+    const meta = this.pageMeta[hash] || hash;
     const title = document.getElementById('app-page-title');
-    const subtitle = document.getElementById('app-page-subtitle');
     const icon = document.getElementById('app-page-icon');
-    if (title) title.textContent = meta[0];
-    if (subtitle) {
-      subtitle.textContent = meta[1];
-      subtitle.hidden = !meta[1];
-    }
-    document.title = `${meta[0]} — Meridian`;
+    if (title) title.textContent = meta;
+    document.title = `${meta} — Meridian`;
     if (icon && hash === 'account') {
       icon.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>';
     } else if (icon && activeNav && typeof activeNav.querySelector === 'function') {

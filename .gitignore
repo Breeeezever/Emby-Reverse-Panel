@@ -1,5 +1,5 @@
 # Binary
-meridian
+/meridian
 meridian.exe
 *.exe
 
@@ -37,3 +37,8 @@ Thumbs.db
 .tmp-*.patch
 .tmp-*.log
 COLLABORATION_RULES.md
+
+# Wiki build and local documentation environment
+/site/
+/.venv-docs/
+__pycache__/

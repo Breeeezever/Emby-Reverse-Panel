@@ -11,6 +11,9 @@ import (
 )
 
 type App struct {
+	telegramConfigMu  sync.RWMutex
+	telegramStatusMu  sync.RWMutex
+	telegramStatus    telegramBotStatus
 	db                *DB
 	dbPath            string
 	pm                *ProxyManager

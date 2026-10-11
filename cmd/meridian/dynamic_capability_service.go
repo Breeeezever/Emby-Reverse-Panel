@@ -644,7 +644,7 @@ func (i *dynamicCapabilityIssuer) serve(w http.ResponseWriter, r *http.Request) 
 		transport = dynamicTransport
 	}
 	defer rollback()
-	mainVideoDirect := i.site.MainVideoStreamMode == mainVideoStreamModeDirect && claims.Kind == dynamicCapabilityKindResource && claims.Source != dynamicDiscoverySourceHLS && claims.Source != dynamicDiscoverySourceDASH && len(claims.RequiredHeaders) == 0 && isMainVideoStreamURL(target)
+	mainVideoDirect := i.site.MainVideoStreamMode == mainVideoStreamModeDirect && (claims.Kind == dynamicCapabilityKindResource || claims.Kind == dynamicCapabilityKindManifest) && len(claims.RequiredHeaders) == 0 && isMainVideoStreamURL(target)
 	if mainVideoDirect {
 		if !i.state.useCapability(token, time.Now()) {
 			writeDynamicCapabilityUnavailable(w)

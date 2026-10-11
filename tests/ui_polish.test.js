@@ -37,55 +37,59 @@ test('dashboard trends trace smooth curves instead of only straight segments', (
 
 test('mobile navigation keeps the header and drawer available', () => {
   assert.match(cssSource, /@media \(max-width: 768px\)[\s\S]*?\.app-header \{[\s\S]*?display: flex;[\s\S]*?\.sidebar \{[\s\S]*?display: flex;/);
-  assert.match(cssSource, /#app-shell\.sidebar-expanded \.sidebar \{ transform: translateX\(0\); \}/);
+  assert.match(cssSource, /#app-shell\.sidebar-expanded \.sidebar\s*\{\s*transform: translateX\(0\);\s*visibility: visible;\s*\}/);
 });
-test('upstream header rows do not inherit the browser fieldset frame', () => {
-  assert.match(cssSource, /\.form-list-row\.upstream-header-row[\s\S]*?border: 0;/);
-  assert.match(cssSource, /\.site-config-modal \.upstream-line-labels,[\s\S]*?grid-template-columns: 76px minmax\(150px, \.8fr\)/);
-  assert.match(cssSource, /grid-template-areas: "enabled" "name" "address" "port" "latency" "actions"/);
-});
-
-test('dashboard assets use a cache-busting revision after chart and mobile fixes', () => {
-  assert.match(indexSource, /(?:\?v=1\.12\.4|v1\.12\.4)/);
+test('upstream header rows reset fieldsets and retain an explicit action column', () => {
+  assert.match(cssSource, /\.form-list-row\.upstream-header-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:[^;]*58px;[^}]*border:\s*0;/);
+  assert.match(cssSource, /\.upstream-header-row \.form-row-action\s*\{[^}]*white-space:\s*nowrap;/);
 });
 
-test('desktop sidebar uses the state variable for real width changes', () => {
-  assert.match(cssSource, /@media \(min-width: 769px\)[\s\S]*?#app-shell\.sidebar-expanded \{[\s\S]*?--sidebar-w: 208px;/);
-  assert.match(cssSource, /#app-shell\.active \.sidebar \{[\s\S]*?width: var\(--sidebar-w\) !important;/);
-  assert.match(cssSource, /#app-shell\.active \.main \{[\s\S]*?margin-left: var\(--sidebar-w\) !important;/);
-  assert.match(cssSource, /\.app-header-copy h1 \{[\s\S]*?font-size: 17px !important;/);
+test('frontend assets use the current application version to bust caches', () => {
+  const mainSource = fs.readFileSync(path.join(ROOT, 'cmd/meridian/main.go'), 'utf8');
+  const version = mainSource.match(/var appVersion = "v([^"]+)"/)?.[1];
+  assert.ok(version, 'application version is missing');
+  const assets = [...indexSource.matchAll(/(?:src|href)="([^"]+)"/g)]
+    .map(match => new URL(match[1], 'https://meridian.example'))
+    .filter(url => /\.(js|css|svg)$/.test(url.pathname) && url.searchParams.has('v'));
+  assert.ok(assets.length >= 10, 'versioned frontend assets are missing');
+  for (const asset of assets) assert.equal(asset.searchParams.get('v'), version, asset.pathname);
 });
 
-test('mobile upstream rows give address and port separate full-width rows', () => {
-  assert.match(cssSource, /grid-template-areas: "enabled" "name" "address" "port" "latency" "actions" !important;/);
-  assert.match(cssSource, /\.site-config-modal \.upstream-line-field:nth-child\(3\) \{ grid-area: address !important;/);
-  assert.match(cssSource, /\.site-config-modal \.upstream-line-field:nth-child\(4\) \{ grid-area: port !important;/);
+test('desktop sidebar width and content offset share the expanded state', () => {
+  assert.match(cssSource, /#app-shell\s*\{[^}]*--sidebar-w:\s*76px;/);
+  assert.match(cssSource, /#app-shell\.sidebar-expanded\s*\{[^}]*--sidebar-w:\s*224px;/);
+  assert.match(cssSource, /\.sidebar\s*\{[^}]*width:\s*var\(--sidebar-w\);/);
+  assert.match(cssSource, /\.main\s*\{[^}]*margin-left:\s*var\(--sidebar-w\);/);
+  assert.match(cssSource, /\.app-header\s*\{[^}]*margin-left:\s*var\(--sidebar-w\);/);
 });
 
-test('dashboard selectors retain a visible dropdown affordance after theme overrides', () => {
-  assert.match(cssSource, /\.dashboard-trend-controls \.form-select \{[\s\S]*?background-image: url\(/);
-  assert.match(cssSource, /\.dashboard-trend-controls \.form-select \{[\s\S]*?background-position: right 14px center/);
-  assert.match(cssSource, /\.dashboard-trend-toolbar \{[\s\S]*?padding-bottom: 30px !important;/);
-  assert.match(cssSource, /\.dashboard-trend-controls \.form-select \{[\s\S]*?min-height: 48px !important;/);
-  assert.match(cssSource, /\.dashboard-trend-controls \.form-select \{[\s\S]*?padding: 10px 52px 10px 16px !important;/);
-  assert.match(cssSource, /\.dashboard-trend-controls \.form-select \{[\s\S]*?line-height: 1\.5 !important;/);
+test('mobile upstream rows keep address full-width and pair protocol with port', () => {
+  assert.match(cssSource, /grid-template-areas:\s*"enabled actions" "name name" "scheme port" "address address" "latency latency"/);
+  assert.match(cssSource, /\.upstream-line-address-field\s*\{[^}]*grid-area:\s*address;/);
+  assert.match(cssSource, /\.upstream-line-port-field\s*\{[^}]*grid-area:\s*port;/);
+});
+
+test('shared selectors provide a dropdown arrow without replacing their background color', () => {
+  assert.match(cssSource, /--select-arrow:\s*url\(/);
+  assert.match(cssSource, /\.form-select,\s*select\.form-input\s*\{[^}]*padding-right:\s*40px;[^}]*background-image:\s*var\(--select-arrow\);[^}]*background-position:\s*right 13px center;/);
+  assert.match(cssSource, /\.dashboard-trend-controls \.form-select\s*\{[^}]*background-color:\s*var\(--panel\);/);
 });
 
 test('document scrolling stays on the root for iOS status-bar tap-to-top', () => {
-  assert.match(cssSource, /Keep document scrolling on the root element[\s\S]*?html \{[\s\S]*?overflow-y: auto !important;[\s\S]*?-webkit-overflow-scrolling: touch;/);
-  assert.match(cssSource, /Keep document scrolling on the root element[\s\S]*?body \{[\s\S]*?overflow-y: visible !important;/);
+  assert.match(cssSource, /html\s*\{[^}]*overflow-y:\s*auto;[^}]*-webkit-overflow-scrolling:\s*touch;/);
+  assert.match(cssSource, /body\s*\{[^}]*overflow-y:\s*visible;/);
 });
 
-test('desktop trend text and line actions keep readable dimensions', () => {
-  assert.match(cssSource, /Final desktop trend-field contract[\s\S]*?min-height: 48px !important;/);
-  assert.match(cssSource, /Final desktop trend-field contract[\s\S]*?padding: 10px 52px 10px 16px !important;/);
-  assert.match(cssSource, /@media \(min-width: 769px\)[\s\S]*?\.site-config-modal \.upstream-lines-buttons > button[\s\S]*?height: 36px;/);
+test('trend selectors and upstream actions retain comfortable control heights', () => {
+  assert.match(cssSource, /\.dashboard-trend-controls \.form-select\s*\{[^}]*min-height:\s*42px;/);
+  assert.match(cssSource, /\.upstream-lines-buttons > button\s*\{[^}]*height:\s*36px;/);
+  assert.match(cssSource, /@media \(max-width: 768px\)[\s\S]*\.upstream-lines-buttons > button\s*\{[^}]*min-height:\s*38px;/);
 });
 
 test('site editor latency colors survive the modal value override', () => {
-  assert.match(cssSource, /\.site-config-modal \.upstream-line-latency\.good \{ color: var\(--green\); \}/);
-  assert.match(cssSource, /\.site-config-modal \.upstream-line-latency\.warn \{ color: var\(--orange\); \}/);
-  assert.match(cssSource, /\.site-config-modal \.upstream-line-latency\.bad \{ color: var\(--red\); \}/);
+  assert.match(cssSource, /\.site-config-modal \.upstream-line-latency\.good \{\s*color: var\(--green\);\s*\}/);
+  assert.match(cssSource, /\.site-config-modal \.upstream-line-latency\.warn \{\s*color: var\(--orange\);\s*\}/);
+  assert.match(cssSource, /\.site-config-modal \.upstream-line-latency\.bad \{\s*color: var\(--red\);\s*\}/);
 });
 
 test('mobile drawer backdrop and header responsive structure are active', () => {
@@ -98,7 +102,7 @@ test('site modal introduces tabbed panels to avoid infinite vertical scrolling',
   assert.match(sitesSource, /class="site-modal-tabs"/);
   assert.match(sitesSource, /id="site-panel-basic"/);
   assert.match(sitesSource, /id="site-panel-lines"/);
-  assert.match(sitesSource, /id="site-panel-discovery"/);
+  assert.doesNotMatch(sitesSource, /id="site-panel-discovery"/);
   assert.match(sitesSource, /id="site-panel-advanced"/);
   assert.match(cssSource, /\.site-modal-tabs \{/);
   assert.match(cssSource, /\.site-modal-tab\.active \{/);
@@ -120,11 +124,12 @@ test('site modal supports multiple playback origin nodes and dynamic stream host
   assert.match(sitesSource, /stream_hosts: streamHostValues/);
 });
 
-test('mobile settings constraints prevent horizontal overflow and format controls', () => {
-  assert.match(cssSource, /\.settings-layout \{[\s\S]*?width: 100% !important;/);
-  assert.match(cssSource, /\.settings-grid,[\s\S]*?\.settings-two-column,[\s\S]*?\.settings-check-grid \{[\s\S]*?grid-template-columns: 1fr !important;/);
-  assert.match(cssSource, /\.settings-panel \{[\s\S]*?overflow-wrap: break-word !important;/);
-  assert.match(cssSource, /\.settings-choice button \{[\s\S]*?width: 100% !important;/);
+test('mobile settings constrain grids and preserve readable controls', () => {
+  const mobile = cssSource.slice(cssSource.indexOf('@media (max-width: 768px)'));
+  assert.match(mobile, /\.settings-layout\s*\{[^}]*display:\s*block;[^}]*width:\s*100%;/);
+  assert.match(mobile, /\.settings-grid,\s*\.settings-two-column,\s*\.settings-check-grid\s*\{[^}]*grid-template-columns:\s*1fr;/);
+  assert.match(cssSource, /\.settings-panel\s*\{[^}]*overflow-wrap:\s*anywhere;/);
+  assert.match(mobile, /\.form-input,\s*\.form-select\s*\{[^}]*font-size:\s*16px;/);
 });
 
 test('zero-flicker page switching avoids blank screen opacity drops and preserves skeletons', () => {
@@ -138,13 +143,12 @@ test('zero-flicker page switching avoids blank screen opacity drops and preserve
 
 test('account session card accurately describes current-device logout', () => {
   const accountSource = fs.readFileSync(path.join(ROOT, 'web/static/js/pages/account.js'), 'utf8');
-  assert.match(accountSource, /清除当前设备 Cookie，其他设备的登录会话不受影响/);
+  assert.match(accountSource, /仅退出当前设备，其他设备不受影响/);
   assert.doesNotMatch(accountSource, /作废所有设备的登录会话/);
 });
 
 test('major cards honor the configurable UI radius', () => {
-  assert.match(cssSource, /\.glass-card,[\s\S]*?border-radius: var\(--ui-radius\) !important;/);
-  assert.doesNotMatch(cssSource, /\.glass-card,[\s\S]*?border-radius: 18px !important;/);
+  assert.match(cssSource, /\.glass-card,[^{]+\{[^}]*border-radius:\s*var\(--ui-radius\);/);
 });
 
 test('request log detail avoids raw data-copy attribute in innerHTML and pauses auto-refresh when expanded', () => {

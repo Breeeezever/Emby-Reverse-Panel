@@ -213,6 +213,34 @@ test('request log date range covers the selected local days', () => {
   assert.equal(range.to_ms - range.from_ms, (2 * 24 * 60 * 60 * 1000) - 1);
 });
 
+test('hidden log columns stay aligned after each row refresh', () => {
+  const fields = ['node', 'category', 'status', 'ip', 'ua', 'upstream-ua', 'backend-address', 'timeline'];
+  const fixedNodes = fields.flatMap(field => [{ field, hidden: false }, { field, hidden: false }]);
+  let cells = [];
+  const body = {
+    set innerHTML(value) {
+      cells = Array.from(value.matchAll(/<td data-log-field="([^"]+)"/g), match => ({ field: match[1], hidden: false }));
+    },
+  };
+  const sandbox = loadRequestLogHelpers();
+  sandbox.document = {
+    getElementById() { return body; },
+    querySelectorAll(selector) {
+      const field = selector.match(/data-log-field="([^"]+)"/)[1];
+      return [...fixedNodes, ...cells].filter(node => node.field === field);
+    },
+  };
+  sandbox.esc = value => String(value);
+  sandbox.requestLogApplyDisplaySettings({ log_display_upstream_ua: false, log_display_backend_address: false });
+  for (let refresh = 0; refresh < 2; refresh += 1) {
+    sandbox.renderRequestLogRows([{ id: refresh + 1, site_name: 'demo', status_code: 200 }]);
+    assert.equal(cells.length, 8);
+    for (const node of [...fixedNodes, ...cells]) {
+      assert.equal(node.hidden, ['upstream-ua', 'backend-address'].includes(node.field), node.field);
+    }
+  }
+});
+
 test('request log timeline heading aligns with timeline values', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'web', 'static', 'css', 'style.css'),
@@ -238,36 +266,27 @@ test('request log UA columns stay 220px and show full text', () => {
   assert.doesNotMatch(source, /request-log-ua-width-control|--request-log-ua-width/);
   assert.match(source, /\.request-log-table col\.request-log-col-ua \{\s*width:\s*220px;/);
   assert.match(source, /\.request-log-table col\.request-log-col-upstream-ua \{\s*width:\s*220px;/);
-  assert.match(source, /\.request-log-table th:nth-child\(5\) \{ width:\s*220px !important;/);
-  assert.match(source, /\.request-log-table th:nth-child\(6\) \{ width:\s*220px !important;/);
   assert.match(source, /\.request-log-ua\s*\{[^}]*overflow:\s*visible;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s);
   assert.match(source, /\.request-log-table td\[data-log-field="ua"\],\s*\.request-log-table td\[data-log-field="upstream-ua"\]\s*\{[^}]*overflow:\s*visible;/s);
 });
 
-test('request log filter chips keep centered labels and balanced spacing', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'web', 'static', 'css', 'style.css'),
-    'utf8',
-  );
-  assert.match(source, /\.request-log-filter-row\s*\{[^}]*padding:\s*10px 0;/s);
-  assert.match(source, /\.request-log-pill\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*padding:\s*7px 16px;[^}]*text-align:\s*center;/s);
+test('request log filters use labelled selectors that fit their grid', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'web/static/css/style.css'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'web/static/js/pages/request-logs.js'), 'utf8');
+  assert.match(source, /<select[^>]+class="form-select request-log-filter-select"/);
+  assert.match(css, /\.request-log-filter-row\s*\{[^}]*min-width:\s*0;/);
+  assert.match(css, /\.request-log-filter-select\s*\{[^}]*width:\s*100%;/);
 });
 
-test('mobile request log table uses fixed readable columns without overlap', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'web', 'static', 'css', 'style.css'),
-    'utf8',
-  );
-  assert.match(source, /\.request-log-table col\.request-log-col-node,\s*\.request-log-table th:nth-child\(1\)\s*\{\s*width:\s*112px !important;/s);
-  assert.match(source, /\.request-log-table col\.request-log-col-category,\s*\.request-log-table th:nth-child\(2\)\s*\{\s*width:\s*144px !important;/s);
-  assert.match(source, /\.request-log-table col\.request-log-col-status,\s*\.request-log-table th:nth-child\(3\)\s*\{\s*width:\s*76px !important;/s);
-  assert.match(source, /\.request-log-table col\.request-log-col-ip,\s*\.request-log-table th:nth-child\(4\)\s*\{\s*width:\s*170px !important;/s);
-  assert.match(source, /\.request-log-table col\.request-log-col-ua,\s*\.request-log-table th:nth-child\(5\)\s*\{\s*width:\s*220px !important;/s);
-  assert.match(source, /\.request-log-table col\.request-log-col-upstream-ua,\s*\.request-log-table th:nth-child\(6\)\s*\{\s*width:\s*220px !important;/s);
-  assert.doesNotMatch(source, /\.request-log-table tbody tr\s*\{\s*height:\s*58px;/s);
-  assert.match(source, /\.request-log-table th,\s*\.request-log-table td\s*\{[^}]*overflow:\s*hidden;[^}]*padding:\s*10px 12px;[^}]*font-size:\s*13px;[^}]*line-height:\s*1\.3;/s);
-  assert.match(source, /\.request-log-category,\s*\.request-log-node,\s*\.request-log-status\s*\{\s*white-space:\s*nowrap;/s);
-  assert.match(source, /\.request-log-table th\s*\{[^}]*font-size:\s*12px;[^}]*white-space:\s*nowrap;/s);
+test('request logs keep fixed columns inside a horizontally scrollable table', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'web/static/css/style.css'), 'utf8');
+  assert.match(css, /\.request-log-table-scroll\s*\{[^}]*width:\s*100%;[^}]*overflow:\s*auto;/);
+  assert.match(css, /\.request-log-table\s*\{[^}]*min-width:\s*1080px;[^}]*table-layout:\s*fixed;/);
+  for (const column of ['node', 'category', 'status', 'ip', 'time']) {
+    assert.match(css, new RegExp('\\.request-log-col-' + column + '\\s*\\{[^}]*width:\\s*\\d+px;'));
+  }
+  assert.match(css, /\.request-log-category,\s*\.request-log-node,\s*\.request-log-status\s*\{[^}]*white-space:\s*nowrap;/);
+  assert.doesNotMatch(css, /\.request-log-table tbody tr\s*\{\s*height:/);
 });
 
 test('request log timeline uses concise Chinese relative time', () => {

@@ -139,7 +139,7 @@ test('site management exposes latency tests and safe asset cache controls', () =
   assert.match(source, /asset_cache_rules:/);
   assert.match(source, /\*\/file\/\*/);
   assert.match(source, /\*\/emby\/Items\/\*\/Images\/\*/);
-  assert.match(source, /视频、音频、HLS\/DASH、Range/);
+  assert.match(source, /媒体流和私有响应不缓存/);
 });
 
 test('upstream line latency uses green, yellow, and red thresholds', () => {

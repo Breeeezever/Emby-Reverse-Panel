@@ -23,6 +23,10 @@ func runCommandLine(args []string, input io.Reader, output io.Writer) (bool, err
 	}
 	switch args[0] {
 	case "--version", "-v":
+		if len(args) == 2 && args[1] == "--features" {
+			_, err := fmt.Fprintln(output, "panel-updater-v1\nmanaged-tls-v1")
+			return true, err
+		}
 		if len(args) != 1 {
 			return true, errors.New("version command does not accept arguments")
 		}
@@ -33,6 +37,10 @@ func runCommandLine(args []string, input io.Reader, output io.Writer) (bool, err
 			return true, errors.New("healthcheck command does not accept arguments")
 		}
 		return true, runHealthcheckCommand()
+	case "update-agent":
+		return true, runUpdateAgent(args[1:])
+	case "tls":
+		return true, runTLSCommand(args[1:], input, output)
 	case "admin":
 		return true, runAdminCommand(args[1:], input, output)
 	default:

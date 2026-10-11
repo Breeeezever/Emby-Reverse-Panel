@@ -1,0 +1,95 @@
+site_name: Meridian Wiki
+site_description: Meridian v1.13.2 安装、站点管理、播放与维护指南
+site_url: https://snnabb.github.io/Meridian/
+repo_url: https://github.com/snnabb/Meridian
+repo_name: snnabb/Meridian
+edit_uri: edit/master/docs/wiki/
+docs_dir: docs/wiki
+site_dir: site
+copyright: Meridian · MIT License
+
+theme:
+  name: material
+  language: zh
+  font: false
+  logo: assets/favicon.svg
+  favicon: assets/favicon.svg
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: 切换深色模式
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: 切换浅色模式
+
+nav:
+  - 首页: index.md
+  - 快速开始: quick-start.md
+  - 安装部署:
+      - Linux 安装: install-linux.md
+      - Docker 部署: install-docker.md
+      - Windows 与源码: install-source.md
+      - HTTPS 反向代理: reverse-proxy.md
+  - 站点与播放:
+      - 站点管理: site-management.md
+      - 入口模式: ingress-modes.md
+      - 播放模式: playback-modes.md
+      - 自动发现: auto-discovery.md
+      - 高级策略: advanced-settings.md
+  - 运维管理:
+      - 流量与配额: traffic-and-quota.md
+      - 日志与诊断: logs-and-diagnostics.md
+      - TLS 证书: tls-certificates.md
+      - Telegram Bot: telegram-bot.md
+      - 备份与恢复: backup-and-restore.md
+      - 更新与维护: updates.md
+  - 参考:
+      - 配置参考: configuration.md
+      - 故障排查: troubleshooting.md
+      - 安全与隐私: security.md
+      - 开发指南: development.md
+
+plugins:
+  - search:
+      lang: [zh]
+
+markdown_extensions:
+  - tables
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.superfences
+
+hooks:
+  - tools/wiki/hooks.py
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+extra:
+  generator: false
+  homepage: https://snnabb.github.io/Meridian/index.html

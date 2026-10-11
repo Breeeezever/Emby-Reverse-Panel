@@ -5,18 +5,36 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Meridian — Emby 反代管理面板</title>
 <meta name="description" content="Meridian 轻量级 Emby 反向代理管理面板">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1.12.4">
-<script src="/js/theme.js?v=1.12.4"></script>
-<link rel="stylesheet" href="/css/style.css?v=1.12.4">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1.13.2">
+<script src="/js/theme.js?v=1.13.2"></script>
+<link rel="preload" href="/fonts/inter-ui.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/noto-sans-sc-ui.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/css/style.css?v=1.13.2">
 </head>
 <body class="auth-checking">
+<a class="skip-link" href="#main-content">跳转到主要内容</a>
 
 <!-- Login Page -->
 <div id="page-login">
+  <div class="auth-layout">
+  <section class="auth-story" aria-label="Meridian">
+    <div class="auth-wordmark"><img src="/favicon.svg" alt=""><span>Meridian</span></div>
+    <div class="auth-story-content">
+      <h1>Emby<br><span>反代管理</span></h1>
+      <div class="auth-connection" aria-hidden="true">
+        <div class="connection-orbit orbit-one"></div><div class="connection-orbit orbit-two"></div>
+        <div class="connection-path"></div>
+        <div class="connection-node connection-client"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>你的设备</span></div>
+        <div class="connection-hub"><img src="/favicon.svg" alt=""></div>
+        <div class="connection-node connection-library"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="m10 8 6 4-6 4Z"/></svg><span>媒体库</span></div>
+      </div>
+    </div>
+  </section>
+  <div class="auth-form-area">
   <div class="login-card">
     <div class="login-brand">
-      <h1>Meridian</h1>
-      <p>Emby 反代管理面板</p>
+      <h2 id="auth-title">登录</h2>
+      <p id="auth-description" hidden></p>
     </div>
     <div class="auth-check-status" id="auth-check-status" role="status" aria-live="polite">
       <span id="auth-check-message">正在检查初始化状态...</span>
@@ -30,8 +48,11 @@
       </div>
       <div class="form-group">
         <label for="inp-password">密码</label>
-        <input type="password" class="form-input" id="inp-password" placeholder="••••••••" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required>
-        <div class="form-help" id="admin-password-help" hidden>首次创建管理员时，密码必须为 12-72 个 UTF-8 字节。</div>
+        <div class="secret-input-wrap">
+          <input type="password" class="form-input" id="inp-password" placeholder="输入你的密码" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+          <button type="button" class="secret-toggle" id="btn-toggle-password" aria-controls="inp-password" aria-label="显示密码" aria-pressed="false">显示</button>
+        </div>
+        <div class="form-help" id="admin-password-help" hidden>密码至少需要 6 个字符。</div>
       </div>
       <div class="form-group" id="confirm-password-group" hidden>
         <label for="inp-confirm-password">确认密码</label>
@@ -43,12 +64,16 @@
           <input type="password" class="form-input" id="inp-setup-token" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="请从安装输出或部署配置中复制">
           <button type="button" class="secret-toggle" id="btn-toggle-setup-token" aria-controls="inp-setup-token" aria-pressed="false" aria-label="显示初始化令牌">显示</button>
         </div>
-        <div class="form-help" id="setup-token-help">首次创建管理员时必须填写。仅在初始化仍待完成时，root 才可从 /opt/meridian/.env 恢复现有 SETUP_TOKEN；本页面不会读取或显示服务端令牌。</div>
+        <div class="form-help" id="setup-token-help">使用安装时生成的初始化令牌，验证你是此面板的所有者。</div>
+        <details class="setup-recovery"><summary>找不到初始化令牌？</summary><p>仅在初始化仍待完成时，root 才可从 /opt/meridian/.env 恢复现有 SETUP_TOKEN；本页面不会读取或显示服务端令牌。</p></details>
       </div>
       <button type="submit" class="btn-login" id="btn-login" disabled>正在检查...</button>
       <div class="login-rate-limit" id="login-rate-limit" role="status" hidden></div>
     </form>
     <div class="login-footer" id="login-footer" hidden></div>
+  </div>
+  <div class="auth-form-footer"><span>Meridian · Emby 反代管理面板</span><a href="https://github.com/snnabb/Meridian" target="_blank" rel="noopener noreferrer">项目主页 <span aria-hidden="true">↗</span></a></div>
+  </div>
   </div>
 </div>
 
@@ -59,9 +84,10 @@
     <div class="sidebar-brand">
       <img src="/favicon.svg" alt="" class="sidebar-logo">
       <span class="sidebar-brand-name">Meridian</span>
-      <span class="sidebar-version" id="sidebar-version">v1.12.4</span>
+      <span class="sidebar-version" id="sidebar-version">v1.13.2</span>
     </div>
     <nav class="sidebar-nav" aria-label="功能菜单">
+      <span class="sidebar-section-label">服务</span>
       <a href="#dashboard" class="topnav-link active" data-page="dashboard" title="仪表盘">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
         <span>仪表盘</span>
@@ -74,10 +100,12 @@
         <svg viewBox="0 0 24 24"><polyline points="3 12 6.5 12 9 5 13 19 16 12 21 12"/></svg>
         <span>日志记录</span>
       </a>
+      <span class="sidebar-section-label sidebar-section-secondary">管理</span>
       <a href="#global-settings" class="topnav-link global-settings-link" data-page="global-settings" title="全局设置">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg>
         <span>全局设置</span>
       </a>
+      <a href="#diagnostics" class="topnav-link" data-page="diagnostics" title="故障诊断"><svg viewBox="0 0 24 24"><path d="m14 6 4 4M4 20l6-6M14 3a6 6 0 0 0-7 7L3 14a3 3 0 0 0 4 4l4-4a6 6 0 0 0 7-7l-4 4-3-3Z"/></svg><span>故障诊断</span></a>
     </nav>
     <a class="sidebar-account" id="avatar-btn" href="#account" aria-label="打开账户页面" title="账户">
       <span class="avatar-btn" id="avatar-initial">A</span>
@@ -101,7 +129,6 @@
       </span>
       <div class="app-header-copy">
         <h1 id="app-page-title">仪表盘</h1>
-        <p id="app-page-subtitle">反代服务运行概览</p>
       </div>
     </div>
     <div class="app-header-actions">
@@ -116,7 +143,7 @@
   </header>
 
   <!-- Main Area -->
-  <div class="main">
+  <main class="main" id="main-content" tabindex="-1">
     <div id="page-dashboard" class="page active"></div>
     <div id="page-sites" class="page"></div>
     <div id="page-diagnostics" class="page"></div>
@@ -126,11 +153,11 @@
     <div id="page-global-settings" class="page"></div>
     <div id="page-backup-restore" class="page"></div>
     <div id="page-account" class="page"></div>
-  </div>
+  </main>
 
   <!-- Modal -->
   <div class="modal-overlay" id="modal-overlay" aria-hidden="true">
-    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
       <div class="modal-header">
         <h3 id="modal-title"></h3>
         <button type="button" class="modal-close" id="modal-close" aria-label="关闭弹窗">✕</button>
@@ -145,16 +172,17 @@
 <!-- Login errors must remain visible while the application shell is hidden. -->
 <div id="toast-container" aria-live="polite"></div>
 
-<script src="/js/api.js?v=1.12.4"></script>
-<script src="/js/toast.js?v=1.12.4"></script>
-<script src="/js/router.js?v=1.12.4"></script>
-<script src="/js/pages/dashboard.js?v=1.12.4"></script>
-<script src="/js/pages/sites.js?v=1.12.4"></script>
-<script src="/js/pages/diag.js?v=1.12.4"></script>
-<script src="/js/pages/request-logs.js?v=1.12.4"></script>
-<script src="/js/pages/telegram-report.js?v=1.12.4"></script>
-<script src="/js/pages/global-settings.js?v=1.12.4"></script>
-<script src="/js/pages/account.js?v=1.12.4"></script>
-<script src="/js/app.js?v=1.12.4"></script>
+<script src="/js/api.js?v=1.13.2"></script>
+<script src="/js/toast.js?v=1.13.2"></script>
+<script src="/js/form-validation.js?v=1.13.2"></script>
+<script src="/js/router.js?v=1.13.2"></script>
+<script src="/js/pages/dashboard.js?v=1.13.2"></script>
+<script src="/js/pages/sites.js?v=1.13.2"></script>
+<script src="/js/pages/diag.js?v=1.13.2"></script>
+<script src="/js/pages/request-logs.js?v=1.13.2"></script>
+<script src="/js/pages/telegram-report.js?v=1.13.2"></script>
+<script src="/js/pages/global-settings.js?v=1.13.2"></script>
+<script src="/js/pages/account.js?v=1.13.2"></script>
+<script src="/js/app.js?v=1.13.2"></script>
 </body>
 </html>

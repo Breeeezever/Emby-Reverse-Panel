@@ -396,8 +396,8 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
-	if req.Username == "" || len(req.Username) > 64 || len(req.Password) < 12 || len(req.Password) > 72 {
-		a.jsonErr(w, http.StatusBadRequest, "username must be 1-64 characters and password must be 12-72 bytes")
+	if validateAdminUsername(req.Username) != nil || validateAdminPassword(req.Password) != nil {
+		a.jsonErr(w, http.StatusBadRequest, "username must be 1-64 bytes; password must contain at least 6 characters and at most 72 bytes")
 		return
 	}
 	if a.setupToken == "" || !setupTokenMatches(a.setupToken, req.SetupToken) {
