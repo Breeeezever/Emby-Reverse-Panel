@@ -27,7 +27,7 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 
 `TRUSTED_PROXY_CIDRS` 必须匹配 Meridian 实际看到的代理来源。Docker、远程网关和 IPv6 连接不能直接照搬同机地址，也不要填 `0.0.0.0/0`。
 
-## 使用两个公开域名
+## 使用两个公开域名 {#separate-public-domains}
 
 面板和站点反代可以使用不同的公开域名。例如面板使用 `panel.example.com`，站点使用 `media.example.com`。这不是把站点回源地址改成另一个域名，而是让网关把两个 `Host` 都送到同一个 Meridian 进程，再由站点入口配置选择代理实例。
 

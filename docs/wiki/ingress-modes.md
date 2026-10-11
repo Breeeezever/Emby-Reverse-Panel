@@ -65,7 +65,7 @@ https://panel.example.com:8443/cinema/
 
 只配置外部网关 HTTPS，不会自动开启新建表单的原生 TLS 能力。暂时不能选择域名前缀时，可先用路径入口。
 
-## 面板域名与站点域名分开
+## 面板域名与站点域名分开 {#separate-panel-and-site-domains}
 
 面板域名和站点反代域名可以是两个地址。面板域名只负责登录和管理 API；站点的 `public_host` 负责按 Host 将请求交给对应的 Emby 代理。两者共用 Meridian 的面板监听器，但必须在 DNS 和反向代理中同时指向这台 Meridian。
 
