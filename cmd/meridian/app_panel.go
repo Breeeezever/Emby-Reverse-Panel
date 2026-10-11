@@ -94,6 +94,14 @@ type panelSettingsRequest struct {
 	ListenPort     int    `json:"listen_port"`
 }
 
+// managedExternalTLSProxy reports the standard installation shape where Nginx
+// terminates HTTPS on the public 443 socket and Meridian serves the panel over
+// a loopback HTTP port. Persisting 443 in this mode would make the next
+// restart fail because Nginx already owns that socket.
+func (a *App) managedExternalTLSProxy() bool {
+	return a != nil && a.panelBindLoopback && !a.panelTLSEnabled && strings.TrimSpace(a.panelHost) != ""
+}
+
 func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
 	if a.panelCertificates != nil {
 		if !a.panelCertificates.operationMu.TryLock() {
@@ -130,6 +138,10 @@ func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := validatePanelListenPort(req.ListenPort); err != nil {
 		a.jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if a.managedExternalTLSProxy() && req.ListenPort != a.panelListenPort {
+		a.jsonErr(w, http.StatusConflict, "当前面板由外部 HTTPS 反向代理管理，不能只在面板内修改监听端口；请使用安装器执行端口切换")
 		return
 	}
 	current, err := a.db.PanelSettings()
@@ -194,6 +206,10 @@ func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request
 	}
 	if !settings.Configured || settings.PanelDomain == "" || settings.RouteDomain == "" || settings.ListenPort == 0 {
 		a.jsonErr(w, http.StatusConflict, "请先保存面板前缀、泛域名和监听端口")
+		return
+	}
+	if a.managedExternalTLSProxy() {
+		a.jsonErr(w, http.StatusConflict, "当前面板的 HTTPS 由外部反向代理管理，请在代理（例如 Nginx）中续签证书；不能在 Meridian 内启用原生证书监听")
 		return
 	}
 	provider := strings.ToLower(strings.TrimSpace(req.Provider))
