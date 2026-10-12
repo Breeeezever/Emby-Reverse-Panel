@@ -41,7 +41,7 @@ func (b *telegramBot) siteAccounts(ctx context.Context, chatID, siteID int64, pa
 		}
 		keys = append(keys, []telegramButton{telegramButtonFor("✏️ 编辑 "+truncateTelegramText(label, 42), fmt.Sprintf("account:%d:%d:edit", siteID, account.ID)), telegramButtonFor("删除", fmt.Sprintf("account:%d:%d:delete", siteID, account.ID))})
 		if account.ExpiresAt != "" {
-			if expiry, expiryErr := parseSiteAccountExpiry(account.ExpiresAt); expiryErr == nil {
+			if expiry, expiryErr := b.app.db.parseSiteAccountExpiry(account.ExpiresAt); expiryErr == nil {
 				days := int(math.Ceil(expiry.Sub(time.Now()).Hours() / 24))
 				if expiry.Before(time.Now()) {
 					reminders = append(reminders, label+"：已到期")

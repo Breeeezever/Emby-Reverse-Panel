@@ -397,8 +397,11 @@ func (a *App) applySiteImport(ctx context.Context, preview siteImportPreview) si
 		if item.Existing != nil {
 			action, id, expected = "update", item.Existing.ID, siteConfigurationFingerprint(*item.Existing)
 		}
+		if action == "create" {
+			item.Payload["accounts"] = item.Accounts
+		}
 		data, err := a.executeTelegramSiteCommand(context.WithValue(ctx, siteCommandImportKey{}, true), action, id, item.Payload, expected)
-		if err == nil {
+		if err == nil && action == "update" {
 			var site Site
 			err = json.Unmarshal(data, &site)
 			if err == nil {

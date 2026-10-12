@@ -125,8 +125,12 @@ func (b *telegramBot) handleText(ctx context.Context, id int64, text string) err
 	case "/id":
 		return b.send(ctx, id, fmt.Sprintf("你的 Telegram 用户 ID：%d", id), telegramBackKeyboard())
 	}
-	if s := b.sessions[id]; s != nil && s.Step == "path" {
-		return b.acceptInput(ctx, id, s, text)
+	if s := b.sessions[id]; s != nil {
+		field, _ := s.Draft["field"].(string)
+		secretInput := s.Step == "account_password" || s.Step == "account_security" || (s.Step == "account_value" && (field == "password" || field == "security")) || (s.Step == "draft_account_value" && (s.AccountField == "password" || s.AccountField == "security"))
+		if s.Step == "path" || secretInput {
+			return b.acceptInput(ctx, id, s, rawText)
+		}
 	}
 	if strings.HasPrefix(text, "/") {
 		return b.send(ctx, id, "可用命令：/menu /report /sites /accounts /address /traffic /status /add /export /import /cancel", telegramBackKeyboard())
@@ -307,7 +311,11 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 	if s.Step == "draft_account" || s.Step == "draft_account_value" {
 		return b.acceptDraftAccount(ctx, id, s, text, button)
 	}
-	text = strings.TrimSpace(text)
+	field, _ := s.Draft["field"].(string)
+	secretInput := s.Step == "account_password" || s.Step == "account_security" || (s.Step == "account_value" && (field == "password" || field == "security"))
+	if !secretInput || button {
+		text = strings.TrimSpace(text)
+	}
 	switch s.Step {
 	case "export_accounts":
 		if text != "include" && text != "exclude" {
@@ -354,7 +362,7 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 		s.Draft["account_name"] = text
 		return b.prompt(ctx, id, s, "account_username", "👤 接下来是登录用户名，也可以和账号名称一样。", telegramButtonFor("与账号名称相同", "same"))
 	case "account_username":
-		if text == "same" {
+		if button && text == "same" {
 			text, _ = s.Draft["account_name"].(string)
 		}
 		if text == "" || len(text) > 128 {
@@ -363,17 +371,17 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 		s.Draft["username"] = text
 		return b.prompt(ctx, id, s, "account_password", "🔑 把登录密码发给我吧。暂时不填可以跳过。", telegramButtonFor("跳过", "skip"))
 	case "account_password":
-		if text != "skip" {
+		if !button || text != "skip" {
 			s.Draft["password"] = text
 		}
 		return b.prompt(ctx, id, s, "account_security", "🔐 有安全密码吗？有的话发给我，没有就跳过。", telegramButtonFor("跳过", "skip"))
 	case "account_security":
-		if text != "skip" {
+		if !button || text != "skip" {
 			s.Draft["security_password"] = text
 		}
 		return b.prompt(ctx, id, s, "account_expires", "📅 账号什么时候到期？\n例如 2030-11-09，没有到期时间也可以跳过。", telegramButtonFor("无到期时间", "skip"))
 	case "account_expires":
-		if text != "skip" {
+		if !button || text != "skip" {
 			if _, err := parseSiteAccountExpiry(text); err != nil {
 				return fmt.Errorf("到期日期格式无效")
 			}
@@ -381,7 +389,7 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 		}
 		return b.prompt(ctx, id, s, "account_reminder", "🔔 想提前几天提醒？\n发我天数，0 表示到期当天；同一次到期只提醒一次。", telegramButtonFor("关闭提醒", "skip"))
 	case "account_reminder":
-		if text != "skip" {
+		if !button || text != "skip" {
 			days, err := telegramInteger(text, 0, 3650)
 			if err != nil {
 				return err
@@ -390,7 +398,7 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 		}
 		return b.prompt(ctx, id, s, "account_note", "📝 还有什么想记下来的？发我备注，或直接跳过。", telegramButtonFor("跳过", "skip"))
 	case "account_note":
-		if text != "skip" {
+		if !button || text != "skip" {
 			s.Draft["note"] = text
 		}
 		return b.finishAccountDraft(ctx, id, s)
@@ -401,10 +409,10 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 		return b.accountFieldPrompt(ctx, id, s, text)
 	case "account_value":
 		field, _ := s.Draft["field"].(string)
-		if text == "keep" {
+		if button && text == "keep" {
 			return b.finishAccountDraft(ctx, id, s)
 		}
-		if text == "clear" {
+		if button && text == "clear" {
 			if field == "password" {
 				s.Draft["clear_password"] = true
 			} else if field == "security" {
@@ -788,16 +796,11 @@ func (b *telegramBot) startEdit(ctx context.Context, id, siteID int64, field str
 	return fmt.Errorf("不支持的编辑项目")
 }
 func (b *telegramBot) applySession(ctx context.Context, id int64, s *telegramSession) error {
-	// Validate account drafts before creating the site so a bad date cannot
-	// leave a new site without its account. Keep the draft editable on errors.
 	if s.Action == "create" {
-		for i, account := range s.Accounts {
-			normalized, err := normalizeSiteAccountInput(account, nil)
-			if err != nil {
-				return fmt.Errorf("第 %d 个账号需要调整：%w", i+1, err)
-			}
-			s.Accounts[i] = normalized
+		if err := validateNewSiteAccounts(s.Accounts); err != nil {
+			return err
 		}
+		s.Draft["accounts"] = s.Accounts
 	}
 	// Consume before mutation, including failures: retry always needs a fresh view
 	// and confirmation, avoiding ambiguous repeated creates after network failures.
@@ -825,11 +828,6 @@ func (b *telegramBot) applySession(ctx context.Context, id int64, s *telegramSes
 		var site Site
 		if json.Unmarshal(result, &site) == nil {
 			siteID = site.ID
-		}
-		for _, account := range s.Accounts {
-			if _, err := b.app.db.saveSiteAccount(siteID, 0, account); err != nil {
-				return fmt.Errorf("站点已创建，但账号保存失败：%w", err)
-			}
 		}
 	}
 	var warning struct {

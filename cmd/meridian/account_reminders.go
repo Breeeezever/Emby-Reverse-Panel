@@ -32,7 +32,7 @@ func (b *telegramBot) deliverAccountReminders(ctx context.Context, now time.Time
 			if account.ReminderDays == nil || account.ExpiresAt == "" {
 				continue
 			}
-			expires, err := parseSiteAccountExpiry(account.ExpiresAt)
+			expires, err := b.app.db.parseSiteAccountExpiry(account.ExpiresAt)
 			if err != nil || now.Before(expires.AddDate(0, 0, -*account.ReminderDays)) {
 				continue
 			}

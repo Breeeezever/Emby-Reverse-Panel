@@ -66,12 +66,30 @@ func siteAccountKey(secret []byte) []byte {
 	return sum[:]
 }
 
+func validateNewSiteAccounts(accounts []SiteAccountInput) error {
+	if len(accounts) > 500 {
+		return errors.New("单个站点最多一次添加 500 个账号")
+	}
+	seen := make(map[string]bool, len(accounts))
+	for i, input := range accounts {
+		account, err := normalizeSiteAccountInput(input, nil)
+		if err != nil {
+			return fmt.Errorf("第 %d 个账号需要调整：%w", i+1, err)
+		}
+		if seen[account.Username] {
+			return errors.New("同一站点中用户名重复")
+		}
+		seen[account.Username] = true
+	}
+	return nil
+}
+
 func encryptSiteAccountSecret(value string) (string, error) {
 	return encryptSiteAccountSecretWithSecret(value, activeStoredCredentialSecret())
 }
 
 func encryptSiteAccountSecretWithSecret(value string, secret []byte) (string, error) {
-	if strings.TrimSpace(value) == "" {
+	if value == "" {
 		return "", nil
 	}
 	block, err := aes.NewCipher(siteAccountKey(secret))
@@ -159,12 +177,6 @@ func normalizeSiteAccountInput(input SiteAccountInput, existing *storedSiteAccou
 		if input.ReminderDays == nil && !input.ClearReminder {
 			input.ReminderDays = existing.ReminderDays
 		}
-		if input.Password == "" && !input.ClearPassword {
-			input.Password = "\x00__KEEP__\x00"
-		}
-		if input.SecurityPassword == "" && !input.ClearSecurity {
-			input.SecurityPassword = "\x00__KEEP__\x00"
-		}
 	}
 	if input.AccountName == "" && input.Username != "" {
 		input.AccountName = input.Username
@@ -182,6 +194,15 @@ func normalizeSiteAccountInput(input SiteAccountInput, existing *storedSiteAccou
 }
 
 func parseSiteAccountExpiry(value string) (time.Time, error) {
+	return parseSiteAccountExpiryInLocation(value, time.UTC)
+}
+
+func (d *DB) parseSiteAccountExpiry(value string) (time.Time, error) {
+	settings := d.currentSystemSettings()
+	return parseSiteAccountExpiryInLocation(value, timezoneLocationByName(settings.ScheduleTimezoneName, settings.ScheduleTimezone))
+}
+
+func parseSiteAccountExpiryInLocation(value string, location *time.Location) (time.Time, error) {
 	value = strings.TrimSpace(value)
 	for _, layout := range []string{
 		"2006-01-02",
@@ -191,7 +212,7 @@ func parseSiteAccountExpiry(value string) (time.Time, error) {
 		"2006-01-02T15:04:05.999999999",
 		"2006-01-02T15:04:05",
 	} {
-		parsed, err := time.ParseInLocation(layout, value, time.Local)
+		parsed, err := time.ParseInLocation(layout, value, location)
 		if err == nil {
 			return parsed, nil
 		}
@@ -231,9 +252,18 @@ func publicSiteAccount(item storedSiteAccount, siteName string) SiteAccount {
 	return item.SiteAccount
 }
 
+type siteAccountStore interface {
+	Exec(string, ...any) (sql.Result, error)
+	QueryRow(string, ...any) *sql.Row
+}
+
 func (d *DB) getSiteAccount(siteID, accountID int64) (*storedSiteAccount, error) {
+	return getSiteAccountFrom(d.db, siteID, accountID)
+}
+
+func getSiteAccountFrom(store siteAccountStore, siteID, accountID int64) (*storedSiteAccount, error) {
 	var item storedSiteAccount
-	err := d.db.QueryRow(`SELECT id, site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, reminder_days, created_at, updated_at FROM site_accounts WHERE site_id=? AND id=?`, siteID, accountID).Scan(&item.ID, &item.SiteID, &item.AccountName, &item.Username, &item.PasswordCiphertext, &item.SecurityPasswordCiphertext, &item.ExpiresAt, &item.Note, &item.ReminderDays, &item.CreatedAt, &item.UpdatedAt)
+	err := store.QueryRow(`SELECT id, site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, reminder_days, created_at, updated_at FROM site_accounts WHERE site_id=? AND id=?`, siteID, accountID).Scan(&item.ID, &item.SiteID, &item.AccountName, &item.Username, &item.PasswordCiphertext, &item.SecurityPasswordCiphertext, &item.ExpiresAt, &item.Note, &item.ReminderDays, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -243,10 +273,28 @@ func (d *DB) getSiteAccount(siteID, accountID int64) (*storedSiteAccount, error)
 }
 
 func (d *DB) saveSiteAccount(siteID int64, accountID int64, input SiteAccountInput) (*storedSiteAccount, error) {
+	// Read, merge and write on the same transaction. Partial edits must not
+	// overwrite another writer's fields between the read and the update.
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	item, err := saveSiteAccountIn(tx, siteID, accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func saveSiteAccountIn(store siteAccountStore, siteID int64, accountID int64, input SiteAccountInput) (*storedSiteAccount, error) {
 	var existing *storedSiteAccount
 	var err error
 	if accountID > 0 {
-		existing, err = d.getSiteAccount(siteID, accountID)
+		existing, err = getSiteAccountFrom(store, siteID, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -260,20 +308,20 @@ func (d *DB) saveSiteAccount(siteID int64, accountID int64, input SiteAccountInp
 	if existing != nil {
 		passwordCipher, securityCipher = existing.PasswordCiphertext, existing.SecurityPasswordCiphertext
 	}
-	if input.Password != "\x00__KEEP__\x00" {
+	if existing == nil || input.Password != "" || input.ClearPassword {
 		passwordCipher, err = encryptSiteAccountSecret(input.Password)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if input.SecurityPassword != "\x00__KEEP__\x00" {
+	if existing == nil || input.SecurityPassword != "" || input.ClearSecurity {
 		securityCipher, err = encryptSiteAccountSecret(input.SecurityPassword)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if accountID == 0 {
-		result, err := d.db.Exec(`INSERT INTO site_accounts (site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, reminder_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, siteID, input.AccountName, input.Username, passwordCipher, securityCipher, input.ExpiresAt, input.Note, input.ReminderDays)
+		result, err := store.Exec(`INSERT INTO site_accounts (site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, reminder_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, siteID, input.AccountName, input.Username, passwordCipher, securityCipher, input.ExpiresAt, input.Note, input.ReminderDays)
 		if err != nil {
 			return nil, err
 		}
@@ -282,12 +330,12 @@ func (d *DB) saveSiteAccount(siteID int64, accountID int64, input SiteAccountInp
 			return nil, err
 		}
 	} else {
-		_, err = d.db.Exec(`UPDATE site_accounts SET account_name=?, username=?, password_ciphertext=?, security_password_ciphertext=?, expires_at=?, note=?, reminder_days=?, updated_at=CURRENT_TIMESTAMP WHERE site_id=? AND id=?`, input.AccountName, input.Username, passwordCipher, securityCipher, input.ExpiresAt, input.Note, input.ReminderDays, siteID, accountID)
+		_, err = store.Exec(`UPDATE site_accounts SET account_name=?, username=?, password_ciphertext=?, security_password_ciphertext=?, expires_at=?, note=?, reminder_days=?, updated_at=CURRENT_TIMESTAMP WHERE site_id=? AND id=?`, input.AccountName, input.Username, passwordCipher, securityCipher, input.ExpiresAt, input.Note, input.ReminderDays, siteID, accountID)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return d.getSiteAccount(siteID, accountID)
+	return getSiteAccountFrom(store, siteID, accountID)
 }
 
 func accountPlaintext(item storedSiteAccount) (SiteAccountInput, error) {
@@ -442,33 +490,26 @@ func (a *App) siteProxyLines(site Site) []string {
 			return []string{address}
 		}
 	}
-	host := a.panelHost
-	if site.PublicHost != "" {
-		host = site.PublicHost
-	}
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	scheme := "http"
-	if a.panelTLSEnabled {
-		scheme = "https"
-	}
-	if site.IngressMode == ingressModePath && site.PathPrefix != "" {
-		return []string{scheme + "://" + host + "/" + strings.Trim(site.PathPrefix, "/")}
-	}
-	if site.IngressMode == ingressModeHost || site.IngressMode == ingressModeBoth {
-		return []string{scheme + "://" + host}
-	}
-	port := strconv.Itoa(site.ListenPort)
-	if (scheme == "http" && site.ListenPort == 80) || (scheme == "https" && site.ListenPort == 443) {
-		port = ""
-	}
-	return []string{scheme + "://" + host + func() string {
-		if port == "" {
-			return ""
+	origin := a.panelAccessURL()
+	if origin == "" {
+		scheme := "http"
+		if a.panelTLSEnabled {
+			scheme = "https"
 		}
-		return ":" + port
-	}()}
+		port := a.panelListenPort
+		if port <= 0 {
+			if a.panelTLSEnabled {
+				port = 443
+			} else {
+				port = 80
+			}
+		}
+		origin = scheme + "://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	}
+	if address, err := a.telegramSiteAddress(site, origin); err == nil {
+		return []string{address}
+	}
+	return nil
 }
 
 type siteImportRecord struct {
@@ -701,14 +742,20 @@ func parseSiteMessageRecord(text string) (siteImportRecord, error) {
 	if account.ExpiresAt == "永久" || account.ExpiresAt == "永不过期" || account.ExpiresAt == "无" {
 		account.ExpiresAt = ""
 	}
-	if account.AccountName == "" {
-		if title != "" {
-			words := strings.Fields(strings.ReplaceAll(title, "&#x20;", " "))
-			if len(words) >= 3 {
-				name, account.AccountName, account.Username, account.Password = words[0], words[1], words[1], words[2]
-			} else if len(words) == 2 {
-				name, account.AccountName, account.Username = words[0], words[1], words[1]
+	// Legacy shorthand is only recognized when a three-part bold title is
+	// immediately followed by a server URL. Standalone multiword titles are names.
+	if account.AccountName == "" && title != "" && launchField(text, "站点名称", "服务器名称", "站点", "名称") == "" {
+		for _, line := range strings.Split(text, "\n") {
+			match := launchBoldLine.FindStringSubmatch(line)
+			if len(match) < 2 || strings.TrimSpace(match[1]) != title {
+				continue
 			}
+			rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), strings.TrimSpace(match[0])))
+			words := strings.Fields(strings.ReplaceAll(title, "&#x20;", " "))
+			if len(words) == 3 && (strings.HasPrefix(rest, "[http") || strings.HasPrefix(rest, "http")) {
+				name, account.AccountName, account.Username, account.Password = words[0], words[1], words[1], words[2]
+			}
+			break
 		}
 	}
 	for index, rawURL := range urls {
@@ -788,6 +835,7 @@ func minInt(a, b int) int {
 }
 
 func (a *App) handleAccountReminders(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodGet {
 		a.jsonErr(w, 405, "method not allowed")
 		return
@@ -800,12 +848,16 @@ func (a *App) handleAccountReminders(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	result := make([]map[string]interface{}, 0)
 	for _, site := range sites {
-		items, _ := a.db.listSiteAccounts(site.ID)
+		items, err := a.db.listSiteAccounts(site.ID)
+		if err != nil {
+			a.jsonErr(w, 500, "读取到期提醒失败")
+			return
+		}
 		for _, item := range items {
 			if item.ExpiresAt == "" {
 				continue
 			}
-			parsed, err := parseSiteAccountExpiry(item.ExpiresAt)
+			parsed, err := a.db.parseSiteAccountExpiry(item.ExpiresAt)
 			if err != nil {
 				continue
 			}

@@ -1482,7 +1482,7 @@ async function showSiteModal(site) {
 	          <label>提前提醒（天）<input type="number" class="form-input" id="m-account-reminder" min="0" max="3650" step="1" placeholder="留空关闭，0 为到期时"></label>
 	          <label>备注<input type="text" class="form-input" id="m-account-note" maxlength="2000"></label>
 	        </div>
-	        <div class="site-inline-actions"><button type="button" class="btn-ghost" id="m-account-save">添加账号</button><button type="button" class="btn-ghost" id="m-account-reset">清空</button><span class="form-help" id="m-account-hint">提前提醒通过 TG Bot 向管理员发送，每次到期只提醒一次。${isEdit ? '修改后请保存账号。' : '账号随站点一起保存；解析只填入表单，可以先修改提醒。'}</span></div>
+	        <div class="site-inline-actions"><button type="button" class="btn-ghost" id="m-account-save">添加账号</button><button type="button" class="btn-ghost" id="m-account-reset">清空</button><span class="form-help" id="m-account-hint">只填日期时按全局时区的 00:00 计算；提前提醒通过 TG Bot 向管理员发送，每次到期只提醒一次。${isEdit ? '修改后请保存账号。' : '账号随站点一起保存；解析只填入表单，可以先修改提醒。'}</span></div>
 	      </div>
 	    </div>
 	  </details>
@@ -1738,7 +1738,7 @@ async function showSiteModal(site) {
       button.onclick = () => {
         const account = modalAccounts.find(row => String(row.id || '') === String(button.dataset.modalAccountEdit));
         if (!account) return;
-        if (isEdit && accountFormDirty() && !confirm('当前账号有未保存的修改，放弃后切换账号？')) return;
+        if ((accountFormDirty() || (!isEdit && accountFormOriginal && !accountFormOriginal.id)) && !confirm('当前账号有未保存的修改，放弃后切换账号？')) return;
         fillModalAccountForm(account);
       };
     });
@@ -1750,8 +1750,10 @@ async function showSiteModal(site) {
         if (!confirm('确认删除这个账号？')) return;
         try {
           if (isEdit && accountID > 0) await API.deleteSiteAccount(site.id, accountID);
+          if (document.getElementById('m-account-list') !== accountList) return;
           modalAccounts.splice(index, 1);
-          resetModalAccountForm();
+          // Deleting another row must not discard the account currently being edited.
+          if (Number(document.getElementById('m-account-id')?.value || 0) === accountID) resetModalAccountForm();
           renderModalAccounts();
           loadSiteAccountReminders();
           Toast.success('账号已删除');
@@ -2315,19 +2317,16 @@ async function showSiteModal(site) {
         await API.updateSite(site.id, data);
         Toast.success('站点已更新');
       } else {
-        const created = await API.createSite(data);
         const pendingAccounts = modalAccounts.filter(account => Number(account.id) < 0 || !account.id);
-        for (const account of pendingAccounts) {
-          await API.createSiteAccount(created.id, {
-            account_name: account.account_name || '',
-            username: account.username || '',
-            password: account.password || '',
-            security_password: account.security_password || '',
-            expires_at: account.expires_at || '',
-            note: account.note || '',
-            reminder_days: account.reminder_days ?? null,
-          });
-        }
+        await API.createSite({ ...data, accounts: pendingAccounts.map(account => ({
+          account_name: account.account_name || '',
+          username: account.username || '',
+          password: account.password || '',
+          security_password: account.security_password || '',
+          expires_at: account.expires_at || '',
+          note: account.note || '',
+          reminder_days: account.reminder_days ?? null,
+        })) });
         Toast.success(pendingAccounts.length ? `站点已创建，已保存 ${pendingAccounts.length} 个账号` : '站点已创建');
       }
       // A user may close this editor and open another while the request runs.
