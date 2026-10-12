@@ -89,7 +89,7 @@ func listenPanel(bindAddress string, port int) ([]net.Listener, []panelListenerF
 		if len(failures) == 0 {
 			return nil, nil, fmt.Errorf("no panel listeners were configured")
 		}
-		return nil, failures, fmt.Errorf("all panel listeners failed: %v", failures[0].err)
+		return nil, failures, fmt.Errorf("all panel listeners failed: %w", failures[0].err)
 	}
 	return listeners, failures, nil
 }

@@ -6,7 +6,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 const sandbox = { URL, window: {} };
 vm.createContext(sandbox);
-for (const file of ['form-validation.js', 'pages/sites.js', 'pages/global-settings.js']) {
+for (const file of ['form-validation.js', 'pages/sites.js', 'pages/global-settings.js', 'pages/panel-settings.js']) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/static/js', file), 'utf8'), sandbox);
 }
 
@@ -23,12 +23,12 @@ test('invalid ports cannot be silently discarded by the URL port setter', () => 
   assert.equal(sandbox.joinUpstreamTargetAddress('https', 'origin.example', ''), 'https://origin.example');
 });
 
-test('panel port follows the current URL and preserves a pending saved change', () => {
+test('panel listener port stays distinct from the external access port', () => {
   const proxy = {listen_port:19093, active_listen_port:19093, restart_required:false};
-  assert.equal(sandbox.panelEndpointFormPort(proxy, {protocol:'https:', port:'8443'}), 8443);
-  assert.equal(sandbox.panelEndpointFormPort(proxy, {protocol:'https:', port:''}), 443);
-  assert.equal(sandbox.panelEndpointFormPort(proxy, {protocol:'http:', port:''}), 80);
-  assert.equal(sandbox.panelEndpointFormPort(proxy, {protocol:'http:', port:'9090'}), 9090);
+  assert.equal(sandbox.panelEndpointFormPort(proxy, {protocol:'https:', port:'8443'}), 19093);
+  assert.equal(sandbox.panelEndpointFormPort(proxy, {protocol:'https:', port:''}), 19093);
+  assert.equal(sandbox.panelEndpointFormPort(proxy, {protocol:'http:', port:''}), 19093);
+  assert.equal(sandbox.panelEndpointFormPort(proxy, {protocol:'http:', port:'9090'}), 19093);
   assert.equal(sandbox.panelEndpointFormPort({...proxy,listen_port:9443,restart_required:true}, {protocol:'https:', port:'8443'}), 9443);
   assert.equal(sandbox.panelEndpointFormPort(proxy, null), 19093);
 });

@@ -1123,56 +1123,6 @@ function normalizedTargetAuthority(value) {
 	}
 }
 
-function renderPanelCertificateStatus(status) {
-	if (!status || status.available === false) {
-		return '<div class="form-help" style="color:var(--orange)">TLS 数据目录不可写，请检查数据库所在数据目录的权限。</div>';
-	}
-	if (!status.configured) {
-		return '<div class="form-help">尚未配置证书</div>';
-	}
-	return `
-	  <div class="diag-row"><span class="diag-key">证书域名</span><span class="diag-val">${esc(status.subject || `*.${status.route_domain || ''}`)}</span></div>
-	  <div class="diag-row"><span class="diag-key">证书匹配</span><span class="diag-val ${status.certificate_current ? 'good' : 'warn'}">${status.certificate_current ? '域名匹配' : '需要申请或更新'}</span></div>
-	  <div class="diag-row"><span class="diag-key">到期时间</span><span class="diag-val">${esc(status.expires_at || '—')}</span></div>
-	  <div class="diag-row"><span class="diag-key">证书状态</span><span class="diag-val ${status.certificate_valid ? 'good' : 'warn'}">${status.certificate_valid ? '有效' : '已过期或不可用'}</span></div>
-	  <div class="diag-row"><span class="diag-key">自动续签</span><span class="diag-val ${status.auto_renew_enabled ? 'good' : 'warn'}">${status.certificate_source === 'path' ? '跟随服务器文件更新' : status.certificate_source === 'upload' ? '到期前重新上传' : status.auto_renew_enabled ? '已启用（到期前 30 天）' : '待配置邮箱和 Token'}</span></div>
-	  <div class="diag-row"><span class="diag-key">当前监听端口</span><span class="diag-val">${esc(String(status.active_listen_port || '—'))}</span></div>
-	  <div class="diag-row"><span class="diag-key">设置监听端口</span><span class="diag-val ${status.listen_port !== status.active_listen_port ? 'warn' : ''}">${esc(String(status.listen_port || '—'))}</span></div>
-	  <div class="diag-row"><span class="diag-key">面板 HTTPS</span><span class="diag-val ${status.restart_required ? 'warn' : 'good'}">${status.restart_required ? '等待重启应用' : status.tls_enabled ? '已启用' : '未启用'}</span></div>
-	`;
-}
-
-function panelHTTPSPreview(panelDomain) {
-	const port = window.location.port;
-	return panelDomain ? `https://${panelDomain}${port && port !== '443' ? `:${port}` : ''}` : '—';
-}
-
-function panelDomainFromForm() {
-	const prefix = document.getElementById('m-panel-prefix').value.trim().replace(/^\*\./, '');
-	const wildcard = document.getElementById('m-wildcard-domain').value.trim().replace(/^\*\./, '');
-	return prefix && wildcard ? `${prefix}.${wildcard}` : '';
-}
-
-async function waitForPanelRestart(redirectURL) {
-	const target = new URL(redirectURL, window.location.href);
-	Toast.info('服务正在重启，等待新的面板地址就绪…');
-	const deadline = Date.now() + 90000;
-	while (Date.now() < deadline) {
-		try {
-			const response = await fetch(new URL('/api/panel-ready', target).href, {
-				mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error',
-				signal: AbortSignal.timeout(5000),
-			});
-			if (response.ok && (await response.json()).ready === true) {
-				window.location.replace(target.href);
-				return;
-			}
-		} catch (_) {}
-		await new Promise(resolve => setTimeout(resolve, 1500));
-	}
-	Toast.error(`服务重启超时，请检查域名解析与端口，然后打开 ${target.origin}`);
-}
-
 function showPanelCertificateModal() { Router.navigate('settings-tls'); }
 
 async function showSiteModal(site) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -235,6 +236,61 @@ type panelHostMigration struct {
 	Host   string
 }
 
+type panelSettingsQueryer interface {
+	Query(string, ...any) (*sql.Rows, error)
+}
+
+// Preview and commit use the same routing plan. The commit calls this inside
+// its transaction again so a stale preview cannot allow conflicting sites.
+func planPanelHostMigrations(queryer panelSettingsQueryer, current, candidate PanelSettings) ([]panelHostMigration, error) {
+	rows, err := queryer.Query("SELECT id, public_host, ingress_mode, listen_port FROM sites ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var migrations []panelHostMigration
+	assigned := make(map[string]int64)
+	for rows.Next() {
+		var siteID int64
+		var host, mode string
+		var port int
+		if err := rows.Scan(&siteID, &host, &mode, &port); err != nil {
+			return nil, err
+		}
+		if ingressUsesPort(mode) && port == candidate.ListenPort {
+			return nil, fmt.Errorf("监听端口 %d 已分配给站点 %d，请选择其他端口", port, siteID)
+		}
+		if host == "" {
+			continue
+		}
+		host, err = normalizePublicHost(host)
+		if err != nil {
+			return nil, fmt.Errorf("站点 %d 的访问域名无效: %w", siteID, err)
+		}
+		newHost := host
+		if current.RouteDomain != candidate.RouteDomain {
+			if prefix, ok := routePrefixFromConfiguredHost(host, current.RouteDomain); ok {
+				newHost, err = routeHostForPrefix(prefix, candidate.RouteDomain)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		if newHost == candidate.PanelDomain {
+			return nil, fmt.Errorf("面板访问域名与站点 %d 冲突", siteID)
+		}
+		key := strings.ToLower(newHost)
+		if otherID, exists := assigned[key]; exists && otherID != siteID {
+			return nil, fmt.Errorf("修改节点基础域名后站点 %d 与站点 %d 的访问域名冲突", otherID, siteID)
+		}
+		assigned[key] = siteID
+		if newHost != host {
+			migrations = append(migrations, panelHostMigration{SiteID: siteID, Host: newHost})
+		}
+	}
+	return migrations, rows.Err()
+}
+
 func (d *DB) SaveManagedPanelSettings(panelDomain, routeDomain string, listenPort int, tlsEnabled bool) (PanelSettings, int, error) {
 	candidate, err := normalizeManagedPanelSettings(panelDomain, routeDomain)
 	if err != nil {
@@ -273,52 +329,8 @@ func (d *DB) savePanelEndpointSettings(candidate PanelSettings, listenPort int, 
 	if err != nil {
 		return PanelSettings{}, 0, err
 	}
-	rows, err := tx.Query("SELECT id, public_host FROM sites WHERE public_host <> '' ORDER BY id")
+	migrations, err := planPanelHostMigrations(tx, current, candidate)
 	if err != nil {
-		return PanelSettings{}, 0, err
-	}
-	var migrations []panelHostMigration
-	assigned := make(map[string]int64)
-	for rows.Next() {
-		var siteID int64
-		var host string
-		if err := rows.Scan(&siteID, &host); err != nil {
-			rows.Close()
-			return PanelSettings{}, 0, err
-		}
-		host, err = normalizePublicHost(host)
-		if err != nil {
-			rows.Close()
-			return PanelSettings{}, 0, fmt.Errorf("站点 %d 的访问域名无效: %w", siteID, err)
-		}
-		newHost := host
-		if current.RouteDomain != candidate.RouteDomain {
-			if prefix, ok := routePrefixFromConfiguredHost(host, current.RouteDomain); ok {
-				newHost, err = routeHostForPrefix(prefix, candidate.RouteDomain)
-				if err != nil {
-					rows.Close()
-					return PanelSettings{}, 0, err
-				}
-			}
-		}
-		if newHost == candidate.PanelDomain {
-			rows.Close()
-			return PanelSettings{}, 0, fmt.Errorf("面板访问域名与站点 %d 冲突", siteID)
-		}
-		key := strings.ToLower(newHost)
-		if otherID, exists := assigned[key]; exists && otherID != siteID {
-			rows.Close()
-			return PanelSettings{}, 0, fmt.Errorf("修改节点基础域名后站点 %d 与站点 %d 的访问域名冲突", otherID, siteID)
-		}
-		assigned[key] = siteID
-		if newHost != host {
-			migrations = append(migrations, panelHostMigration{SiteID: siteID, Host: newHost})
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return PanelSettings{}, 0, err
-	}
-	if err := rows.Err(); err != nil {
 		return PanelSettings{}, 0, err
 	}
 	for _, migration := range migrations {

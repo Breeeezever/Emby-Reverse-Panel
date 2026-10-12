@@ -167,6 +167,7 @@ const API = {
     if (!res.ok) {
       const error = new Error(data.error || 'Request failed');
       error.status = res.status;
+      error.validation = data.validation;
       const bodyRetryAfter = Number(data.retry_after_seconds);
       const headerRetryAfter = Number(res.headers && typeof res.headers.get === 'function'
         ? res.headers.get('Retry-After')
@@ -209,6 +210,7 @@ const API = {
   ingressCapabilities() { return this.request('GET', '/api/ingress-capabilities'); },
   panelCertificate() { return this.request('GET', '/api/panel-certificate'); },
   savePanelSettings(data) { return this.request('POST', '/api/panel-settings', data); },
+  checkPanelSettings(data) { return this.request('POST', '/api/panel-settings/check', data); },
   requestPanelCertificate(data) { return this.request('POST', '/api/panel-certificate/issue', data); },
   importPanelCertificate(data) { return this.request('POST', '/api/panel-certificate/import', data); },
   checkSystemUpdate() { return this.request('GET', '/api/system/update/check'); },

@@ -23,7 +23,7 @@ function restartHarness(fetchResult) {
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/static/js/pages/sites.js'), 'utf8'), sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/static/js/pages/panel-settings.js'), 'utf8'), sandbox);
   return {wait: sandbox.waitForPanelRestart, requests, navigations, errors};
 }
 

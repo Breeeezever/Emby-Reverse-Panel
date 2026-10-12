@@ -29,7 +29,7 @@ func (a *App) panelRestartSecurityPolicy(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/index.html") {
 			if settings, err := a.db.PanelSettings(); err == nil {
-				if target := panelSettingsAccessURL(settings); target != "" {
+				if target := a.panelRestartAccessURL(settings, r); target != "" {
 					policy := w.Header().Get("Content-Security-Policy")
 					w.Header().Set("Content-Security-Policy", strings.Replace(policy, "connect-src 'self'", "connect-src 'self' "+target+"/api/panel-ready", 1))
 				}

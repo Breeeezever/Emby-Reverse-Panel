@@ -45,6 +45,10 @@ const (
 var errCertificateIssuanceBusy = errors.New("a certificate request is already running")
 
 type panelCertificateStatus struct {
+	ActivePanelDomain         string `json:"active_panel_domain"`
+	ActiveAccessURL           string `json:"active_access_url"`
+	SavedTLSEnabled           bool   `json:"saved_tls_enabled"`
+	ExternalProxy             bool   `json:"external_proxy"`
 	CertificateSource         string `json:"certificate_source"`
 	CertificatePath           string `json:"certificate_path,omitempty"`
 	PrivateKeyPath            string `json:"private_key_path,omitempty"`

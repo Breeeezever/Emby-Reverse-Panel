@@ -110,6 +110,9 @@ func newTestApp(t *testing.T) *App {
 		db:                db,
 		pm:                NewProxyManager(db, bytes.Repeat([]byte{0x42}, 32)),
 		panelBindLoopback: true,
+		panelDNSResolver: dynamicIPResolverFunc(func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("192.0.2.10")}}, nil
+		}),
 	}
 	app.pm.SetHostOnlyIngressSafe(true)
 	return app

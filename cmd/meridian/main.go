@@ -258,6 +258,7 @@ func main() {
 	mux.HandleFunc("/api/system/update/check", cors(app.authMiddleware(app.handleSystemUpdateCheck)))
 	mux.HandleFunc("/api/system/update", cors(app.authMiddleware(app.handleSystemUpdate)))
 	mux.HandleFunc("/api/panel-settings", cors(app.authMiddleware(app.handlePanelSettings)))
+	mux.HandleFunc("/api/panel-settings/check", cors(app.authMiddleware(app.handlePanelSettingsCheck)))
 	mux.HandleFunc("/api/panel-certificate/import", cors(app.authMiddleware(app.handlePanelCertificateImport)))
 	mux.HandleFunc("/api/panel-certificate/issue", cors(app.authMiddleware(app.handlePanelCertificateIssue)))
 	mux.HandleFunc("/api/system/restart", cors(app.authMiddleware(app.handleSystemRestart)))

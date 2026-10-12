@@ -33,6 +33,7 @@ type App struct {
 	panelBindLoopback bool
 	panelBindHost     string
 	panelListenPort   int
+	panelDNSResolver  panelEndpointResolver
 	dynamicRouteKey   []byte
 	restartCh         chan struct{}
 	restartOnce       sync.Once

@@ -98,6 +98,12 @@ func importPanelCertificate(db *DB, manager *panelCertificateManager, source, ce
 	if err != nil {
 		return err
 	}
+	return importPanelCertificateLocked(db, manager, settings, source, certPath, keyPath, certPEM, keyPEM, activate)
+}
+
+// The caller holds operationMu across validation, installation and persistence.
+func importPanelCertificateLocked(db *DB, manager *panelCertificateManager, settings PanelSettings, source, certPath, keyPath string, certPEM, keyPEM []byte, activate bool) error {
+	var err error
 	if !settings.Configured || settings.PanelDomain == "" || settings.ListenPort == 0 {
 		return errors.New("请先保存面板域名和监听端口")
 	}
@@ -158,13 +164,29 @@ func (a *App) handlePanelCertificateImport(w http.ResponseWriter, r *http.Reques
 		a.jsonErr(w, 400, "证书请求无效或过大")
 		return
 	}
+	if a.panelCertificates == nil {
+		a.jsonErr(w, http.StatusServiceUnavailable, "证书管理不可用")
+		return
+	}
+	unlock, ok := a.beginPanelConfiguration(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	settings, err := a.db.PanelSettings()
 	if err != nil {
 		a.jsonErr(w, 500, "无法读取 TLS 设置")
 		return
 	}
+	tlsCandidate := settings
+	tlsCandidate.TLSEnabled = true
+	validation := a.validatePanelEndpoint(r.Context(), settings, tlsCandidate, r)
+	if !validation.CanSave {
+		a.panelEndpointValidationError(w, validation, false)
+		return
+	}
 	activate := a.panelTLSEnabled && settings.PanelDomain == a.panelHost && settings.RouteDomain == a.routeDomain && settings.ListenPort == a.panelListenPort
-	err = importPanelCertificate(a.db, a.panelCertificates, req.Source, req.CertificatePath, req.PrivateKeyPath, []byte(req.CertificatePEM), []byte(req.PrivateKeyPEM), activate)
+	err = importPanelCertificateLocked(a.db, a.panelCertificates, settings, req.Source, req.CertificatePath, req.PrivateKeyPath, []byte(req.CertificatePEM), []byte(req.PrivateKeyPEM), activate)
 	if err != nil {
 		code := 400
 		if errors.Is(err, errCertificateIssuanceBusy) {

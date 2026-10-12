@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -114,19 +115,23 @@ func (a *App) validatePanelPortChange(port int) error {
 		return errors.New("当前面板由外部 HTTPS 反向代理管理，不能只在面板内修改监听端口；请使用安装器执行端口切换")
 	}
 	if err := checkPanelListenPort(a.panelBindHost, port); err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return fmt.Errorf("面板监听端口 %d 不可用：已被其他程序占用，请选择其他端口", port)
+		}
+		if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+			return fmt.Errorf("面板监听端口 %d 不可用：当前服务账户没有绑定权限；请选择 1024 以上的可用端口，或调整服务的监听权限", port)
+		}
 		return fmt.Errorf("面板监听端口 %d 不可用，请选择其他端口：%w", port, err)
 	}
 	return nil
 }
 
 func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
-	if a.panelCertificates != nil {
-		if !a.panelCertificates.operationMu.TryLock() {
-			a.jsonErr(w, http.StatusConflict, "另一项证书操作正在进行")
-			return
-		}
-		defer a.panelCertificates.operationMu.Unlock()
+	unlock, ok := a.beginPanelConfiguration(w)
+	if !ok {
+		return
 	}
+	defer unlock()
 	if r.Method != http.MethodPost {
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -136,37 +141,22 @@ func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
 		a.jsonErr(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	var managed PanelSettings
-	var err error
-	if strings.TrimSpace(req.PanelDomain) != "" {
-		var routeDomain string
-		if strings.TrimSpace(req.WildcardDomain) != "" {
-			routeDomain, err = normalizeWildcardDomain(req.WildcardDomain)
-		}
-		if err == nil {
-			managed, err = normalizeStoredPanelSettings(req.PanelDomain, routeDomain, false)
-		}
-	} else {
-		managed, err = normalizeManagedPanelPrefix(req.PanelPrefix, req.WildcardDomain)
-	}
-	if err != nil {
-		a.jsonErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := validatePanelListenPort(req.ListenPort); err != nil {
-		a.jsonErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := a.validatePanelPortChange(req.ListenPort); err != nil {
-		a.jsonErr(w, http.StatusConflict, err.Error())
-		return
-	}
 	current, err := a.db.PanelSettings()
 	if err != nil {
 		a.jsonErr(w, http.StatusInternalServerError, "failed to read panel settings")
 		return
 	}
-	settings, migrated, err := a.db.SavePanelEndpointSettings(managed.PanelDomain, managed.RouteDomain, req.ListenPort, current.TLSEnabled)
+	candidate, err := panelSettingsCandidate(req, current)
+	if err != nil {
+		a.jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	validation := a.validatePanelEndpoint(r.Context(), current, candidate, r)
+	if !validation.CanSave {
+		a.panelEndpointValidationError(w, validation, false)
+		return
+	}
+	settings, migrated, err := a.db.SavePanelEndpointSettings(candidate.PanelDomain, candidate.RouteDomain, candidate.ListenPort, candidate.TLSEnabled)
 	if err != nil {
 		a.jsonErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -178,6 +168,10 @@ func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) panelCertificateStatus(settings PanelSettings) panelCertificateStatus {
 	status := a.panelCertificates.status(settings, a.panelHost, a.routeDomain, a.panelListenPort, a.panelTLSEnabled)
+	status.ActivePanelDomain = a.panelHost
+	status.ActiveAccessURL = a.panelAccessURL()
+	status.SavedTLSEnabled = settings.TLSEnabled
+	status.ExternalProxy = a.managedExternalTLSProxy()
 	status.ACMEEmail = settings.ACMEEmail
 	status.ACMEDNSProvider = settings.ACMEDNSProvider
 	status.ACMEStaging = settings.ACMEStaging
@@ -197,11 +191,11 @@ func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request
 		a.jsonErr(w, http.StatusServiceUnavailable, "证书管理不可用")
 		return
 	}
-	if !a.panelCertificates.operationMu.TryLock() {
-		a.jsonErr(w, http.StatusConflict, "另一项证书操作正在进行")
+	unlock, ok := a.beginPanelConfiguration(w)
+	if !ok {
 		return
 	}
-	defer a.panelCertificates.operationMu.Unlock()
+	defer unlock()
 	if r.Method != http.MethodPost {
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -225,8 +219,11 @@ func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request
 		a.jsonErr(w, http.StatusConflict, "请先保存面板前缀、泛域名和监听端口")
 		return
 	}
-	if a.managedExternalTLSProxy() {
-		a.jsonErr(w, http.StatusConflict, "当前面板的 HTTPS 由外部反向代理管理，请在代理（例如 Nginx）中续签证书；不能在 Meridian 内启用原生证书监听")
+	tlsCandidate := settings
+	tlsCandidate.TLSEnabled = true
+	validation := a.validatePanelEndpoint(r.Context(), settings, tlsCandidate, r)
+	if !validation.CanSave {
+		a.panelEndpointValidationError(w, validation, false)
 		return
 	}
 	provider := strings.ToLower(strings.TrimSpace(req.Provider))
@@ -350,32 +347,25 @@ func (a *App) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	unlock, ok := a.beginPanelConfiguration(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	settings, err := a.db.PanelSettings()
 	if err != nil {
 		a.jsonErr(w, http.StatusInternalServerError, "failed to read panel settings")
 		return
 	}
-	status := a.panelCertificateStatus(settings)
-	if settings.PanelDomain == "" || settings.ListenPort == 0 {
-		a.jsonErr(w, http.StatusConflict, "请先保存面板域名和监听端口")
-		return
-	}
-	if err := a.validatePanelPortChange(settings.ListenPort); err != nil {
-		a.jsonErr(w, http.StatusConflict, err.Error())
-		return
-	}
-	if a.managedExternalTLSProxy() && settings.TLSEnabled {
-		a.jsonErr(w, http.StatusConflict, "当前面板由外部 HTTPS 反向代理管理，请先完成代理与原生 HTTPS 的切换配置后再重启")
-		return
-	}
-	if settings.TLSEnabled && (!status.Configured || !status.CertificateCurrent || !status.CertificateValid) {
-		a.jsonErr(w, http.StatusConflict, "泛域名已改变，请先申请匹配的 TLS 证书")
+	validation := a.validatePanelEndpoint(r.Context(), settings, settings, r)
+	if !validation.CanRestart {
+		a.panelEndpointValidationError(w, validation, true)
 		return
 	}
 	a.requestRestart()
 	a.jsonOK(w, map[string]interface{}{
 		"restarting":   true,
-		"redirect_url": panelSettingsAccessURL(settings),
+		"redirect_url": validation.TargetURL,
 	})
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()

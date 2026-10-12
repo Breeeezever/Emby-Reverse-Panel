@@ -68,3 +68,34 @@ func TestPanelReadyRejectsOldHostAndPendingRestart(t *testing.T) {
 		t.Fatalf("old process reported ready after restart requested: %d %s", resp.Code, resp.Body.String())
 	}
 }
+
+func TestPanelRestartPolicyUsesTrustedPublicProxyAddress(t *testing.T) {
+	a := newTestApp(t)
+	a.panelHost, a.panelListenPort = "old.example.com", 19095
+	var err error
+	a.trustedProxies, err = parseTrustedProxyCIDRs("127.0.0.1/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.db.SavePanelEndpointSettings("next.example.com", "", 19095, false); err != nil {
+		t.Fatal(err)
+	}
+	handler := securityHeaders(a.panelRestartSecurityPolicy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})), a.trustedProxies)
+	for _, peer := range []string{"127.0.0.1:12345", "192.0.2.10:12345"} {
+		request := httptest.NewRequest(http.MethodGet, "http://old.example.com:8443/", nil)
+		request.RemoteAddr = peer
+		request.Header.Set("X-Forwarded-Proto", "https")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		scheme := "http"
+		if strings.HasPrefix(peer, "127.") {
+			scheme = "https"
+		}
+		policy := response.Header().Get("Content-Security-Policy")
+		if !strings.Contains(policy, scheme+"://next.example.com:8443/api/panel-ready") || strings.Contains(policy, ":19095") {
+			t.Fatalf("proxy public policy for %s: %s", peer, policy)
+		}
+	}
+}
