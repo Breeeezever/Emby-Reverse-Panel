@@ -1154,17 +1154,23 @@ function panelDomainFromForm() {
 }
 
 async function waitForPanelRestart(redirectURL) {
+	const target = new URL(redirectURL, window.location.href);
+	Toast.info('服务正在重启，等待新的面板地址就绪…');
 	const deadline = Date.now() + 90000;
 	while (Date.now() < deadline) {
 		try {
-			await fetch(`${redirectURL}/api/auth/check`, { mode: 'no-cors', cache: 'no-store' });
-			window.location.replace(redirectURL);
-			return;
-		} catch (_) {
-			await new Promise(resolve => setTimeout(resolve, 1500));
-		}
+			const response = await fetch(new URL('/api/panel-ready', target).href, {
+				mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error',
+				signal: AbortSignal.timeout(5000),
+			});
+			if (response.ok && (await response.json()).ready === true) {
+				window.location.replace(target.href);
+				return;
+			}
+		} catch (_) {}
+		await new Promise(resolve => setTimeout(resolve, 1500));
 	}
-	Toast.error('服务重启超时，请稍后手动打开新的 HTTPS 地址');
+	Toast.error(`服务重启超时，请检查域名解析与端口，然后打开 ${target.origin}`);
 }
 
 function showPanelCertificateModal() { Router.navigate('settings-tls'); }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,6 +36,7 @@ type App struct {
 	dynamicRouteKey   []byte
 	restartCh         chan struct{}
 	restartOnce       sync.Once
+	restartPending    atomic.Bool
 }
 
 func (a *App) requestRestart() {
@@ -42,6 +44,7 @@ func (a *App) requestRestart() {
 		return
 	}
 	a.restartOnce.Do(func() {
+		a.restartPending.Store(true)
 		time.AfterFunc(500*time.Millisecond, func() { close(a.restartCh) })
 	})
 }

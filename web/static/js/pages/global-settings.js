@@ -459,7 +459,7 @@ async function renderTLSSettings() {
       const button = get('cert-save');
       if (button.disabled || !validateFields(get('endpoint-settings'))) return;
       button.disabled = true; button.textContent = '保存中…';
-      try { await API.savePanelSettings(settingsPayload()); Toast.success('域名与端口已保存'); await renderTLSSettings(); }
+      try { await API.savePanelSettings(settingsPayload()); window.location.reload(); }
       catch (error) { Toast.error(error.message); if (button.isConnected) { button.disabled = false; button.textContent = '保存域名与端口'; } }
     };
     get('cert-apply').onclick = async () => {
@@ -487,7 +487,8 @@ async function renderTLSSettings() {
         if (payload.source === 'upload') payload = {source:'upload',certificate_pem:await payload.certFile.text(),private_key_pem:await payload.keyFile.text()};
         const updated = source.value === 'acme' ? await API.requestPanelCertificate(payload) : await API.importPanelCertificate(payload);
         Toast.success(updated.restart_required ? '证书已保存，请重启以启用 HTTPS' : '证书已应用');
-        await renderTLSSettings();
+        if (updated.restart_required) window.location.reload();
+        else await renderTLSSettings();
       } catch (error) { Toast.error(error.message); if (button.isConnected) {get('cert-result').textContent='证书操作失败：'+error.message;button.disabled=false;source.disabled=false;syncSource();} }
     };
     const restart = get('cert-restart');

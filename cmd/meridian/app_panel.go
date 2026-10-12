@@ -372,20 +372,12 @@ func (a *App) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
 		a.jsonErr(w, http.StatusConflict, "泛域名已改变，请先申请匹配的 TLS 证书")
 		return
 	}
-	host := settings.PanelDomain
-	if settings.ListenPort != 443 {
-		host = net.JoinHostPort(host, strconv.Itoa(settings.ListenPort))
-	}
-	scheme := "http"
-	if settings.TLSEnabled {
-		scheme = "https"
-	}
+	a.requestRestart()
 	a.jsonOK(w, map[string]interface{}{
 		"restarting":   true,
-		"redirect_url": scheme + "://" + host,
+		"redirect_url": panelSettingsAccessURL(settings),
 	})
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	a.requestRestart()
 }

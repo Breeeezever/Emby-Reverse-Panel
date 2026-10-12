@@ -241,6 +241,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	// Public auth routes
+	mux.HandleFunc("/api/panel-ready", app.handlePanelReady)
 	mux.HandleFunc("/api/auth/setup", cors(app.csrfMiddleware(app.handleSetup)))
 	mux.HandleFunc("/api/auth/login", cors(app.csrfMiddleware(app.handleLogin)))
 	mux.HandleFunc("/api/auth/logout", cors(app.csrfMiddleware(app.handleLogout)))
@@ -282,7 +283,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize embedded files: %v", err)
 	}
-	mux.Handle("/", staticHandler(staticFS))
+	mux.Handle("/", app.panelRestartSecurityPolicy(staticHandler(staticFS)))
 
 	// HTTP/HTTPS server with graceful shutdown. Site listeners remain independently
 	// bound by ProxyManager and are not affected by PANEL_BIND_ADDR.
