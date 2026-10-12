@@ -88,6 +88,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 **[Docker / Windows / 源码部署](docs/DEPLOYMENT.md)** · **[证书与播放模式](docs/USAGE.md)** · **[安全说明](SECURITY.md)**
 
+[面板和站点使用不同域名：Nginx 配置、证书与操作步骤 →](docs/wiki/nginx-separate-domains.md)
+
 ---
 
 <div align="center">

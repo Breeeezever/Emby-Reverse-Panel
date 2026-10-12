@@ -29,6 +29,8 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 
 ## 使用两个公开域名 {#separate-public-domains}
 
+需要从安装开始配置 `panel.example.com → Nginx → Meridian 面板` 与 `media.example.net → Nginx → Meridian 站点代理 → Emby`，请按 [面板与站点分域名部署](nginx-separate-domains.md) 操作。该指南包含 DNS、两张证书、完整 Nginx 配置、当前界面限制、站点 API 及维护注意事项。
+
 面板和站点反代可以使用不同的公开域名。例如面板使用 `panel.example.com`，站点使用 `media.example.com`。这不是把站点回源地址改成另一个域名，而是让网关把两个 `Host` 都送到同一个 Meridian 进程，再由站点入口配置选择代理实例。
 
 推荐的配置关系如下：

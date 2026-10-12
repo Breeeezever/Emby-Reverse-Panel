@@ -51,6 +51,7 @@ nav:
       - Docker 部署: install-docker.md
       - Windows 与源码: install-source.md
       - HTTPS 反向代理: reverse-proxy.md
+      - 面板与站点分域名: nginx-separate-domains.md
   - 站点与播放:
       - 站点管理: site-management.md
       - 入口模式: ingress-modes.md

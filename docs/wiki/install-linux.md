@@ -19,6 +19,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 域名应解析到当前服务器，申请证书所需的端口须可达。这个流程配置安装器管理的 Nginx 面板代理，不改写你的上游 Emby 配置。
 
+面板和站点需要使用不同基础域名时，可继续按 [面板与站点分域名部署](nginx-separate-domains.md) 增加媒体域名的 Nginx HTTPS 入口；当前外部 HTTPS 模式通过 API 注册完整站点域名。
+
 没有域名或已有外部反向代理时：
 
 ```bash
