@@ -45,37 +45,44 @@ const (
 var errCertificateIssuanceBusy = errors.New("a certificate request is already running")
 
 type panelCertificateStatus struct {
-	ActivePanelDomain         string `json:"active_panel_domain"`
-	ActiveAccessURL           string `json:"active_access_url"`
-	SavedTLSEnabled           bool   `json:"saved_tls_enabled"`
-	ExternalProxy             bool   `json:"external_proxy"`
-	CertificateSource         string `json:"certificate_source"`
-	CertificatePath           string `json:"certificate_path,omitempty"`
-	PrivateKeyPath            string `json:"private_key_path,omitempty"`
-	Available                 bool   `json:"available"`
-	TLSEnabled                bool   `json:"tls_enabled"`
-	PanelDomain               string `json:"panel_domain"`
-	PanelPrefix               string `json:"panel_prefix"`
-	RouteDomain               string `json:"route_domain"`
-	WildcardDomain            string `json:"wildcard_domain"`
-	CertificateWildcardDomain string `json:"certificate_wildcard_domain,omitempty"`
-	CertificateCurrent        bool   `json:"certificate_current"`
-	CertificateValid          bool   `json:"certificate_valid"`
-	CertificateReused         bool   `json:"certificate_reused,omitempty"`
-	ListenPort                int    `json:"listen_port"`
-	ActiveListenPort          int    `json:"active_listen_port"`
-	Configured                bool   `json:"configured"`
-	SettingsConfigured        bool   `json:"settings_configured"`
-	Subject                   string `json:"subject,omitempty"`
-	ExpiresAt                 string `json:"expires_at,omitempty"`
-	DaysRemaining             int    `json:"days_remaining,omitempty"`
-	AutoRenewEnabled          bool   `json:"auto_renew_enabled"`
-	ACMEEmail                 string `json:"acme_email,omitempty"`
-	ACMEDNSProvider           string `json:"dns_provider,omitempty"`
-	DNSAPITokenConfigured     bool   `json:"dns_api_token_configured"`
-	ACMEStaging               bool   `json:"acme_staging"`
-	RestartRequired           bool   `json:"restart_required"`
-	Issuing                   bool   `json:"issuing"`
+	ActivePanelDomain         string                        `json:"active_panel_domain"`
+	ActiveAccessURL           string                        `json:"active_access_url"`
+	SavedTLSEnabled           bool                          `json:"saved_tls_enabled"`
+	ExternalProxy             bool                          `json:"external_proxy"`
+	CertificateSource         string                        `json:"certificate_source"`
+	CertificatePath           string                        `json:"certificate_path,omitempty"`
+	PrivateKeyPath            string                        `json:"private_key_path,omitempty"`
+	Available                 bool                          `json:"available"`
+	TLSEnabled                bool                          `json:"tls_enabled"`
+	PanelDomain               string                        `json:"panel_domain"`
+	PanelPrefix               string                        `json:"panel_prefix"`
+	RouteDomain               string                        `json:"route_domain"`
+	WildcardDomain            string                        `json:"wildcard_domain"`
+	CertificateWildcardDomain string                        `json:"certificate_wildcard_domain,omitempty"`
+	CertificateCurrent        bool                          `json:"certificate_current"`
+	CertificateValid          bool                          `json:"certificate_valid"`
+	CertificateReused         bool                          `json:"certificate_reused,omitempty"`
+	ListenPort                int                           `json:"listen_port"`
+	ActiveListenPort          int                           `json:"active_listen_port"`
+	Configured                bool                          `json:"configured"`
+	SettingsConfigured        bool                          `json:"settings_configured"`
+	Subject                   string                        `json:"subject,omitempty"`
+	ExpiresAt                 string                        `json:"expires_at,omitempty"`
+	DaysRemaining             int                           `json:"days_remaining,omitempty"`
+	AutoRenewEnabled          bool                          `json:"auto_renew_enabled"`
+	ACMEEmail                 string                        `json:"acme_email,omitempty"`
+	ACMEDNSProvider           string                        `json:"dns_provider,omitempty"`
+	DNSAPITokenConfigured     bool                          `json:"dns_api_token_configured"`
+	ACMEStaging               bool                          `json:"acme_staging"`
+	RestartRequired           bool                          `json:"restart_required"`
+	Issuing                   bool                          `json:"issuing"`
+	CertificateTrusted        bool                          `json:"certificate_trusted"`
+	CertificateTrustMessage   string                        `json:"certificate_trust_message"`
+	CertificateDNSNames       []string                      `json:"certificate_dns_names"`
+	CertificateFingerprint    string                        `json:"certificate_fingerprint,omitempty"`
+	ActiveCertificate         *panelCertificateDetails      `json:"active_certificate,omitempty"`
+	Renewal                   panelCertificateRenewalStatus `json:"renewal"`
+	TestIssued                bool                          `json:"test_issued,omitempty"`
 }
 
 type panelCertificateManager struct {
@@ -88,6 +95,9 @@ type panelCertificateManager struct {
 	mu                 sync.Mutex
 	issuing            bool
 	currentCertificate *tls.Certificate
+	runtimeSettings    *PanelSettings
+	issuer             func(context.Context, string, string, string, string, bool) (*issuedPanelCertificate, error)
+	trustRoots         *x509.CertPool // nil uses system roots; injectable for isolated CA tests.
 }
 
 type issuedPanelCertificate struct {
@@ -172,19 +182,28 @@ func (m *panelCertificateManager) status(settings PanelSettings, activePanelDoma
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	status.Issuing = m.issuing
-	data, err := os.ReadFile(m.certFile) // #nosec G703 -- certFile is an administrator-configured TLS path captured when the certificate manager is created, never an HTTP request value.
+	if m.currentCertificate != nil {
+		active := settings
+		if m.runtimeSettings != nil {
+			active = *m.runtimeSettings
+		}
+		details := describePanelCertificate(m.currentCertificate, active, m.trustRoots)
+		status.ActiveCertificate = &details
+	}
+	pair, err := tls.LoadX509KeyPair(m.certFile, m.keyFile)
 	if err != nil {
 		return status
 	}
-	block, _ := pem.Decode(data)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return status
-	}
-	certificate, err := x509.ParseCertificate(block.Bytes)
+	certificate, err := x509.ParseCertificate(pair.Certificate[0])
 	if err != nil {
 		return status
 	}
+	details := describePanelCertificate(&pair, settings, m.trustRoots)
 	status.Configured = true
+	status.CertificateTrusted = details.Trusted
+	status.CertificateTrustMessage = details.TrustMessage
+	status.CertificateDNSNames = details.DNSNames
+	status.CertificateFingerprint = details.Fingerprint
 	for _, name := range certificate.DNSNames {
 		if strings.HasPrefix(name, "*.") {
 			status.CertificateWildcardDomain = strings.ToLower(name)
@@ -194,6 +213,9 @@ func (m *panelCertificateManager) status(settings PanelSettings, activePanelDoma
 	status.CertificateCurrent = certificateCoversPanel(certificate, settings.PanelDomain, settings.RouteDomain) == nil
 	status.CertificateValid = !time.Now().Before(certificate.NotBefore) && time.Now().Before(certificate.NotAfter)
 	status.Subject = certificate.Subject.CommonName
+	if status.Subject == "" {
+		status.Subject = strings.Join(certificate.DNSNames, ", ")
+	}
 	status.ExpiresAt = certificate.NotAfter.UTC().Format(time.RFC3339)
 	days := int(time.Until(certificate.NotAfter).Hours() / 24)
 	if days < 0 {
@@ -439,34 +461,6 @@ func (m *panelCertificateManager) install(issued *issuedPanelCertificate, activa
 		m.currentCertificate = &certificate
 	}
 	return nil
-}
-
-func (m *panelCertificateManager) activate(issued *issuedPanelCertificate) {
-	if m == nil || issued == nil {
-		return
-	}
-	m.mu.Lock()
-	certificate := issued.certificate
-	m.currentCertificate = &certificate
-	m.mu.Unlock()
-}
-
-// disable clears the active in-memory certificate and marker without deleting
-// the certificate files. Keeping the files allows a later manual issuance or
-// renewal to reuse the existing storage after the panel has fallen back to
-// HTTP.
-func (m *panelCertificateManager) disable() error {
-	if m == nil || m.accountDir == "" {
-		return nil
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.currentCertificate = nil
-	err := os.Remove(filepath.Join(m.accountDir, "enabled")) // #nosec G703 -- accountDir is the managed TLS directory and enabled is a fixed marker basename.
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
 }
 
 func readOptionalFile(filename string) ([]byte, bool, error) {

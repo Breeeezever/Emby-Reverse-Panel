@@ -41,7 +41,7 @@ async function renderTLSSettings() {
         <header><h2>面板访问地址</h2></header>
         <div class="panel-endpoint-current"><span>当前生效地址</span><strong class="mono">${esc(activeURL)}</strong><small>${status.external_proxy ? '外部反向代理管理入口' : status.tls_enabled ? 'Meridian 原生 HTTPS' : 'Meridian HTTP'}</small></div>
         <p class="form-help" id="p-endpoint-state"></p>
-        <div class="global-settings-status">${renderPanelCertificateStatus(status)}</div>
+        <div class="global-settings-status panel-certificate-status">${renderPanelCertificateStatus(status)}</div>
         <div class="settings-grid" style="margin-top:20px">
           <label class="settings-field"><span>面板域名</span><input class="form-input" id="p-panel-domain" value="${esc(status.panel_domain || '')}" placeholder="panel.example.com" required autocomplete="off" autocapitalize="none" spellcheck="false"><small>不含协议和端口。</small></label>
           <label class="settings-field"><span>节点泛域名（可选）</span><input class="form-input" id="p-wildcard-domain" value="${esc(status.wildcard_domain || '')}" placeholder="*.example.com" autocomplete="off" autocapitalize="none" spellcheck="false"><small>使用域名前缀入口或申请泛域名证书时填写。</small></label>
@@ -60,7 +60,7 @@ async function renderTLSSettings() {
           <p class="settings-panel-help">通过 DNS 验证申请泛域名证书，签发后自动续期，无需开放 80 端口。请先保存节点泛域名。</p>
           <label class="settings-field"><span>ACME 邮箱</span><input class="form-input" id="p-acme-email" type="email" value="${esc(status.acme_email || '')}" autocomplete="email" placeholder="admin@example.com"></label>
           <label class="settings-field"><span>Cloudflare DNS API Token</span><input class="form-input" id="p-acme-token" type="password" autocomplete="new-password" maxlength="512" placeholder="${status.dns_api_token_configured ? '已保存，留空继续使用' : '填写 DNS API Token'}"><small>需要对应域名的 Zone:Read 与 DNS:Edit 权限。</small></label>
-          <label class="settings-check"><input id="p-acme-staging" type="checkbox" ${status.acme_staging ? 'checked' : ''}><span>使用 ACME 测试环境</span></label>
+          <label class="settings-check"><input id="p-acme-staging" type="checkbox"><span>测试签发（不替换当前证书）</span></label>
         </div>
         <div id="p-source-path" class="tls-source-fields" hidden>
           <p class="settings-panel-help">读取服务器上的 PEM 文件；外部续期后会自动重新加载。Meridian 服务账户需要文件读取权限。</p>
@@ -88,9 +88,9 @@ async function renderTLSSettings() {
     source.value = ['acme', 'path', 'upload'].includes(status.certificate_source) ? status.certificate_source : 'acme';
     const syncSource = () => {
       for (const name of ['acme', 'path', 'upload']) get(`source-${name}`).hidden = source.value !== name;
-      get('cert-apply').textContent = source.value === 'acme' ? '申请并应用证书' : source.value === 'path' ? '读取并应用证书' : '上传并应用证书';
+      get('cert-apply').textContent = source.value === 'acme' ? (get('acme-staging').checked ? '验证测试签发' : '申请并应用正式证书') : source.value === 'path' ? '读取并应用证书' : '上传并应用证书';
     };
-    source.onchange = syncSource; syncSource();
+    source.onchange = syncSource; get('acme-staging').onchange = syncSource; syncSource();
     const settingsPayload = () => ({panel_domain: get('panel-domain').value.trim(), wildcard_domain: get('wildcard-domain').value.trim(), listen_port: Number(get('panel-listen-port').value)});
     const sameSettings = (left, right) => left.panel_domain.toLowerCase() === right.panel_domain.toLowerCase() && left.wildcard_domain.toLowerCase() === right.wildcard_domain.toLowerCase() && left.listen_port === right.listen_port;
     const dirty = () => !sameSettings(settingsPayload(), savedPayload);
@@ -176,6 +176,12 @@ async function renderTLSSettings() {
       try {
         if (payload.source === 'upload') payload = {source:'upload',certificate_pem:await payload.certFile.text(),private_key_pem:await payload.keyFile.text()};
         const updated = source.value === 'acme' ? await API.requestPanelCertificate(payload) : await API.importPanelCertificate(payload);
+        if (updated.test_issued) {
+          busy = false; source.disabled = false; syncSource(); syncActions();
+          get('cert-result').textContent = '测试签发通过，当前证书和自动续签配置未改变。取消“测试签发”后可申请正式证书。';
+          Toast.success('测试签发通过');
+          return;
+        }
         Toast.success(updated.restart_required ? '证书已保存，请重启以启用 HTTPS' : '证书已应用');
         if (updated.restart_required) window.location.reload();
         else await renderTLSSettings();
@@ -197,23 +203,47 @@ async function renderTLSSettings() {
   }
 }
 
+function panelCertificateTime(value) {
+  if (!value) return '尚无记录';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', {hour12: false});
+}
+
 function renderPanelCertificateStatus(status) {
-	if (!status || status.available === false) {
-		return '<div class="form-help" style="color:var(--orange)">TLS 数据目录不可写，请检查数据库所在数据目录的权限。</div>';
-	}
-	if (!status.configured) {
-		return '<div class="form-help">尚未配置证书</div>';
-	}
-	return `
-	  <div class="diag-row"><span class="diag-key">证书域名</span><span class="diag-val">${esc(status.subject || `*.${status.route_domain || ''}`)}</span></div>
-	  <div class="diag-row"><span class="diag-key">证书匹配</span><span class="diag-val ${status.certificate_current ? 'good' : 'warn'}">${status.certificate_current ? '域名匹配' : '需要申请或更新'}</span></div>
-	  <div class="diag-row"><span class="diag-key">到期时间</span><span class="diag-val">${esc(status.expires_at || '—')}</span></div>
-	  <div class="diag-row"><span class="diag-key">证书状态</span><span class="diag-val ${status.certificate_valid ? 'good' : 'warn'}">${status.certificate_valid ? '有效' : '已过期或不可用'}</span></div>
-	  <div class="diag-row"><span class="diag-key">自动续签</span><span class="diag-val ${status.auto_renew_enabled ? 'good' : 'warn'}">${status.certificate_source === 'path' ? '跟随服务器文件更新' : status.certificate_source === 'upload' ? '到期前重新上传' : status.auto_renew_enabled ? '已启用（到期前 30 天）' : '待配置邮箱和 Token'}</span></div>
-	  <div class="diag-row"><span class="diag-key">当前监听端口</span><span class="diag-val">${esc(String(status.active_listen_port || '—'))}</span></div>
-	  <div class="diag-row"><span class="diag-key">设置监听端口</span><span class="diag-val ${status.listen_port !== status.active_listen_port ? 'warn' : ''}">${esc(String(status.listen_port || '—'))}</span></div>
-	  <div class="diag-row"><span class="diag-key">面板 HTTPS</span><span class="diag-val ${status.restart_required ? 'warn' : 'good'}">${status.restart_required ? '等待重启应用' : status.tls_enabled ? '已启用' : '未启用'}</span></div>
-	`;
+  if (!status || status.available === false) {
+    return '<div class="form-help" style="color:var(--orange)">TLS 数据目录不可用，请检查存储配置。</div>';
+  }
+  const row = (label, value, state = '') => `<div class="diag-row"><span class="diag-key">${esc(label)}</span><span class="diag-val ${state}">${esc(value)}</span></div>`;
+  const active = status.active_certificate;
+  const renewal = status.renewal || {};
+  const source = renewal.source || status.certificate_source;
+  let result = '';
+  if (active) {
+    result += row('当前提供的证书', (active.dns_names || []).join('、') || '—');
+    result += row('当前证书到期', panelCertificateTime(active.expires_at), active.valid ? '' : 'warn');
+    result += row('当前证书信任', active.trust_message || '尚未校验', active.trusted ? 'good' : 'warn');
+  }
+  if (status.configured && (!active || status.restart_required || active.fingerprint !== status.certificate_fingerprint)) {
+    result += row(status.restart_required ? '已保存的证书' : '证书覆盖域名', (status.certificate_dns_names || []).join('、') || status.subject || '—');
+    result += row('已保存证书匹配', status.certificate_current ? '匹配已保存域名' : '需要申请或更新', status.certificate_current ? 'good' : 'warn');
+    result += row('已保存证书到期', panelCertificateTime(status.expires_at), status.certificate_valid ? '' : 'warn');
+    result += row('已保存证书信任', status.certificate_trust_message || '尚未校验', status.certificate_trusted ? 'good' : 'warn');
+  } else if (status.configured) {
+    result += row('域名覆盖', status.certificate_current ? '匹配面板与节点域名' : '需要申请或更新', status.certificate_current ? 'good' : 'warn');
+  } else result += '<div class="form-help">尚未配置可读取且配对的证书</div>';
+  const renewalText = source === 'path' ? '每分钟检查服务器文件' : source === 'upload' ? '需在到期前重新上传' : status.auto_renew_enabled ? '已启用，到期前 30 天续签' : '未启用，请检查正式证书、邮箱和 Token';
+  result += row('后台证书维护', renewalText, source === 'upload' || status.auto_renew_enabled || source === 'path' ? '' : 'warn');
+  if (renewal.pending) result += row('维护中的域名', `${renewal.domain || '当前入口'}；新配置等待应用`, 'warn');
+  result += row('最近检查', panelCertificateTime(renewal.last_checked_at));
+  result += row('最近更新成功', panelCertificateTime(renewal.last_success_at));
+  if (renewal.last_error) result += row('最近维护失败', renewal.last_error, 'warn');
+  if (source === 'path' || source === 'acme') result += row(renewal.last_error ? '下次重试' : '下次检查', panelCertificateTime(renewal.next_attempt_at));
+  if (status.acme_staging) result += row('旧测试环境配置', '请取消测试签发并申请正式证书，正式申请成功后才启用自动续签', 'warn');
+  if (active && !active.valid) result += row('证书已失效', '服务保留 HTTPS。自动续签会继续尝试；路径或上传证书请及时更新。', 'warn');
+  result += row('当前监听端口', String(status.active_listen_port || '—'));
+  result += row('设置监听端口', String(status.listen_port || '—'), status.listen_port !== status.active_listen_port ? 'warn' : '');
+  result += row('面板 HTTPS', status.restart_required ? '等待重启应用' : status.tls_enabled ? '已启用' : '未启用', status.restart_required ? 'warn' : 'good');
+  return result;
 }
 
 async function waitForPanelRestart(redirectURL) {

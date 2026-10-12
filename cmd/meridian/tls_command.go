@@ -59,7 +59,18 @@ func runTLSCommand(args []string, input io.Reader, output io.Writer) error {
 	manager := newPanelCertificateManager(*dbPath, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	issued, err := manager.issueCloudflare(ctx, strings.TrimSpace(*email), token, settings.PanelDomain, settings.RouteDomain, *staging)
+	if *staging {
+		if err := manager.testCertificate(ctx, strings.TrimSpace(*email), token, settings); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(output, "ACME staging test succeeded; service certificate and renewal settings were not changed.")
+		return err
+	}
+	issued, err := manager.requestCertificate(ctx, strings.TrimSpace(*email), token, settings.PanelDomain, settings.RouteDomain, false)
+	if err != nil {
+		return err
+	}
+	issued, err = manager.validateProductionCertificate(issued, settings)
 	if err != nil {
 		return err
 	}
@@ -84,11 +95,7 @@ func runTLSCommand(args []string, input io.Reader, output io.Writer) error {
 		restore()
 		return err
 	}
-	if err = db.SavePanelACMECredentials(strings.TrimSpace(*email), "cloudflare", ciphertext, *staging); err != nil {
-		restore()
-		return err
-	}
-	if err = db.setPanelCertificateSource("acme", "", ""); err != nil {
+	if err = db.savePanelACMECertificateSettings(strings.TrimSpace(*email), "cloudflare", ciphertext); err != nil {
 		restore()
 		return err
 	}

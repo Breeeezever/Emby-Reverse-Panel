@@ -140,18 +140,11 @@ func main() {
 	if err := reloadExternalPanelCertificate(db, panelCertificates); err != nil {
 		log.Printf("external certificate reload: %v", err)
 	}
-	if disabled, err := disableExpiredPanelTLSIfNeeded(db, panelCertificates); err != nil {
-		log.Fatalf("check panel TLS certificate: %v", err)
-	} else if disabled {
-		panelSettings, err = db.PanelSettings()
-		if err != nil {
-			log.Fatalf("reload panel settings after HTTPS fallback: %v", err)
-		}
-	}
 	panelTLSConfig, panelTLSEnabled, err := panelCertificates.tlsConfig(panelSettings.TLSEnabled)
 	if err != nil {
 		log.Fatalf("invalid panel TLS configuration: %v", err)
 	}
+	panelCertificates.bindRuntimeSettings(panelSettings)
 	if !panelTLSEnabled && panelBindIP != nil && !panelBindIP.IsLoopback() {
 		if !envBool("ALLOW_INSECURE_HTTP") {
 			log.Fatalf("refusing to expose the management panel over plain HTTP on %s; set ALLOW_INSECURE_HTTP=true only for a deliberate temporary compatibility deployment, or bind PANEL_BIND_ADDR=127.0.0.1 behind an HTTPS reverse proxy", panelBindIP.String())
@@ -235,7 +228,7 @@ func main() {
 		dynamicRouteKey:   dynamicRouteKey,
 		restartCh:         make(chan struct{}),
 	}
-	go runPanelCertificateRenewalScheduler(ctx, db, panelCertificates, app.requestRestart)
+	go runPanelCertificateRenewalScheduler(ctx, db, panelCertificates)
 	go app.runTelegramBot(ctx)
 
 	mux := http.NewServeMux()

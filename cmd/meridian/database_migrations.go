@@ -173,6 +173,13 @@ func (d *DB) migrateOnce() error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	INSERT OR IGNORE INTO panel_settings (id) VALUES (1);
+	CREATE TABLE IF NOT EXISTS panel_certificate_renewals (
+		target_key TEXT PRIMARY KEY,
+		last_checked_at TEXT NOT NULL DEFAULT '',
+		last_success_at TEXT NOT NULL DEFAULT '',
+		last_error TEXT NOT NULL DEFAULT '',
+		next_attempt_at TEXT NOT NULL DEFAULT ''
+	);
 	CREATE TABLE IF NOT EXISTS telegram_report_settings (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		enabled INTEGER NOT NULL DEFAULT 0,

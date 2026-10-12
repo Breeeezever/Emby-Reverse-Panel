@@ -176,11 +176,14 @@ func (a *App) panelCertificateStatus(settings PanelSettings) panelCertificateSta
 	status.ACMEDNSProvider = settings.ACMEDNSProvider
 	status.ACMEStaging = settings.ACMEStaging
 	status.DNSAPITokenConfigured = settings.ACMETokenCiphertext != ""
-	status.AutoRenewEnabled = settings.CertificateSource == "acme" && !jwtSecretEphemeral && settings.ACMEEmail != "" && settings.ACMETokenCiphertext != ""
-	if settings.ACMETokenCiphertext == "" {
+	active := a.panelCertificates.maintenanceSettings(settings)
+	status.Renewal = a.db.panelRenewalStatus(active)
+	status.Renewal.Pending = !samePanelCertificateBinding(active, settings) || !samePanelEndpoint(active, settings)
+	status.AutoRenewEnabled = active.TLSEnabled && active.CertificateSource == "acme" && !active.ACMEStaging && !jwtSecretEphemeral && active.ACMEEmail != "" && active.ACMETokenCiphertext != ""
+	if active.ACMETokenCiphertext == "" {
 		return status
 	}
-	if _, err := decryptPanelACMEToken(settings.ACMETokenCiphertext); err != nil {
+	if _, err := decryptPanelACMEToken(active.ACMETokenCiphertext); err != nil {
 		status.AutoRenewEnabled = false
 	}
 	return status
@@ -258,80 +261,84 @@ func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request
 		a.jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if _, err := normalizeManagedPanelSettings(settings.PanelDomain, settings.RouteDomain); err != nil {
+		a.jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	// No production settings or files are changed by staging requests.
+	if req.UseStaging {
+		if err := a.panelCertificates.testCertificate(ctx, email, token, settings); err != nil {
+			a.jsonErr(w, http.StatusBadGateway, strings.ReplaceAll(err.Error(), token, "[已隐藏]"))
+			return
+		}
+		status := a.panelCertificateStatus(settings)
+		status.TestIssued = true
+		a.jsonOK(w, status)
+		return
+	}
 	ciphertext, err := encryptPanelACMEToken(token)
 	if err != nil {
 		a.jsonErr(w, http.StatusInternalServerError, "无法加密 DNS API Token")
 		return
 	}
-	if err := a.db.SavePanelACMECredentials(email, provider, ciphertext, req.UseStaging); err != nil {
-		a.jsonErr(w, http.StatusInternalServerError, "无法保存自动续签凭据")
-		return
-	}
-	settings, err = a.db.PanelSettings()
-	if err != nil {
-		a.jsonErr(w, http.StatusInternalServerError, "failed to read panel settings")
-		return
+	previousToken, previousTokenErr := decryptPanelACMEToken(settings.ACMETokenCiphertext)
+	sameCredentials := previousTokenErr == nil && token == previousToken && email == settings.ACMEEmail && provider == settings.ACMEDNSProvider
+	if previousTokenErr == nil && token == previousToken {
+		ciphertext = settings.ACMETokenCiphertext
 	}
 	currentStatus := a.panelCertificateStatus(settings)
-	if certificateCanBeReused(currentStatus) {
-		if !settings.TLSEnabled {
-			settings, _, err = a.db.SaveManagedPanelSettings(settings.PanelDomain, settings.RouteDomain, settings.ListenPort, true)
-			if err != nil {
-				a.jsonErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			currentStatus = a.panelCertificateStatus(settings)
+	// New credentials must complete a real production request before replacing
+	// working renewal credentials; merely reusing a certificate cannot test them.
+	reused := sameCredentials && canReusePanelACMECertificate(currentStatus, settings)
+	var issued *issuedPanelCertificate
+	if !reused {
+		issued, err = a.panelCertificates.requestCertificate(ctx, email, token, settings.PanelDomain, settings.RouteDomain, false)
+		if err == nil {
+			issued, err = a.panelCertificates.validateProductionCertificate(issued, settings)
 		}
-		if err := a.db.setPanelCertificateSource("acme", "", ""); err != nil {
-			a.jsonErr(w, 500, "无法保存证书来源")
+		if err != nil {
+			// Persist a redacted failure for the existing configuration. A bad
+			// replacement token must not overwrite working renewal credentials.
+			safeErr := errors.New(strings.ReplaceAll(err.Error(), token, "[已隐藏]"))
+			a.db.recordPanelRenewal(settings, false, safeErr, panelCertificateRetryTime(err))
+			log.Printf("panel certificate request failed for %s: %v", settings.RouteDomain, safeErr)
+			a.jsonErr(w, http.StatusBadGateway, safeErr.Error())
 			return
 		}
-		currentStatus.CertificateSource = "acme"
-		currentStatus.CertificateReused = true
-		a.jsonOK(w, currentStatus)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	issued, err := a.panelCertificates.issueCloudflare(ctx, email, token, settings.PanelDomain, settings.RouteDomain, req.UseStaging)
-	if err != nil {
-		status := http.StatusBadGateway
-		if errors.Is(err, errCertificateIssuanceBusy) {
-			status = http.StatusConflict
-		} else if validateErr := validatePanelCertificateRequest(email, token); validateErr != nil {
-			status = http.StatusBadRequest
-		}
-		log.Printf("panel certificate request failed for %s: %v", settings.RouteDomain, err)
-		a.jsonErr(w, status, err.Error())
-		return
 	}
 	backup, err := a.panelCertificates.backupInstalledFiles()
 	if err != nil {
-		a.jsonErr(w, http.StatusInternalServerError, err.Error())
+		a.jsonErr(w, 500, err.Error())
 		return
 	}
-	if err := a.panelCertificates.install(issued, false); err != nil {
-		_ = a.panelCertificates.restoreInstalledFiles(backup)
-		a.jsonErr(w, http.StatusInternalServerError, err.Error())
+	if !reused {
+		if err = a.panelCertificates.install(issued, false); err != nil {
+			err = errors.Join(err, a.panelCertificates.restoreInstalledFiles(backup))
+			a.jsonErr(w, 500, err.Error())
+			return
+		}
+	}
+	if err := a.db.savePanelACMECertificateSettings(email, provider, ciphertext); err != nil {
+		err = errors.Join(err, a.panelCertificates.restoreInstalledFiles(backup))
+		a.jsonErr(w, 500, err.Error())
 		return
 	}
-	settings, migrated, err := a.db.SaveManagedPanelSettings(settings.PanelDomain, settings.RouteDomain, settings.ListenPort, true)
-	if err != nil {
-		_ = a.panelCertificates.restoreInstalledFiles(backup)
-		a.jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := a.db.setPanelCertificateSource("acme", "", ""); err != nil {
-		_ = a.panelCertificates.restoreInstalledFiles(backup)
-		a.jsonErr(w, 500, "无法保存证书来源")
-		return
-	}
-	settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath = "acme", "", ""
+	settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, settings.ACMEStaging = email, provider, ciphertext, false
+	settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath, settings.TLSEnabled = "acme", "", "", true
 	status := a.panelCertificateStatus(settings)
 	if !status.RestartRequired {
-		a.panelCertificates.activate(issued)
+		if issued != nil {
+			a.panelCertificates.activateForSettings(issued, settings)
+		} else {
+			a.panelCertificates.bindRuntimeSettings(settings)
+		}
 	}
-	log.Printf("panel wildcard certificate installed for *.%s (migrated sites: %d, restart required: %t)", settings.RouteDomain, migrated, status.RestartRequired)
+	a.db.recordPanelRenewal(settings, !reused, nil, time.Now().Add(panelCertificateRenewalInterval))
+	status = a.panelCertificateStatus(settings)
+	status.CertificateReused = reused
+	log.Printf("panel certificate configured for %s (reused: %t, restart required: %t)", settings.PanelDomain, reused, status.RestartRequired)
 	a.jsonOK(w, status)
 }
 
