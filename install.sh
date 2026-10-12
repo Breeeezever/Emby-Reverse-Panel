@@ -849,13 +849,37 @@ health_url() {
 }
 
 wait_for_health() {
-    local attempts="${1:-20}" url code i
-    command -v curl >/dev/null 2>&1 || return 1
-    url=$(health_url)
+    local attempts="${1:-20}" url code i binary db_path domain cert_file use_binary=0
+    binary="${INSTALL_DIR}/${BIN_NAME}"
+    # Native TLS deployments cannot answer the legacy plain-HTTP probe. Use
+    # the installed program's local probe, which reads the actual port/domain
+    # and validates the installed TLS chain. The feature marker also avoids
+    # passing an unknown command to older binaries that could start a server.
+    if [ -x "$binary" ] && "$binary" --version --features 2>/dev/null | grep -Fxq managed-tls-v1; then
+        use_binary=1
+        db_path=$(read_env_value DB_PATH)
+        db_path="${db_path:-${DATA_DIR}/meridian.db}"
+        domain=$(read_env_value PANEL_DOMAIN)
+        cert_file=$(read_env_value PANEL_TLS_CERT_FILE)
+        [[ "$db_path" = /* ]] || db_path="${DATA_DIR}/${db_path}"
+        if [ -n "$cert_file" ] && [[ "$cert_file" != /* ]]; then
+            cert_file="${DATA_DIR}/${cert_file}"
+        fi
+    else
+        command -v curl >/dev/null 2>&1 || return 1
+        url=$(health_url)
+    fi
     for ((i = 1; i <= attempts; i++)); do
-        code=$(curl --noproxy '*' --proto '=http' --connect-timeout 1 --max-time 2 \
-            -sS -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)
-        [ "$code" = "200" ] && return 0
+        if [ "$use_binary" = 1 ]; then
+            if as_root env DB_PATH="$db_path" PANEL_DOMAIN="$domain" \
+                    PANEL_TLS_CERT_FILE="$cert_file" "$binary" --healthcheck >/dev/null 2>&1; then
+                return 0
+            fi
+        else
+            code=$(curl --noproxy '*' --proto '=http' --connect-timeout 1 --max-time 2 \
+                -sS -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)
+            [ "$code" = "200" ] && return 0
+        fi
         sleep 1
     done
     return 1
