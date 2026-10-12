@@ -79,6 +79,30 @@ server {
 
 `PANEL_DOMAIN` 在环境管理模式下可通过修改、移除或置空后重启来同步。面板手动保存或配置原生证书后，域名由数据库维护；`PANEL_ROUTE_DOMAIN` 和 `PORT` 仍是首次初始化默认值。数据库管理的配置在 TLS 设置修改；使用外部 HTTPS 代理时，内部端口切换应由安装器完成，并同步 Nginx。旧数据库迁移规则见 [配置与环境变量](configuration.md)。
 
+### 面板和站点使用不同的基础域名
+
+例如面板使用 `panel.example.com`，站点使用 `media.example.net`。新部署可在首次启动前填写：
+
+```dotenv
+PANEL_DOMAIN=panel.example.com
+PANEL_ROUTE_DOMAIN=example.net
+```
+
+在站点编辑中选择“域名前缀”并填写 `media`。已有部署在“TLS 设置”填写完整面板域名 `panel.example.com` 和节点泛域名 `*.example.net`，检查、保存后按提示重启；只改环境中的 `PANEL_ROUTE_DOMAIN` 不会改动已保存的基础域名。改变基础域名会迁移使用旧基础域名的站点入口，应先准备新站点域名的 DNS、证书与网关配置。
+
+外部 Nginx 可以在同一 `443` 端口使用两个 HTTPS server，分别管理证书：
+
+| Nginx `server_name` | 证书覆盖范围 | Meridian 上游 |
+| --- | --- | --- |
+| `panel.example.com` | `panel.example.com` | `http://127.0.0.1:9090` |
+| `*.example.net` | `*.example.net` | `http://127.0.0.1:9090` |
+
+两个 server 分别设置自己的 `ssl_certificate` / `ssl_certificate_key`，并使用上文保留 `Host` 的 `location` 配置。DNS 需将两组域名指向相应网关。`*.example.net` 的证书不能用于 `panel.example.com`。
+
+Meridian 当前的原生 HTTPS 共用一套证书，内置 Cloudflare 申请流程要求面板属于节点基础域名。不同基础域名使用原生 HTTPS 时，需导入**同一张同时覆盖** `panel.example.com` 和 `*.example.net` 的证书；目前不能分别导入两张证书并按域名自动选择。需要独立申请、续期两张证书时，使用外部网关管理。
+
+仅更换环境管理的面板域名不会迁移独立站点域名或改写站点配置；`https://面板域名/watch/` 这类路径入口则需要使用新的面板域名。移除面板域名会解除面板 Host 限制，但已配置的站点 Host 仍优先进入站点代理。重建容器或重启服务期间会短暂中断连接；测试通过不代表公共 DNS、防火墙或你的网关配置已自动完成。
+
 ## Nginx 示例
 
 以下内容放在 Nginx 的 `http` 上下文中，通常可使用被 `http` 引入的 `conf.d` 文件。证书文件须事先存在，域名和路径替换为你的实际配置。
