@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -124,8 +126,15 @@ func (b *telegramBot) run(ctx context.Context) {
 	offset := b.settings.Offset
 	backoff := time.Second
 	commandsReady := false
+	var nextReminderCheck time.Time
 	b.app.setTelegramStatus(b.settings.Revision, "connecting", "正在连接 Telegram")
 	for ctx.Err() == nil {
+		if time.Now().After(nextReminderCheck) {
+			if err := b.deliverAccountReminders(ctx, time.Now()); err != nil && ctx.Err() == nil {
+				b.app.setTelegramStatus(b.settings.Revision, "error", "到期提醒发送失败，稍后重试")
+			}
+			nextReminderCheck = time.Now().Add(time.Minute)
+		}
 		// An initial tail read discards commands left over before enablement, token
 		// changes or administrator changes; stored offsets resume ordinary restarts.
 		timeout := 20
@@ -254,6 +263,22 @@ func (b *telegramBot) handleUpdate(ctx context.Context, u telegramUpdate) error 
 				return err
 			}
 			return b.send(ctx, chat.ID, "操作未完成："+err.Error(), telegramBackKeyboard())
+		}
+		return nil
+	}
+	if u.Message != nil && u.Message.Document != nil {
+		format := strings.TrimPrefix(strings.ToLower(path.Ext(u.Message.Document.Name)), ".")
+		if format != "json" && format != "csv" {
+			return b.send(ctx, chat.ID, "请发送 JSON 或 CSV 文件；开号消息可通过 /add 粘贴解析。", telegramBackKeyboard())
+		}
+		data, downloadErr := b.downloadImportDocument(ctx, *u.Message.Document)
+		if downloadErr != nil {
+			return b.send(ctx, chat.ID, downloadErr.Error(), telegramBackKeyboard())
+		}
+		s := b.newSession(from.ID, "site-import", nil)
+		s.ImportRequest = &siteImportRequest{Format: format, Data: data, Actions: map[int]string{}}
+		if err := b.previewImport(ctx, from.ID, s); err != nil {
+			return b.send(ctx, chat.ID, "导入预览失败："+err.Error(), telegramBackKeyboard())
 		}
 		return nil
 	}

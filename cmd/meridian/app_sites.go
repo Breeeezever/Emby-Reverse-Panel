@@ -305,7 +305,7 @@ func (a *App) handleSites(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		site, err := a.db.CreateSiteRecord(Site{
+		candidate := Site{
 			Name:                          req.Name,
 			ListenPort:                    req.ListenPort,
 			PublicHost:                    req.PublicHost,
@@ -341,7 +341,12 @@ func (a *App) handleSites(w http.ResponseWriter, r *http.Request) {
 			AssetCacheRules:               assetCacheConfig.AssetCacheRules,
 			TrafficQuota:                  req.Quota,
 			SpeedLimit:                    req.SpeedLimit,
-		})
+		}
+		if dryRun, _ := r.Context().Value(siteCommandDryRunKey{}).(bool); dryRun {
+			a.jsonOK(w, candidate)
+			return
+		}
+		site, err := a.db.CreateSiteRecord(candidate)
 		if err != nil {
 			if isSQLiteUniqueConstraintError(err) {
 				a.jsonErr(w, http.StatusBadRequest, "listen_port or public_host is already assigned")
@@ -350,6 +355,14 @@ func (a *App) handleSites(w http.ResponseWriter, r *http.Request) {
 			log.Printf("create site record: %v", err)
 			a.jsonErr(w, http.StatusInternalServerError, "create site failed")
 			return
+		}
+		if importing, _ := r.Context().Value(siteCommandImportKey{}).(bool); importing {
+			if err := a.db.SetSiteEnabled(site.ID, false); err != nil {
+				_ = a.db.DeleteSite(site.ID)
+				a.jsonErr(w, 500, "保存导入站点失败")
+				return
+			}
+			site.Enabled = false
 		}
 		// Auto start
 		if site.Enabled {
@@ -926,6 +939,10 @@ func (a *App) handleSiteByID(w http.ResponseWriter, r *http.Request) {
 				a.jsonErr(w, http.StatusBadRequest, "path_prefix is already assigned to another site")
 				return
 			}
+		}
+		if dryRun, _ := r.Context().Value(siteCommandDryRunKey{}).(bool); dryRun {
+			a.jsonOK(w, candidate)
+			return
 		}
 		needsPreStop := oldSite.Enabled && ingressUsesPort(oldSite.IngressMode) && ingressUsesPort(candidate.IngressMode) && oldSite.ListenPort == candidate.ListenPort && a.pm.IsRunning(id)
 		if needsPreStop {

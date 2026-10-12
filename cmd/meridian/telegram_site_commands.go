@@ -11,6 +11,8 @@ import (
 )
 
 type siteCommandPreconditionKey struct{}
+type siteCommandDryRunKey struct{}
+type siteCommandImportKey struct{}
 
 // Ignore live counters when detecting a concurrent edit, but include secret
 // configuration even though normal Site JSON intentionally omits it.

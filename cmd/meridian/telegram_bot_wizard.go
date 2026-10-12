@@ -14,18 +14,22 @@ import (
 )
 
 type telegramSession struct {
-	Action    string
-	Original  *Site
-	Draft     map[string]any
-	Accounts  []SiteAccountInput
-	SiteID    int64
-	AccountID int64
-	Step      string
-	Nonce     string
-	Expires   time.Time
-	Scheme    string
-	Target    *url.URL
-	Summary   string
+	Action        string
+	Original      *Site
+	Draft         map[string]any
+	Accounts      []SiteAccountInput
+	SiteID        int64
+	AccountID     int64
+	Step          string
+	Nonce         string
+	Expires       time.Time
+	Scheme        string
+	Target        *url.URL
+	Summary       string
+	EditingDraft  bool
+	ImportRequest *siteImportRequest
+	ImportPreview *siteImportPreview
+	ImportPage    int
 }
 
 func (b *telegramBot) newSession(id int64, action string, site *Site) *telegramSession {
@@ -56,7 +60,11 @@ func (b *telegramBot) prompt(ctx context.Context, id int64, s *telegramSession, 
 }
 func (b *telegramBot) confirm(ctx context.Context, id int64, s *telegramSession, message string) error {
 	s.Summary = message
-	return b.prompt(ctx, id, s, "confirm", message+"\n\n确认后生效（10 分钟内有效）。", telegramButtonFor("确认执行", "yes"))
+	choices := []telegramButton{telegramButtonFor("确认执行", "yes")}
+	if s.Action == "create" {
+		choices = append(choices, telegramButtonFor("修改名称", "draft_name"), telegramButtonFor("修改入口模式", "draft_ingress"), telegramButtonFor("修改路径 / 域名 / 端口", "draft_address"), telegramButtonFor("修改播放模式", "draft_playback"))
+	}
+	return b.prompt(ctx, id, s, "confirm", message+"\n\n确认后生效（10 分钟内有效）。", choices...)
 }
 func (b *telegramBot) handleText(ctx context.Context, id int64, text string) error {
 	text = strings.TrimSpace(text)
@@ -124,6 +132,14 @@ func (b *telegramBot) handleCallback(ctx context.Context, id int64, data string)
 		return b.startAdd(ctx, id)
 	}
 	parts := strings.Split(data, ":")
+	if len(parts) == 3 && parts[0] == "accountspage" {
+		siteID, err := strconv.ParseInt(parts[1], 10, 64)
+		page, pageErr := strconv.Atoi(parts[2])
+		if err != nil || pageErr != nil {
+			return fmt.Errorf("页码无效")
+		}
+		return b.siteAccounts(ctx, id, siteID, page)
+	}
 	if len(parts) == 2 && parts[0] == "sites" {
 		page, _ := strconv.Atoi(parts[1])
 		return b.listSites(ctx, id, "menu", page)
@@ -270,6 +286,21 @@ func telegramTarget(raw, scheme string) (*url.URL, error) {
 func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSession, text string) error {
 	text = strings.TrimSpace(text)
 	switch s.Step {
+	case "export_accounts":
+		if text != "include" && text != "exclude" {
+			return fmt.Errorf("请从按钮选择")
+		}
+		s.Draft["include_accounts"] = text == "include"
+		if text == "exclude" {
+			return b.sendSiteExport(ctx, id, s)
+		}
+		return b.prompt(ctx, id, s, "export_passwords", "导出是否包含登录密码和安全密码？", telegramButtonFor("不包含密码", "exclude"), telegramButtonFor("包含密码", "include"))
+	case "export_passwords":
+		if text != "include" && text != "exclude" {
+			return fmt.Errorf("请从按钮选择")
+		}
+		s.Draft["include_passwords"] = text == "include"
+		return b.sendSiteExport(ctx, id, s)
 	case "launch":
 		record, err := parseSiteMessageRecord(text)
 		if err != nil {
@@ -319,6 +350,15 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 			}
 			s.Draft["expires_at"] = text
 		}
+		return b.prompt(ctx, id, s, "account_reminder", "提前几天提醒？0 表示到期时，每次到期只推送一次。", telegramButtonFor("关闭提醒", "skip"))
+	case "account_reminder":
+		if text != "skip" {
+			days, err := telegramInteger(text, 0, 3650)
+			if err != nil {
+				return err
+			}
+			s.Draft["reminder_days"] = strconv.FormatInt(days, 10)
+		}
 		return b.prompt(ctx, id, s, "account_note", "请输入备注：", telegramButtonFor("跳过", "skip"))
 	case "account_note":
 		if text != "skip" {
@@ -340,6 +380,8 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 				s.Draft["clear_password"] = true
 			} else if field == "security" {
 				s.Draft["clear_security"] = true
+			} else if field == "reminder" {
+				s.Draft["clear_reminder"] = true
 			} else if field == "expires" {
 				s.Draft["expires_at"] = ""
 				s.Draft["clear_expires"] = true
@@ -349,8 +391,13 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 		if text == "" {
 			return fmt.Errorf("内容不能为空")
 		}
-		key := map[string]string{"name": "account_name", "username": "username", "password": "password", "security": "security_password", "expires": "expires_at", "note": "note"}[field]
-		if key == "expires" {
+		key := map[string]string{"name": "account_name", "username": "username", "password": "password", "security": "security_password", "expires": "expires_at", "reminder": "reminder_days", "note": "note"}[field]
+		if key == "reminder_days" {
+			if _, err := telegramInteger(text, 0, 3650); err != nil {
+				return err
+			}
+		}
+		if key == "expires_at" {
 			if _, err := parseSiteAccountExpiry(text); err != nil {
 				return fmt.Errorf("到期日期格式无效")
 			}
@@ -358,8 +405,39 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 		s.Draft[key] = text
 		return b.finishAccountDraft(ctx, id, s)
 	case "site-import-data":
-		s.Draft["data"] = text
-		return b.confirm(ctx, id, s, "导入站点配置\n导入站点将默认停用，请确认执行。")
+		if s.ImportRequest == nil {
+			return fmt.Errorf("请重新选择导入格式")
+		}
+		s.ImportRequest.Data = text
+		return b.previewImport(ctx, id, s)
+	case "import_preview":
+		if s.ImportRequest == nil {
+			return fmt.Errorf("导入已失效")
+		}
+		if text == "import_yes" {
+			return b.applySession(ctx, id, s)
+		}
+		if text == "import_prev" {
+			s.ImportPage--
+		} else if text == "import_next" {
+			s.ImportPage++
+		} else if strings.HasPrefix(text, "duplicates_") {
+			s.ImportRequest.DuplicateAction = strings.TrimPrefix(text, "duplicates_")
+			s.ImportRequest.Actions = map[int]string{}
+		} else if strings.HasPrefix(text, "import_action_") {
+			parts := strings.Split(text, "_")
+			if len(parts) != 4 {
+				return fmt.Errorf("导入操作无效")
+			}
+			index, err := strconv.Atoi(parts[2])
+			if err != nil {
+				return fmt.Errorf("导入操作无效")
+			}
+			s.ImportRequest.Actions[index] = parts[3]
+		} else {
+			return fmt.Errorf("请使用导入预览按钮")
+		}
+		return b.previewImport(ctx, id, s)
 	case "name":
 		if text == "launch" {
 			return b.prompt(ctx, id, s, "launch", "请粘贴完整开号信息，解析后会填充站点和账号：")
@@ -368,7 +446,7 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 			return fmt.Errorf("名称请填写 1–100 字节的单行文字")
 		}
 		s.Draft["name"] = text
-		if s.Action == "create" {
+		if s.Action == "create" && !s.EditingDraft {
 			return b.protocolPrompt(ctx, id, s)
 		}
 		return b.finishDraft(ctx, id, s, "名称改为："+text)
@@ -529,17 +607,38 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 		s.Draft["ua_mode"] = text
 		return b.finishDraft(ctx, id, s, "客户端标识："+text)
 	case "confirm":
+		if s.Action == "create" && strings.HasPrefix(text, "draft_") {
+			s.EditingDraft = true
+			switch text {
+			case "draft_name":
+				return b.prompt(ctx, id, s, "name", "请输入站点名称：")
+			case "draft_ingress":
+				return b.ingressPrompt(ctx, id, s)
+			case "draft_playback":
+				return b.playbackPrompt(ctx, id, s)
+			case "draft_address":
+				switch s.Draft["ingress_mode"] {
+				case ingressModePath:
+					return b.prompt(ctx, id, s, "path", "请输入路径前缀，例如 /movies：")
+				case ingressModePort:
+					return b.prompt(ctx, id, s, "listen_port", "请输入访问端口（1–65535）：")
+				default:
+					return b.prompt(ctx, id, s, "public_host", "请输入完整访问域名：")
+				}
+			}
+		}
 		return b.send(ctx, id, "请点击上方“确认执行”，或发送 /cancel 取消。", nil)
 	}
 	return fmt.Errorf("当前步骤已失效，请发送 /menu 重新开始")
 }
 func (b *telegramBot) afterIngress(ctx context.Context, id int64, s *telegramSession) error {
-	if s.Action == "create" {
+	if s.Action == "create" && !s.EditingDraft {
 		return b.playbackPrompt(ctx, id, s)
 	}
 	return b.finishDraft(ctx, id, s, fmt.Sprintf("入口模式：%v\n路径：%v\n域名：%v\n端口：%v", s.Draft["ingress_mode"], s.Draft["path_prefix"], s.Draft["public_host"], s.Draft["listen_port"]))
 }
 func (b *telegramBot) finishDraft(ctx context.Context, id int64, s *telegramSession, summary string) error {
+	s.EditingDraft = false
 	if strings.HasPrefix(s.Action, "account-") {
 		return b.finishAccountDraft(ctx, id, s)
 	}

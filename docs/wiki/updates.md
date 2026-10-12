@@ -65,7 +65,7 @@ docker compose ps
 ./meridian --version
 ```
 
-## 回滚
+## 回滚 {#rollback}
 
 ### 自动回滚范围
 

@@ -270,8 +270,8 @@ const API = {
   deleteSiteAccount(siteId, accountId) { return this.request('DELETE', '/api/sites/' + encodeURIComponent(siteId) + '/accounts/' + encodeURIComponent(accountId)); },
   getSiteAccountClientText(siteId, accountId, mode) { return this.request('GET', '/api/sites/' + encodeURIComponent(siteId) + '/accounts/' + encodeURIComponent(accountId) + '?line_mode=' + encodeURIComponent(mode || 'multi')); },
   getAccountReminders() { return this.request('GET', '/api/account-reminders'); },
-  exportSiteData(format, mode) { const query = 'format=' + encodeURIComponent(format || 'json') + (mode ? '&line_mode=' + encodeURIComponent(mode) : ''); return fetch('/api/site-data/export?' + query, { credentials: 'same-origin' }).then(async response => { if (!response.ok) { let body = {}; try { body = await response.json(); } catch (_) {} throw new Error(body.error || '导出失败'); } return response.blob(); }); },
-  importSiteData(format, data) { return this.request('POST', '/api/site-data/import', { format, data }); },
+  exportSiteData(format, mode, options = {}) { const query = 'format=' + encodeURIComponent(format || 'json') + (mode ? '&line_mode=' + encodeURIComponent(mode) : '') + '&include_accounts=' + (options.include_accounts !== false) + '&include_passwords=' + (options.include_passwords === true); return fetch('/api/site-data/export?' + query, { credentials: 'same-origin' }).then(async response => { if (!response.ok) { let body = {}; try { body = await response.json(); } catch (_) {} throw new Error(body.error || '导出失败'); } return response.blob(); }); },
+  importSiteData(format, data, options = {}) { return this.request('POST', '/api/site-data/import', { format, data, ...options }); },
   parseSiteMessage(text) { return this.request('POST', '/api/site-data/parse-message', { text }); },
   testUpstream(targetURL) { return this.request('POST', '/api/upstream-test', { target_url: targetURL }); },
 

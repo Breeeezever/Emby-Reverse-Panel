@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -107,7 +108,17 @@ func TestSiteDataImportAllocatesPathPortAndDisablesSite(t *testing.T) {
 	app.panelListenPort = 9090
 	body := `{"format":"json","data":"{\"version\":1,\"sites\":[{\"name\":\"Imported\",\"target_url\":\"http://127.0.0.1:8096\",\"ingress_mode\":\"path\",\"path_prefix\":\"imported\",\"accounts\":[{\"account_name\":\"demo\",\"password\":\"secret\"}]}]}"}`
 	rr := httptest.NewRecorder()
-	app.handleSiteDataImport(rr, httptest.NewRequest(http.MethodPost, "/api/site-data/import", bytes.NewBufferString(body)))
+	var req siteImportRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := app.previewSiteImport(context.Background(), req)
+	if err != nil || !preview.Valid {
+		t.Fatalf("preview: %+v %v", preview, err)
+	}
+	req.PreviewToken = preview.Token
+	requestBody, _ := json.Marshal(req)
+	app.handleSiteDataImport(rr, httptest.NewRequest(http.MethodPost, "/api/site-data/import", bytes.NewReader(requestBody)))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("import status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -169,7 +180,7 @@ func TestSiteAccountClientModesAndExport(t *testing.T) {
 		t.Fatalf("invalid client mode status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	export := httptest.NewRecorder()
-	app.handleSiteDataExport(export, httptest.NewRequest(http.MethodGet, "/api/site-data/export?format=client&line_mode=original", nil))
+	app.handleSiteDataExport(export, httptest.NewRequest(http.MethodGet, "/api/site-data/export?format=client&line_mode=original&include_passwords=true", nil))
 	if export.Code != http.StatusOK || !strings.Contains(export.Body.String(), "https://origin.example/emby") || strings.Contains(export.Body.String(), "secret") == false {
 		t.Fatalf("client export status=%d body=%s", export.Code, export.Body.String())
 	}

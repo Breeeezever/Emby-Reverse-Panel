@@ -7,8 +7,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
-	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,17 +22,18 @@ import (
 const siteAccountCipherPrefix = "v1:"
 
 type SiteAccount struct {
-	ID          int64  `json:"id"`
-	SiteID      int64  `json:"site_id"`
-	SiteName    string `json:"site_name,omitempty"`
-	AccountName string `json:"account_name"`
-	Username    string `json:"username"`
-	ExpiresAt   string `json:"expires_at"`
-	Note        string `json:"note"`
-	PasswordSet bool   `json:"password_configured"`
-	SecuritySet bool   `json:"security_password_configured"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	ID           int64  `json:"id"`
+	SiteID       int64  `json:"site_id"`
+	SiteName     string `json:"site_name,omitempty"`
+	AccountName  string `json:"account_name"`
+	Username     string `json:"username"`
+	ExpiresAt    string `json:"expires_at"`
+	Note         string `json:"note"`
+	ReminderDays *int   `json:"reminder_days"`
+	PasswordSet  bool   `json:"password_configured"`
+	SecuritySet  bool   `json:"security_password_configured"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	UpdatedAt    string `json:"updated_at,omitempty"`
 }
 
 type storedSiteAccount struct {
@@ -46,10 +45,13 @@ type storedSiteAccount struct {
 type SiteAccountInput struct {
 	AccountName      string `json:"account_name"`
 	Username         string `json:"username"`
-	Password         string `json:"password"`          // #nosec G117 -- request-only credential DTO.
-	SecurityPassword string `json:"security_password"` // #nosec G117 -- request-only credential DTO.
+	Password         string `json:"password,omitempty"`          // #nosec G117 -- explicitly authorized account memo/export.
+	SecurityPassword string `json:"security_password,omitempty"` // #nosec G117 -- explicitly authorized account memo/export.
 	ExpiresAt        string `json:"expires_at"`
 	Note             string `json:"note"`
+	ReminderDays     *int   `json:"reminder_days,omitempty"`
+	ClearReminder    bool   `json:"clear_reminder,omitempty"`
+	ClearNote        bool   `json:"clear_note,omitempty"`
 	ClearPassword    bool   `json:"clear_password,omitempty"`
 	ClearSecurity    bool   `json:"clear_security_password,omitempty"`
 	ClearExpiry      bool   `json:"clear_expires_at,omitempty"`
@@ -126,6 +128,9 @@ func normalizeSiteAccountInput(input SiteAccountInput, existing *storedSiteAccou
 	// Passwords are opaque values. Preserve intentional leading/trailing spaces.
 	input.ExpiresAt = strings.TrimSpace(input.ExpiresAt)
 	input.Note = strings.TrimSpace(input.Note)
+	if input.ReminderDays != nil && (*input.ReminderDays < 0 || *input.ReminderDays > 3650) {
+		return SiteAccountInput{}, errors.New("提前提醒天数应为 0–3650，0 表示到期时提醒")
+	}
 	if input.ExpiresAt != "" {
 		if len(input.ExpiresAt) > 64 {
 			return SiteAccountInput{}, errors.New("到期时间过长")
@@ -144,8 +149,11 @@ func normalizeSiteAccountInput(input SiteAccountInput, existing *storedSiteAccou
 		if input.ExpiresAt == "" && !input.ClearExpiry {
 			input.ExpiresAt = existing.ExpiresAt
 		}
-		if input.Note == "" {
+		if input.Note == "" && !input.ClearNote {
 			input.Note = existing.Note
+		}
+		if input.ReminderDays == nil && !input.ClearReminder {
+			input.ReminderDays = existing.ReminderDays
 		}
 		if input.Password == "" && !input.ClearPassword {
 			input.Password = "\x00__KEEP__\x00"
@@ -188,7 +196,7 @@ func parseSiteAccountExpiry(value string) (time.Time, error) {
 }
 
 func (d *DB) listSiteAccounts(siteID int64) ([]storedSiteAccount, error) {
-	rows, err := d.db.Query(`SELECT id, site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, created_at, updated_at FROM site_accounts WHERE site_id=? ORDER BY id`, siteID)
+	rows, err := d.db.Query(`SELECT id, site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, reminder_days, created_at, updated_at FROM site_accounts WHERE site_id=? ORDER BY id`, siteID)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +204,7 @@ func (d *DB) listSiteAccounts(siteID int64) ([]storedSiteAccount, error) {
 	var result []storedSiteAccount
 	for rows.Next() {
 		var item storedSiteAccount
-		if err := rows.Scan(&item.ID, &item.SiteID, &item.AccountName, &item.Username, &item.PasswordCiphertext, &item.SecurityPasswordCiphertext, &item.ExpiresAt, &item.Note, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.SiteID, &item.AccountName, &item.Username, &item.PasswordCiphertext, &item.SecurityPasswordCiphertext, &item.ExpiresAt, &item.Note, &item.ReminderDays, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		item.PasswordSet = item.PasswordCiphertext != ""
@@ -221,7 +229,7 @@ func publicSiteAccount(item storedSiteAccount, siteName string) SiteAccount {
 
 func (d *DB) getSiteAccount(siteID, accountID int64) (*storedSiteAccount, error) {
 	var item storedSiteAccount
-	err := d.db.QueryRow(`SELECT id, site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, created_at, updated_at FROM site_accounts WHERE site_id=? AND id=?`, siteID, accountID).Scan(&item.ID, &item.SiteID, &item.AccountName, &item.Username, &item.PasswordCiphertext, &item.SecurityPasswordCiphertext, &item.ExpiresAt, &item.Note, &item.CreatedAt, &item.UpdatedAt)
+	err := d.db.QueryRow(`SELECT id, site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, reminder_days, created_at, updated_at FROM site_accounts WHERE site_id=? AND id=?`, siteID, accountID).Scan(&item.ID, &item.SiteID, &item.AccountName, &item.Username, &item.PasswordCiphertext, &item.SecurityPasswordCiphertext, &item.ExpiresAt, &item.Note, &item.ReminderDays, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +269,7 @@ func (d *DB) saveSiteAccount(siteID int64, accountID int64, input SiteAccountInp
 		}
 	}
 	if accountID == 0 {
-		result, err := d.db.Exec(`INSERT INTO site_accounts (site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note) VALUES (?, ?, ?, ?, ?, ?, ?)`, siteID, input.AccountName, input.Username, passwordCipher, securityCipher, input.ExpiresAt, input.Note)
+		result, err := d.db.Exec(`INSERT INTO site_accounts (site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, reminder_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, siteID, input.AccountName, input.Username, passwordCipher, securityCipher, input.ExpiresAt, input.Note, input.ReminderDays)
 		if err != nil {
 			return nil, err
 		}
@@ -270,7 +278,7 @@ func (d *DB) saveSiteAccount(siteID int64, accountID int64, input SiteAccountInp
 			return nil, err
 		}
 	} else {
-		_, err = d.db.Exec(`UPDATE site_accounts SET account_name=?, username=?, password_ciphertext=?, security_password_ciphertext=?, expires_at=?, note=?, updated_at=CURRENT_TIMESTAMP WHERE site_id=? AND id=?`, input.AccountName, input.Username, passwordCipher, securityCipher, input.ExpiresAt, input.Note, siteID, accountID)
+		_, err = d.db.Exec(`UPDATE site_accounts SET account_name=?, username=?, password_ciphertext=?, security_password_ciphertext=?, expires_at=?, note=?, reminder_days=?, updated_at=CURRENT_TIMESTAMP WHERE site_id=? AND id=?`, input.AccountName, input.Username, passwordCipher, securityCipher, input.ExpiresAt, input.Note, input.ReminderDays, siteID, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -287,10 +295,27 @@ func accountPlaintext(item storedSiteAccount) (SiteAccountInput, error) {
 	if err != nil {
 		return SiteAccountInput{}, err
 	}
-	return SiteAccountInput{AccountName: item.AccountName, Username: item.Username, Password: password, SecurityPassword: security, ExpiresAt: item.ExpiresAt, Note: item.Note}, nil
+	return SiteAccountInput{AccountName: item.AccountName, Username: item.Username, Password: password, SecurityPassword: security, ExpiresAt: item.ExpiresAt, Note: item.Note, ReminderDays: item.ReminderDays}, nil
+}
+
+// Only the authenticated account workspace returns cleartext memo fields.
+// Reminder/status responses continue to use publicSiteAccount metadata.
+type siteAccountMemo struct {
+	SiteAccount
+	Password         string `json:"password"`          // #nosec G117 -- authorized memo response.
+	SecurityPassword string `json:"security_password"` // #nosec G117 -- authorized memo response.
+}
+
+func accountMemo(item storedSiteAccount, name string) (siteAccountMemo, error) {
+	plain, err := accountPlaintext(item)
+	if err != nil {
+		return siteAccountMemo{}, err
+	}
+	return siteAccountMemo{publicSiteAccount(item, name), plain.Password, plain.SecurityPassword}, nil
 }
 
 func (a *App) handleSiteAccounts(w http.ResponseWriter, r *http.Request, siteID int64, tail string) {
+	w.Header().Set("Cache-Control", "no-store")
 	site, err := a.db.GetSite(siteID)
 	if err != nil {
 		a.jsonErr(w, http.StatusNotFound, "site not found")
@@ -304,9 +329,14 @@ func (a *App) handleSiteAccounts(w http.ResponseWriter, r *http.Request, siteID 
 				a.jsonErr(w, 500, "账号读取失败")
 				return
 			}
-			result := make([]SiteAccount, 0, len(items))
+			result := make([]siteAccountMemo, 0, len(items))
 			for _, item := range items {
-				result = append(result, publicSiteAccount(item, site.Name))
+				memo, err := accountMemo(item, site.Name)
+				if err != nil {
+					a.jsonErr(w, 500, "账号信息读取失败")
+					return
+				}
+				result = append(result, memo)
 			}
 			a.jsonOK(w, result)
 		case http.MethodPost:
@@ -320,7 +350,12 @@ func (a *App) handleSiteAccounts(w http.ResponseWriter, r *http.Request, siteID 
 				a.jsonErr(w, 400, err.Error())
 				return
 			}
-			a.jsonResponse(w, http.StatusCreated, publicSiteAccount(*item, site.Name))
+			memo, err := accountMemo(*item, site.Name)
+			if err != nil {
+				a.jsonErr(w, 500, "账号信息读取失败")
+				return
+			}
+			a.jsonResponse(w, http.StatusCreated, memo)
 		default:
 			a.jsonErr(w, 405, "method not allowed")
 		}
@@ -347,7 +382,12 @@ func (a *App) handleSiteAccounts(w http.ResponseWriter, r *http.Request, siteID 
 			}
 			return
 		}
-		a.jsonOK(w, publicSiteAccount(*item, site.Name))
+		memo, err := accountMemo(*item, site.Name)
+		if err != nil {
+			a.jsonErr(w, 500, "账号信息读取失败")
+			return
+		}
+		a.jsonOK(w, memo)
 	case http.MethodDelete:
 		if _, err := a.db.getSiteAccount(siteID, accountID); err != nil {
 			a.jsonErr(w, 404, "account not found")
@@ -389,36 +429,15 @@ func (a *App) accountClientText(site Site, item storedSiteAccount, mode string) 
 	if err != nil {
 		return "", err
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "· 用户名称 | `%s`\n· 用户密码 | `%s`\n", plain.Username, plain.Password)
-	if plain.SecurityPassword != "" {
-		fmt.Fprintf(&b, "· 安全密码 | `%s`\n", plain.SecurityPassword)
-	}
-	if plain.ExpiresAt != "" {
-		fmt.Fprintf(&b, "· 到期时间 | `%s`\n", plain.ExpiresAt)
-	}
-	if plain.Note != "" {
-		fmt.Fprintf(&b, "· 备注 | %s\n", plain.Note)
-	}
-	b.WriteString("\n· 当前线路：\n")
-	lines := []string{site.TargetURL}
-	lines = append(lines, site.FailoverTargetList...)
-	if mode == "original" || mode == "multi" {
-		for _, line := range lines {
-			if strings.TrimSpace(line) != "" {
-				fmt.Fprintf(&b, "%s\n", line)
-			}
-		}
-	}
-	if mode == "proxy" || mode == "multi" {
-		for _, line := range a.siteProxyLines(site) {
-			fmt.Fprintf(&b, "%s\n", line)
-		}
-	}
-	return b.String(), nil
+	return a.renderAccountClientText(site, plain, mode, siteExportOptions{IncludeAccounts: true, IncludePasswords: true}), nil
 }
 
 func (a *App) siteProxyLines(site Site) []string {
+	if settings, err := a.db.telegramBotSettings(); err == nil && settings.PublicURL != "" {
+		if address, err := a.telegramSiteAddress(site, settings.PublicURL); err == nil {
+			return []string{address}
+		}
+	}
 	host := a.panelHost
 	if site.PublicHost != "" {
 		host = site.PublicHost
@@ -449,6 +468,7 @@ func (a *App) siteProxyLines(site Site) []string {
 }
 
 type siteImportRecord struct {
+	Fields                     map[string]bool     `json:"-"`
 	ID                         int64               `json:"-"`
 	Name                       string              `json:"name"`
 	TargetURL                  string              `json:"target_url"`
@@ -490,24 +510,33 @@ type siteDataEnvelope struct {
 	Sites   []siteImportRecord `json:"sites"`
 }
 
-func (a *App) siteDataRecords() ([]siteImportRecord, error) {
+func (a *App) siteDataRecords(options ...siteExportOptions) ([]siteImportRecord, error) {
+	opts := siteExportOptions{IncludeAccounts: true}
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	sites, err := a.db.ListSites()
 	if err != nil {
 		return nil, err
 	}
 	result := make([]siteImportRecord, 0, len(sites))
 	for _, site := range sites {
-		accounts, err := a.db.listSiteAccounts(site.ID)
-		if err != nil {
-			return nil, err
-		}
-		plain := make([]SiteAccountInput, 0, len(accounts))
-		for _, item := range accounts {
-			v, err := accountPlaintext(item)
+		plain := []SiteAccountInput{}
+		if opts.IncludeAccounts {
+			accounts, err := a.db.listSiteAccounts(site.ID)
 			if err != nil {
 				return nil, err
 			}
-			plain = append(plain, v)
+			for _, item := range accounts {
+				v := SiteAccountInput{AccountName: item.AccountName, Username: item.Username, ExpiresAt: item.ExpiresAt, Note: item.Note, ReminderDays: item.ReminderDays}
+				if opts.IncludePasswords {
+					v, err = accountPlaintext(item)
+					if err != nil {
+						return nil, err
+					}
+				}
+				plain = append(plain, v)
+			}
 		}
 		result = append(result, siteImportRecord{
 			ID:   site.ID,
@@ -529,209 +558,6 @@ func (a *App) siteDataRecords() ([]siteImportRecord, error) {
 	return result, nil
 }
 
-func (a *App) handleSiteDataExport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		a.jsonErr(w, 405, "method not allowed")
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
-	if format == "" {
-		format = "json"
-	}
-	records, err := a.siteDataRecords()
-	if err != nil {
-		a.jsonErr(w, 500, "导出账号数据失败")
-		return
-	}
-	switch format {
-	case "json":
-		w.Header().Set("Content-Disposition", `attachment; filename="meridian-sites.json"`)
-		a.jsonOK(w, siteDataEnvelope{Version: 1, Sites: records})
-	case "csv":
-		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="meridian-sites.csv"`)
-		cw := csv.NewWriter(w)
-		_ = cw.Write([]string{"站点名称", "回源地址", "入口模式", "路径前缀", "监听端口", "账号名称", "用户名", "密码", "安全密码", "到期时间", "备注"})
-		for _, site := range records {
-			for _, acc := range site.Accounts {
-				_ = cw.Write([]string{site.Name, site.TargetURL, site.IngressMode, site.PathPrefix, strconv.Itoa(site.ListenPort), acc.AccountName, acc.Username, acc.Password, acc.SecurityPassword, acc.ExpiresAt, acc.Note})
-			}
-			if len(site.Accounts) == 0 {
-				_ = cw.Write([]string{site.Name, site.TargetURL, site.IngressMode, site.PathPrefix, strconv.Itoa(site.ListenPort)})
-			}
-		}
-		cw.Flush()
-	case "client":
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="meridian-accounts.txt"`)
-		mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("line_mode")))
-		if mode == "" {
-			mode = "multi"
-		}
-		if mode != "original" && mode != "proxy" && mode != "multi" {
-			a.jsonErr(w, http.StatusBadRequest, "line_mode must be original, proxy or multi")
-			return
-		}
-		for _, site := range records {
-			for _, acc := range site.Accounts {
-				item := storedSiteAccount{SiteAccount: SiteAccount{AccountName: acc.AccountName, Username: acc.Username, ExpiresAt: acc.ExpiresAt, Note: acc.Note}}
-				var err error
-				item.PasswordCiphertext, err = encryptSiteAccountSecret(acc.Password)
-				if err != nil {
-					a.jsonErr(w, http.StatusInternalServerError, "账号信息读取失败")
-					return
-				}
-				item.SecurityPasswordCiphertext, err = encryptSiteAccountSecret(acc.SecurityPassword)
-				if err != nil {
-					a.jsonErr(w, http.StatusInternalServerError, "账号信息读取失败")
-					return
-				}
-				text, err := a.accountClientText(Site{Name: site.Name, TargetURL: site.TargetURL, IngressMode: site.IngressMode, PathPrefix: site.PathPrefix, PublicHost: site.PublicHost, ListenPort: site.ListenPort}, item, mode)
-				if err != nil {
-					a.jsonErr(w, http.StatusInternalServerError, "账号信息读取失败")
-					return
-				}
-				fmt.Fprintf(w, "## %s\n%s\n", site.Name, text)
-			}
-		}
-	default:
-		a.jsonErr(w, 400, "format must be json, csv or client")
-	}
-}
-
-func (a *App) handleSiteDataImport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		a.jsonErr(w, 405, "method not allowed")
-		return
-	}
-	var req struct {
-		Format string `json:"format"`
-		Data   string `json:"data"`
-	}
-	if err := decodeJSONBody(w, r, &req); err != nil {
-		a.jsonErr(w, 400, "invalid request")
-		return
-	}
-	format := strings.ToLower(strings.TrimSpace(req.Format))
-	if format != "json" && format != "csv" {
-		a.jsonErr(w, http.StatusBadRequest, "format must be json or csv")
-		return
-	}
-	var envelope siteDataEnvelope
-	if format == "csv" {
-		parsed, err := parseSiteCSV(req.Data)
-		if err != nil {
-			a.jsonErr(w, 400, err.Error())
-			return
-		}
-		envelope = siteDataEnvelope{Version: 1, Sites: parsed}
-	} else {
-		if err := json.Unmarshal([]byte(req.Data), &envelope); err != nil {
-			a.jsonErr(w, 400, "JSON 导入文件格式无效")
-			return
-		}
-	}
-	if len(envelope.Sites) == 0 || len(envelope.Sites) > 500 {
-		a.jsonErr(w, 400, "导入站点数量应为 1-500 个")
-		return
-	}
-	created := 0
-	createdIDs := make([]int64, 0, len(envelope.Sites))
-	cleanupCreated := func() {
-		for _, id := range createdIDs {
-			_ = a.db.DeleteSite(id)
-		}
-	}
-	for _, record := range envelope.Sites {
-		name := strings.TrimSpace(record.Name)
-		target := strings.TrimSpace(record.TargetURL)
-		if name == "" || target == "" {
-			cleanupCreated()
-			a.jsonErr(w, 400, "站点名称和回源地址不能为空")
-			return
-		}
-		if _, err := normalizeTargetURL(target); err != nil {
-			cleanupCreated()
-			a.jsonErr(w, 400, fmt.Sprintf("站点 %s 的回源地址无效", name))
-			return
-		}
-		mode := strings.TrimSpace(record.IngressMode)
-		if mode == "" {
-			mode = ingressModePath
-		}
-		pathPrefix := strings.Trim(record.PathPrefix, "/")
-		if mode == ingressModePath && pathPrefix == "" {
-			pathPrefix = importSlug(name) + "-" + strconv.Itoa(created+1)
-		}
-		port := record.ListenPort
-		if mode == ingressModePath || port < 1 || port > 65535 {
-			sites, listErr := a.db.ListSites()
-			if listErr != nil {
-				cleanupCreated()
-				a.jsonErr(w, http.StatusInternalServerError, "分配导入站点端口失败")
-				return
-			}
-			allocatedPort, allocErr := nextAvailableInternalSitePort(sites, a.panelListenPort)
-			if allocErr != nil {
-				cleanupCreated()
-				a.jsonErr(w, http.StatusServiceUnavailable, allocErr.Error())
-				return
-			}
-			port = allocatedPort
-		}
-		streamHostsJSON, _ := json.Marshal(record.StreamHosts)
-		failoverTargetsJSON, _ := json.Marshal(record.FailoverTargets)
-		failoverLinesJSON, _ := json.Marshal(record.FailoverLines)
-		if len(record.StreamHosts) == 0 {
-			streamHostsJSON = []byte("[]")
-		}
-		if len(record.FailoverTargets) == 0 {
-			failoverTargetsJSON = []byte("[]")
-		}
-		if len(record.FailoverLines) == 0 {
-			failoverLinesJSON = []byte("[]")
-		}
-		site, err := a.db.CreateSiteRecord(Site{
-			Name: name, ListenPort: port, PublicHost: strings.TrimSpace(record.PublicHost), PathPrefix: pathPrefix, IngressMode: mode,
-			TargetURL: target, PrimaryLineName: record.PrimaryLineName, PlaybackTargetURL: record.PlaybackTargetURL,
-			PlaybackMode: record.PlaybackMode, MainVideoStreamMode: record.MainVideoStreamMode, FailoverTargets: string(failoverTargetsJSON),
-			StoredFailoverLines: string(failoverLinesJSON),
-			UAMode:              record.UAMode, CustomUserAgent: record.CustomUserAgent, CustomClient: record.CustomClient, CustomVersion: record.CustomVersion,
-			ClientIPMode: record.ClientIPMode, DynamicDiscoveryEnabled: record.DynamicDiscoveryEnabled, DynamicProfile: record.DynamicProfile,
-			DynamicDiscoverySources: record.DynamicDiscoverySources, DynamicDomainRules: record.DynamicDomainRules,
-			DynamicAllowHTTPSDowngrade: record.DynamicAllowHTTPSDowngrade, PingCacheEnabled: record.PingCacheEnabled,
-			ImageCacheEnabled: record.ImageCacheEnabled, ProgressCoalescingEnabled: record.ProgressCoalescingEnabled,
-			AssetCacheEnabled: record.AssetCacheEnabled, AssetCacheTTLSec: record.AssetCacheTTLSec,
-			AssetCacheMaxBytes: record.AssetCacheMaxBytes, AssetCacheRules: record.AssetCacheRules,
-			TrafficQuota: record.TrafficQuota, SpeedLimit: record.SpeedLimit,
-			Enabled: false, StreamHosts: string(streamHostsJSON),
-		})
-		if err != nil {
-			cleanupCreated()
-			a.jsonErr(w, 400, fmt.Sprintf("导入站点 %s 失败: %v", name, err))
-			return
-		}
-		if _, err := a.db.db.Exec("UPDATE sites SET enabled=0 WHERE id=?", site.ID); err != nil {
-			cleanupCreated()
-			_ = a.db.DeleteSite(site.ID)
-			a.jsonErr(w, http.StatusInternalServerError, "保存导入站点状态失败")
-			return
-		}
-		createdIDs = append(createdIDs, site.ID)
-		for _, acc := range record.Accounts {
-			if _, err := a.db.saveSiteAccount(site.ID, 0, acc); err != nil {
-				cleanupCreated()
-				_ = a.db.DeleteSite(site.ID)
-				a.jsonErr(w, 400, fmt.Sprintf("导入账号失败: %v", err))
-				return
-			}
-		}
-		created++
-	}
-	a.jsonOK(w, map[string]int{"created_sites": created})
-}
-
 func importSlug(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(value, "-")
@@ -740,38 +566,6 @@ func importSlug(value string) string {
 		return "site"
 	}
 	return value[:minInt(len(value), 24)]
-}
-
-func parseSiteCSV(input string) ([]siteImportRecord, error) {
-	reader := csv.NewReader(strings.NewReader(input))
-	rows, err := reader.ReadAll()
-	if err != nil {
-		return nil, errors.New("CSV 文件格式无效")
-	}
-	if len(rows) < 2 {
-		return nil, errors.New("CSV 文件没有数据")
-	}
-	result := make([]siteImportRecord, 0)
-	byKey := map[string]int{}
-	for _, row := range rows[1:] {
-		if len(row) < 2 {
-			continue
-		}
-		name, target := strings.TrimSpace(row[0]), strings.TrimSpace(row[1])
-		if name == "" || target == "" {
-			continue
-		}
-		idx, ok := byKey[name]
-		if !ok {
-			result = append(result, siteImportRecord{Name: name, TargetURL: target, IngressMode: ingressModePath})
-			idx = len(result) - 1
-			byKey[name] = idx
-		}
-		if len(row) >= 11 {
-			result[idx].Accounts = append(result[idx].Accounts, SiteAccountInput{AccountName: row[5], Username: row[6], Password: row[7], SecurityPassword: row[8], ExpiresAt: row[9], Note: row[10]})
-		}
-	}
-	return result, nil
 }
 
 var launchMessageField = regexp.MustCompile(`(?mi)(?:用户名称|账号名称|用户名)\s*[|：:]\s*` + "`?" + `([^` + "`" + `\r\n]+)` + "`?")
@@ -835,6 +629,11 @@ func parseSiteMessageRecord(text string) (siteImportRecord, error) {
 	urls = validURLs
 	if len(urls) == 0 {
 		return siteImportRecord{}, errors.New("没有找到有效的回源地址")
+	}
+	if name == "导入站点" {
+		if u, err := url.Parse(urls[0]); err == nil {
+			name = u.Hostname()
+		}
 	}
 	record := siteImportRecord{Name: name, TargetURL: strings.TrimRight(urls[0], "，。)】"), IngressMode: ingressModePath, PathPrefix: importSlug(name), FailoverTargets: append([]string(nil), urls[1:]...), Accounts: []SiteAccountInput{account}}
 	if account.AccountName == "" && account.Username == "" {

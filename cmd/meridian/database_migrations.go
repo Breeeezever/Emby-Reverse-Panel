@@ -136,6 +136,14 @@ func (d *DB) migrateOnce() error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_site_accounts_site ON site_accounts(site_id, id);
+	CREATE TABLE IF NOT EXISTS account_reminder_deliveries (
+		account_id INTEGER NOT NULL REFERENCES site_accounts(id) ON DELETE CASCADE,
+		expires_at TEXT NOT NULL,
+		reminder_days INTEGER NOT NULL,
+		chat_id INTEGER NOT NULL,
+		sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(account_id, expires_at, reminder_days, chat_id)
+	);
 	CREATE TABLE IF NOT EXISTS traffic_logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
@@ -236,6 +244,15 @@ func (d *DB) migrateOnce() error {
 	INSERT OR IGNORE INTO system_settings (id) VALUES (1);
 	`); err != nil {
 		return err
+	}
+	var reminderColumn int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('site_accounts') WHERE name='reminder_days'").Scan(&reminderColumn); err != nil {
+		return err
+	}
+	if reminderColumn == 0 {
+		if _, err := conn.ExecContext(ctx, "ALTER TABLE site_accounts ADD COLUMN reminder_days INTEGER"); err != nil {
+			return err
+		}
 	}
 	if err := ensureDynamicObservationSchema(ctx, conn); err != nil {
 		return err

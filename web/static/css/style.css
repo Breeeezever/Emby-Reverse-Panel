@@ -4860,3 +4860,8 @@ html[data-theme="light"] .toast.error {
 #update-summary:empty {
   display: none;
 }
+
+.site-import-list { display: grid; gap: 12px; max-height: 55vh; overflow: auto; }
+.site-import-row { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--glass-border); border-radius: 10px; overflow-wrap: anywhere; }
+.site-import-error { color: var(--red, #d54949); margin: 0; }
+.site-account-row code { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
