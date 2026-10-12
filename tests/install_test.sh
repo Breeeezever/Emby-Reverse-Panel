@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2317,SC2329
+# shellcheck disable=SC2317,SC2329,SC2030,SC2031
 # This file is a mock harness: the mock functions it defines are invoked
 # indirectly by the sourced install.sh, which ShellCheck cannot statically
 # trace, so every mock body would otherwise look unreachable.
+# Fixture paths intentionally change only inside isolated subshells; the
+# following tests must continue using their original parent-scope paths.
 
 set -euo pipefail
 
