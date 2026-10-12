@@ -1,6 +1,7 @@
 // Sites management page
 let siteSortingCleanup = null;
 let sitesLoadGeneration = 0;
+let siteToolMenuCleanup = null;
 function renderSites() {
   const page = document.getElementById('page-sites');
   if (!page) return;
@@ -38,6 +39,7 @@ function renderSites() {
       <div class="sites-grid" id="sites-grid"></div>
     `;
 
+    bindSiteToolMenus(page);
     document.getElementById('btn-add-site').onclick = () => showSiteModal();
     document.getElementById('btn-test-all-sites').onclick = testAllSitesLatency;
     document.getElementById('sites-search').addEventListener('input', event => filterSiteCards(event.target.value));
@@ -56,6 +58,50 @@ function renderSites() {
     document.getElementById('site-import-file').addEventListener('change', importSiteDataFile);
   }
   loadSites();
+}
+
+function bindSiteToolMenus(page) {
+  siteToolMenuCleanup?.();
+  const controller = new AbortController();
+  const options = { signal: controller.signal };
+  const menus = [...page.querySelectorAll('.sites-tool-menu')];
+  let pinned = null;
+  const setOpen = (menu, open) => {
+    menu.open = open;
+    menu.querySelector('summary').setAttribute('aria-expanded', String(open));
+  };
+  const closeAll = () => { pinned = null; menus.forEach(menu => setOpen(menu, false)); };
+  menus.forEach(menu => {
+    const summary = menu.querySelector('summary');
+    setOpen(menu, false);
+    menu.addEventListener('pointerenter', event => {
+      if (event.pointerType !== 'mouse' || (pinned && pinned !== menu)) return;
+      menus.forEach(other => { if (other !== menu) setOpen(other, false); });
+      setOpen(menu, true);
+    }, options);
+    menu.addEventListener('pointerleave', event => {
+      if (event.pointerType === 'mouse' && pinned !== menu) setOpen(menu, false);
+    }, options);
+    summary.addEventListener('click', event => {
+      event.preventDefault();
+      const alreadyPinned = pinned === menu;
+      closeAll();
+      if (!alreadyPinned) { pinned = menu; setOpen(menu, true); }
+    }, options);
+    menu.addEventListener('click', event => {
+      if (event.target.closest('button[data-site-import-format], button[data-site-export-format]')) closeAll();
+    }, options);
+    menu.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.stopPropagation(); closeAll(); summary.focus(); }
+    }, options);
+    menu.addEventListener('focusout', event => {
+      if (pinned !== menu && !menu.contains(event.relatedTarget) && !menu.matches(':hover')) setOpen(menu, false);
+    }, options);
+  });
+  document.addEventListener('pointerdown', event => {
+    if (!menus.some(menu => menu.contains(event.target))) closeAll();
+  }, options);
+  siteToolMenuCleanup = () => { closeAll(); controller.abort(); };
 }
 
 async function loadSites() {
@@ -1562,6 +1608,7 @@ async function showSiteModal(site) {
   `;
 
   document.getElementById('modal-footer').innerHTML = `
+    <div class="site-account-save-notice" id="m-account-save-notice" role="status" aria-live="polite" hidden>账号有未保存的修改，请先保存账号或放弃修改。<button type="button" class="btn-ghost" id="m-account-review">查看账号</button></div>
     <button class="btn-modal secondary" id="m-cancel">取消</button>
     <button class="btn-modal primary" id="m-submit">${isEdit ? '保存' : '创建'}</button>
   `;
@@ -1630,17 +1677,51 @@ async function showSiteModal(site) {
   const accountCount = document.getElementById('m-account-count');
   const accountFormIDs = ['m-account-id', 'm-account-name', 'm-account-username', 'm-account-password', 'm-account-security', 'm-account-expires', 'm-account-reminder', 'm-account-note'];
   let accountFormOriginal = null;
+  let saving = false;
+  let accountSaving = false;
+  const accountFingerprint = () => JSON.stringify(accountFormIDs.map(id => {
+    const input = document.getElementById(id);
+    const value = input?.value || '';
+    return [id === 'm-account-password' || id === 'm-account-security' ? value : value.trim(), !!input?.validity?.badInput];
+  }));
+  let accountBaseline = accountFingerprint();
+  const accountFormDirty = () => accountFingerprint() !== accountBaseline;
+  function reviewPendingAccount() {
+    document.getElementById('site-tab-basic')?.click();
+    document.getElementById('m-account-options').open = true;
+    document.getElementById('m-account-save').scrollIntoView({ block: 'center', behavior: 'smooth' });
+    document.getElementById('m-account-save').focus({ preventScroll: true });
+  }
+  function refreshAccountSaveState() {
+    const pending = isEdit && accountFormDirty();
+    const button = document.getElementById('m-submit');
+    if (button) {
+      button.disabled = saving || accountSaving || pending;
+      button.title = pending ? '请先保存账号，或放弃账号修改' : '';
+    }
+    document.getElementById('m-account-save-notice').hidden = !pending;
+    document.getElementById('m-account-reset').textContent = pending ? '放弃修改' : '清空';
+  }
+  accountFormIDs.forEach(id => {
+    document.getElementById(id).addEventListener('input', refreshAccountSaveState);
+    document.getElementById(id).addEventListener('change', refreshAccountSaveState);
+  });
+  document.getElementById('m-account-review').onclick = reviewPendingAccount;
   function fillModalAccountForm(account) {
     accountFormOriginal = { ...account };
     const values = [account.id || '', account.account_name || '', account.username || '', account.password || '', account.security_password || '', String(account.expires_at || '').slice(0, 10), account.reminder_days ?? '', account.note || ''];
     accountFormIDs.forEach((id, index) => { document.getElementById(id).value = values[index]; });
     document.getElementById('m-account-save').textContent = isEdit ? '保存账号' : '确认账号信息';
+    accountBaseline = accountFingerprint();
+    refreshAccountSaveState();
   }
   function resetModalAccountForm() {
     accountFormOriginal = null;
     accountFormIDs.forEach(id => { const input = document.getElementById(id); if (input) input.value = ''; });
     const save = document.getElementById('m-account-save');
     if (save) save.textContent = '添加账号';
+    accountBaseline = accountFingerprint();
+    refreshAccountSaveState();
   }
   function renderModalAccounts() {
     if (!accountList) return;
@@ -1657,6 +1738,7 @@ async function showSiteModal(site) {
       button.onclick = () => {
         const account = modalAccounts.find(row => String(row.id || '') === String(button.dataset.modalAccountEdit));
         if (!account) return;
+        if (isEdit && accountFormDirty() && !confirm('当前账号有未保存的修改，放弃后切换账号？')) return;
         fillModalAccountForm(account);
       };
     });
@@ -1678,6 +1760,7 @@ async function showSiteModal(site) {
     });
   }
   async function saveModalAccount(showNotice = true) {
+    if (accountSaving || !validateFields(document.getElementById('m-account-options'))) return false;
     const id = Number(document.getElementById('m-account-id')?.value || 0);
     const data = {
       account_name: document.getElementById('m-account-name')?.value.trim() || '',
@@ -1698,9 +1781,14 @@ async function showSiteModal(site) {
     const original = accountFormOriginal || modalAccounts.find(row => Number(row.id) === id);
     if (original && data.expires_at === String(original.expires_at || '').slice(0, 10)) data.expires_at = original.expires_at;
     if (!data.account_name && !data.username) { Toast.error('请填写账号名称或用户名'); return false; }
+    accountSaving = true;
+    const locked = [...accountFormIDs, 'm-account-save', 'm-account-reset'].map(id => document.getElementById(id));
+    locked.forEach(input => { input.disabled = true; });
+    refreshAccountSaveState();
     try {
       if (isEdit) {
         const saved = id ? await API.updateSiteAccount(site.id, id, data) : await API.createSiteAccount(site.id, data);
+        if (document.getElementById('m-account-save') !== locked[accountFormIDs.length]) return true;
         const index = modalAccounts.findIndex(row => Number(row.id) === id);
         if (index >= 0) modalAccounts[index] = saved;
         else modalAccounts.push(saved);
@@ -1716,6 +1804,11 @@ async function showSiteModal(site) {
       if (showNotice) Toast.success(isEdit ? '账号已保存' : '账号信息已确认，创建站点后生效');
       return true;
     } catch (error) { Toast.error(error.message || '保存账号失败'); return false; }
+    finally {
+      accountSaving = false;
+      locked.forEach(input => { input.disabled = false; });
+      if (document.getElementById('m-account-save') === locked[accountFormIDs.length]) refreshAccountSaveState();
+    }
   }
   document.getElementById('m-account-save')?.addEventListener('click', () => saveModalAccount());
   document.getElementById('m-account-reset')?.addEventListener('click', resetModalAccountForm);
@@ -2083,10 +2176,12 @@ async function showSiteModal(site) {
   const modalBody = document.getElementById('modal-body');
   bindFieldValidation(modalBody);
   const submitButton = document.getElementById('m-submit');
-  let saving = false;
+  refreshAccountSaveState();
   submitButton.onclick = async () => {
+    if (accountSaving || saving) return;
+    if (isEdit && accountFormDirty()) { refreshAccountSaveState(); reviewPendingAccount(); return; }
     syncPrimaryAddress();
-    if (saving || !validateFields(modalBody)) return;
+    if (!validateFields(modalBody)) return;
     const uaMode = uaSelect.value;
     const customUAPayload = buildCustomUAPayload(
       uaMode,
@@ -2242,7 +2337,7 @@ async function showSiteModal(site) {
       Toast.error(e.message);
     } finally {
       saving = false;
-      submitButton.disabled = false;
+      if (document.getElementById('m-submit') === submitButton) refreshAccountSaveState();
       submitButton.textContent = isEdit ? '保存' : '创建';
       submitButton.removeAttribute('aria-busy');
     }

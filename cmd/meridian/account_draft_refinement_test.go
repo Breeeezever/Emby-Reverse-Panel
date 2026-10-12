@@ -141,6 +141,23 @@ func TestSiteMessagePrefersServerLinesAndIgnoresBoldFieldLabels(t *testing.T) {
 	}
 }
 
+func TestSiteMessageNameAndDomainPathAreIndependent(t *testing.T) {
+	for _, tc := range []struct{ message, name, path string }{
+		{"名称：原神\nhttps://yuanshen.help", "原神", "yuanshen"},
+		{"站点名称：电影站\nhttps://emby.example.co.uk:8443/emby", "电影站", "example"},
+		{"## 云影院\n用户名：demo\nhttps://media.example.com", "云影院", "example"},
+		{"**雨初**\n用户名：demo\nhttps://video.yuchu.net", "雨初", "yuchu"},
+		{"https://yuanshen.help", "yuanshen.help", "yuanshen"},
+		{"名称：内网站点\nhttp://127.0.0.1:8096", "内网站点", "site"},
+		{"名称：Local\nhttp://localhost:8096", "Local", "localhost"},
+	} {
+		record, err := parseSiteMessageRecord(tc.message)
+		if err != nil || record.Name != tc.name || record.PathPrefix != tc.path {
+			t.Errorf("parse %q: name=%q path=%q err=%v", tc.message, record.Name, record.PathPrefix, err)
+		}
+	}
+}
+
 func TestClientExportGroupsAccountsAndLabelsLines(t *testing.T) {
 	b, _ := newTestTelegramBot(t)
 	site := accountWorkflowSite(t, b.app, "light")

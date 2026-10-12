@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 const siteAccountCipherPrefix = "v1:"
@@ -569,6 +572,23 @@ func importSlug(value string) string {
 	return value[:minInt(len(value), 24)]
 }
 
+// Prefer the registrable domain label, so subdomains and compound public
+// suffixes do not leak into automatically suggested path prefixes.
+func launchPathPrefix(target, fallback string) string {
+	u, err := url.Parse(target)
+	if err != nil {
+		return importSlug(fallback)
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "" || net.ParseIP(host) != nil {
+		return importSlug(fallback)
+	}
+	if domain, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
+		return importSlug(strings.SplitN(domain, ".", 2)[0])
+	}
+	return importSlug(strings.SplitN(host, ".", 2)[0])
+}
+
 // Field labels must begin a line (after bullets/emoji/Markdown), so generic
 // “密码” never accidentally matches the tail of “安全密码”.
 func launchField(text string, labels ...string) string {
@@ -719,7 +739,7 @@ func parseSiteMessageRecord(text string) (siteImportRecord, error) {
 			name = u.Hostname()
 		}
 	}
-	record := siteImportRecord{PlaybackMode: "direct", MainVideoStreamMode: "proxy", DynamicDiscoveryEnabled: true, DynamicProfile: "compatible", Name: name, TargetURL: strings.TrimRight(urls[0], "，。)】"), IngressMode: ingressModePath, PathPrefix: importSlug(name), FailoverTargets: append([]string(nil), urls[1:]...), Accounts: []SiteAccountInput{account}}
+	record := siteImportRecord{PlaybackMode: "direct", MainVideoStreamMode: "proxy", DynamicDiscoveryEnabled: true, DynamicProfile: "compatible", Name: name, TargetURL: strings.TrimRight(urls[0], "，。)】"), IngressMode: ingressModePath, PathPrefix: launchPathPrefix(urls[0], name), FailoverTargets: append([]string(nil), urls[1:]...), Accounts: []SiteAccountInput{account}}
 	if account.AccountName == "" && account.Username == "" {
 		record.Accounts = nil
 	}
