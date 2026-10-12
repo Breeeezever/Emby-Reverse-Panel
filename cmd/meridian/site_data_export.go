@@ -83,55 +83,84 @@ func (a *App) exportSiteData(format, mode string, siteID int64, opts siteExportO
 		writer.Flush()
 		return buffer.Bytes(), "meridian-sites.csv", "text/csv; charset=utf-8", writer.Error()
 	}
-	for _, record := range records {
-		fmt.Fprintf(&buffer, "## %s\n", record.Name)
-		accounts := record.Accounts
-		if len(accounts) == 0 {
-			accounts = []SiteAccountInput{{}}
+	fmt.Fprintf(&buffer, "Meridian · 站点与账号备忘录\n共 %d 个站点\n", len(records))
+	if opts.IncludeAccounts && !opts.IncludePasswords {
+		buffer.WriteString("密码：本次未导出\n")
+	}
+	if !opts.IncludeAccounts {
+		buffer.WriteString("内容：仅站点与线路\n")
+	}
+	for index, record := range records {
+		fmt.Fprintf(&buffer, "\n━━━━━━━━━━━━━━━━━━━━\n%d. %s\n━━━━━━━━━━━━━━━━━━━━\n", index+1, record.Name)
+		if opts.IncludeAccounts {
+			if len(record.Accounts) == 0 {
+				buffer.WriteString("\n🧾 尚未保存账号信息\n")
+			}
+			for i, account := range record.Accounts {
+				fmt.Fprintf(&buffer, "\n🧾 账号 %d · %s\n", i+1, account.AccountName)
+				buffer.WriteString(renderAccountMemoText(account, opts))
+			}
 		}
 		site := Site{ID: record.ID, Name: record.Name, TargetURL: record.TargetURL, FailoverTargetList: record.FailoverTargets, IngressMode: record.IngressMode, PathPrefix: record.PathPrefix, PublicHost: record.PublicHost, ListenPort: record.ListenPort}
-		for _, account := range accounts {
-			buffer.WriteString(a.renderAccountClientText(site, account, mode, opts))
-			buffer.WriteByte('\n')
-		}
+		buffer.WriteString(a.renderAccountLines(site, mode))
 	}
+
 	return buffer.Bytes(), "meridian-sites.txt", "text/plain; charset=utf-8", nil
 }
 
-func (a *App) renderAccountClientText(site Site, account SiteAccountInput, mode string, opts siteExportOptions) string {
+func renderAccountMemoText(account SiteAccountInput, opts siteExportOptions) string {
 	var out strings.Builder
 	if opts.IncludeAccounts && (account.AccountName != "" || account.Username != "") {
-		fmt.Fprintf(&out, "· 用户名称 | `%s`\n", account.Username)
+		fmt.Fprintf(&out, "用户名：%s\n", account.Username)
 		if opts.IncludePasswords {
-			fmt.Fprintf(&out, "· 用户密码 | `%s`\n", account.Password)
+			value := account.Password
+			if value == "" {
+				value = "未填写"
+			}
+			fmt.Fprintf(&out, "登录密码：%s\n", value)
 			if account.SecurityPassword != "" {
-				fmt.Fprintf(&out, "· 安全密码 | `%s`\n", account.SecurityPassword)
+				fmt.Fprintf(&out, "安全密码：%s\n", account.SecurityPassword)
 			}
 		}
 		if account.ExpiresAt != "" {
-			fmt.Fprintf(&out, "· 到期时间 | `%s`\n", account.ExpiresAt)
+			fmt.Fprintf(&out, "到期时间：%s\n", account.ExpiresAt)
+		} else {
+			out.WriteString("到期时间：未设置\n")
 		}
+		fmt.Fprintf(&out, "提醒：%s\n", telegramReminderLabel(account))
 		if account.Note != "" {
-			fmt.Fprintf(&out, "· 备注 | %s\n", account.Note)
-		}
-	}
-	out.WriteString("\n· 当前线路：\n")
-	seen := map[string]bool{}
-	lines := []string{}
-	if mode == "original" || mode == "multi" {
-		lines = append(lines, site.TargetURL)
-		lines = append(lines, site.FailoverTargetList...)
-	}
-	if mode == "proxy" || mode == "multi" {
-		lines = append(lines, a.siteProxyLines(site)...)
-	}
-	for _, line := range lines {
-		if line != "" && !seen[line] {
-			seen[line] = true
-			fmt.Fprintln(&out, line)
+			fmt.Fprintf(&out, "备注：%s\n", account.Note)
 		}
 	}
 	return out.String()
+}
+
+func (a *App) renderAccountLines(site Site, mode string) string {
+	var out strings.Builder
+	seen := map[string]bool{}
+	writeLine := func(label, line string) {
+		if line == "" || seen[line] {
+			return
+		}
+		seen[line] = true
+		fmt.Fprintf(&out, "\n%s\n%s\n", label, line)
+	}
+	if mode == "original" || mode == "multi" {
+		writeLine("🌐 原线路", site.TargetURL)
+		for i, line := range site.FailoverTargetList {
+			writeLine(fmt.Sprintf("↪ 备用线路 %d", i+1), line)
+		}
+	}
+	if mode == "proxy" || mode == "multi" {
+		for _, line := range a.siteProxyLines(site) {
+			writeLine("🔗 Meridian 反代线路", line)
+		}
+	}
+	return out.String()
+}
+
+func (a *App) renderAccountClientText(site Site, account SiteAccountInput, mode string, opts siteExportOptions) string {
+	return renderAccountMemoText(account, opts) + a.renderAccountLines(site, mode)
 }
 
 func (a *App) handleSiteDataExport(w http.ResponseWriter, r *http.Request) {

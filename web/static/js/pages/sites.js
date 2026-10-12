@@ -1436,7 +1436,7 @@ async function showSiteModal(site) {
 	          <label>提前提醒（天）<input type="number" class="form-input" id="m-account-reminder" min="0" max="3650" step="1" placeholder="留空关闭，0 为到期时"></label>
 	          <label>备注<input type="text" class="form-input" id="m-account-note" maxlength="2000"></label>
 	        </div>
-	        <div class="site-inline-actions"><button type="button" class="btn-ghost" id="m-account-save">添加账号</button><button type="button" class="btn-ghost" id="m-account-reset">清空</button><span class="form-help">保存后可直接查看、复制密码。提前提醒通过 TG Bot 向管理员发送，每次到期只提醒一次。</span></div>
+	        <div class="site-inline-actions"><button type="button" class="btn-ghost" id="m-account-save">添加账号</button><button type="button" class="btn-ghost" id="m-account-reset">清空</button><span class="form-help" id="m-account-hint">提前提醒通过 TG Bot 向管理员发送，每次到期只提醒一次。${isEdit ? '修改后请保存账号。' : '账号随站点一起保存；解析只填入表单，可以先修改提醒。'}</span></div>
 	      </div>
 	    </div>
 	  </details>
@@ -1629,7 +1629,15 @@ async function showSiteModal(site) {
   const accountList = document.getElementById('m-account-list');
   const accountCount = document.getElementById('m-account-count');
   const accountFormIDs = ['m-account-id', 'm-account-name', 'm-account-username', 'm-account-password', 'm-account-security', 'm-account-expires', 'm-account-reminder', 'm-account-note'];
+  let accountFormOriginal = null;
+  function fillModalAccountForm(account) {
+    accountFormOriginal = { ...account };
+    const values = [account.id || '', account.account_name || '', account.username || '', account.password || '', account.security_password || '', String(account.expires_at || '').slice(0, 10), account.reminder_days ?? '', account.note || ''];
+    accountFormIDs.forEach((id, index) => { document.getElementById(id).value = values[index]; });
+    document.getElementById('m-account-save').textContent = isEdit ? '保存账号' : '确认账号信息';
+  }
   function resetModalAccountForm() {
+    accountFormOriginal = null;
     accountFormIDs.forEach(id => { const input = document.getElementById(id); if (input) input.value = ''; });
     const save = document.getElementById('m-account-save');
     if (save) save.textContent = '添加账号';
@@ -1642,22 +1650,14 @@ async function showSiteModal(site) {
       return;
     }
     accountList.innerHTML = modalAccounts.map(account => `<div class="site-account-row">
-      <div><strong>${esc(account.account_name || account.username || '未命名账号')}</strong><span>${esc(account.username || account.account_name || '')}</span></div>
+      <div><strong>${esc(account.account_name || account.username || '未命名账号')}${!isEdit ? ' · 待保存' : ''}</strong><span>${esc(account.username || account.account_name || '')}</span></div>
       <div class="site-account-row-meta"><span>登录密码：<code>${esc(account.password || '未填写')}</code> · 安全密码：<code>${esc(account.security_password || '未填写')}</code>${account.expires_at ? ` · 到期：${esc(account.expires_at)}` : ''}${account.reminder_days != null ? ` · 提前 ${esc(String(account.reminder_days))} 天提醒` : ''}</span><div class="site-account-row-actions"><button type="button" class="icon-button" data-modal-account-edit="${account.id || ''}" title="编辑账号">编辑</button><button type="button" class="icon-button danger" data-modal-account-delete="${account.id || ''}" title="删除账号">删除</button></div></div>
     </div>`).join('');
     accountList.querySelectorAll('[data-modal-account-edit]').forEach(button => {
       button.onclick = () => {
         const account = modalAccounts.find(row => String(row.id || '') === String(button.dataset.modalAccountEdit));
         if (!account) return;
-        document.getElementById('m-account-id').value = account.id || '';
-        document.getElementById('m-account-name').value = account.account_name || '';
-        document.getElementById('m-account-username').value = account.username || '';
-        document.getElementById('m-account-password').value = account.password || '';
-        document.getElementById('m-account-security').value = account.security_password || '';
-        document.getElementById('m-account-expires').value = String(account.expires_at || '').slice(0, 10);
-        document.getElementById('m-account-reminder').value = account.reminder_days ?? '';
-        document.getElementById('m-account-note').value = account.note || '';
-        document.getElementById('m-account-save').textContent = '保存账号';
+        fillModalAccountForm(account);
       };
     });
     accountList.querySelectorAll('[data-modal-account-delete]').forEach(button => {
@@ -1677,7 +1677,7 @@ async function showSiteModal(site) {
       };
     });
   }
-  document.getElementById('m-account-save')?.addEventListener('click', async () => {
+  async function saveModalAccount(showNotice = true) {
     const id = Number(document.getElementById('m-account-id')?.value || 0);
     const data = {
       account_name: document.getElementById('m-account-name')?.value.trim() || '',
@@ -1688,16 +1688,16 @@ async function showSiteModal(site) {
       note: document.getElementById('m-account-note')?.value.trim() || '',
     };
     const reminder = document.getElementById('m-account-reminder')?.value.trim() || '';
-    if (reminder && (!/^\d+$/.test(reminder) || Number(reminder) > 3650)) { Toast.error('提前提醒天数应为 0–3650'); return; }
+    if (reminder && (!/^\d+$/.test(reminder) || Number(reminder) > 3650)) { Toast.error('提前提醒天数应为 0–3650'); return false; }
     data.reminder_days = reminder === '' ? null : Number(reminder);
     data.clear_reminder = reminder === '';
     data.clear_password = data.password === '';
     data.clear_security_password = data.security_password === '';
     data.clear_expires_at = data.expires_at === '';
     data.clear_note = data.note === '';
-    const original = modalAccounts.find(row => Number(row.id) === id);
+    const original = accountFormOriginal || modalAccounts.find(row => Number(row.id) === id);
     if (original && data.expires_at === String(original.expires_at || '').slice(0, 10)) data.expires_at = original.expires_at;
-    if (!data.account_name && !data.username) { Toast.error('请填写账号名称或用户名'); return; }
+    if (!data.account_name && !data.username) { Toast.error('请填写账号名称或用户名'); return false; }
     try {
       if (isEdit) {
         const saved = id ? await API.updateSiteAccount(site.id, id, data) : await API.createSiteAccount(site.id, data);
@@ -1713,9 +1713,11 @@ async function showSiteModal(site) {
       resetModalAccountForm();
       renderModalAccounts();
       loadSiteAccountReminders();
-      Toast.success('账号已保存');
-    } catch (error) { Toast.error(error.message || '保存账号失败'); }
-  });
+      if (showNotice) Toast.success(isEdit ? '账号已保存' : '账号信息已确认，创建站点后生效');
+      return true;
+    } catch (error) { Toast.error(error.message || '保存账号失败'); return false; }
+  }
+  document.getElementById('m-account-save')?.addEventListener('click', () => saveModalAccount());
   document.getElementById('m-account-reset')?.addEventListener('click', resetModalAccountForm);
   renderModalAccounts();
 	const failoverLinesContainer = document.getElementById('m-failover-lines');
@@ -1846,8 +1848,13 @@ async function showSiteModal(site) {
 	    const result = document.getElementById('m-launch-result');
 	    const text = document.getElementById('m-launch-message')?.value.trim() || '';
 	    if (!text) { Toast.error('请先粘贴开号信息'); return; }
+      const parseButton = document.getElementById('m-launch-parse');
+      const activeForm = document.getElementById('m-submit');
+      if (parseButton.disabled) return;
+      parseButton.disabled = true;
 	    try {
 	      const parsed = await API.parseSiteMessage(text);
+      if (document.getElementById('m-submit') !== activeForm) return;
 	      document.getElementById('m-name').value = parsed.name || '';
 	      const target = splitUpstreamTargetAddress(parsed.target_url || '', 'http');
 	      primarySchemeInput.value = target.scheme;
@@ -1858,14 +1865,18 @@ async function showSiteModal(site) {
 	      ingressSelect.value = parsed.ingress_mode || 'path';
 	      pathPrefixInput.value = String(parsed.path_prefix || '').replace(/^\//, '');
 	      updateIngressFields();
-	      modalAccounts = (Array.isArray(parsed.accounts) ? parsed.accounts : []).map(account => ({ ...account, id: nextDraftAccountID--, password_configured: !!account.password, security_password_configured: !!account.security_password }));
-	      renderModalAccounts();
-	      result.textContent = `已填充 ${parsed.name || '站点'}，请检查配置后创建`;
+      // Recognition fills the editable form; only an explicit save stages the account.
+      resetModalAccountForm();
+      const recognized = Array.isArray(parsed.accounts) ? parsed.accounts[0] : null;
+      if (recognized) {
+        const existing = modalAccounts.find(account => account.username === recognized.username);
+        fillModalAccountForm({ ...recognized, id: existing?.id });
+      }
+      result.textContent = recognized ? '已识别，尚未保存。请在下方核对账号、到期时间和提前提醒，再创建站点。' : '已识别站点线路，未找到账号信息。请检查后创建。';
 	      document.getElementById('m-account-options')?.setAttribute('open', '');
 	    } catch (error) {
 	      result.textContent = error.message || '解析失败';
-
-	    }
+	    } finally { parseButton.disabled = false; }
 	  });
 	}
 
@@ -2195,6 +2206,11 @@ async function showSiteModal(site) {
 			}
 		}
 
+    // Creating the site is an explicit save: include the currently edited account,
+    // including reminder changes, even when the user skips the separate account button.
+    if (!isEdit && accountFormIDs.slice(1).some(id => document.getElementById(id).value !== '')) {
+      if (!(await saveModalAccount(false))) return;
+    }
     saving = true;
     submitButton.disabled = true;
     submitButton.textContent = isEdit ? '保存中…' : '创建中…';

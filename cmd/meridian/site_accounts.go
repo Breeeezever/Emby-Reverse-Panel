@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const siteAccountCipherPrefix = "v1:"
@@ -568,43 +569,121 @@ func importSlug(value string) string {
 	return value[:minInt(len(value), 24)]
 }
 
-var launchMessageField = regexp.MustCompile(`(?mi)(?:用户名称|账号名称|用户名)\s*[|：:]\s*` + "`?" + `([^` + "`" + `\r\n]+)` + "`?")
-var launchPasswordField = regexp.MustCompile(`(?mi)用户密码\s*[|：:]\s*` + "`?" + `([^` + "`" + `\r\n]+)` + "`?")
-var launchSecurityField = regexp.MustCompile(`(?mi)(?:安全密码|二次密码)\s*[|：:]\s*` + "`?" + `([^` + "`" + `\r\n]+)` + "`?")
-var launchExpiryField = regexp.MustCompile(`(?mi)到期时间\s*[|：:]\s*` + "`?" + `([^` + "`" + `\r\n]+)` + "`?")
+// Field labels must begin a line (after bullets/emoji/Markdown), so generic
+// “密码” never accidentally matches the tail of “安全密码”.
+func launchField(text string, labels ...string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimLeftFunc(line, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+		for _, label := range labels {
+			if len(line) < len(label) || !strings.EqualFold(line[:len(label)], label) {
+				continue
+			}
+			rest := strings.TrimLeft(line[len(label):], " *_\t")
+			if rest == "" || !strings.ContainsRune("|：:", []rune(rest)[0]) {
+				continue
+			}
+			rest = strings.TrimSpace(strings.TrimLeft(rest, "|：:"))
+			if strings.HasPrefix(rest, "`") {
+				if end := strings.Index(rest[1:], "`"); end >= 0 {
+					return rest[1 : 1+end]
+				}
+			}
+			return strings.TrimSpace(strings.TrimSuffix(rest, "\\"))
+		}
+	}
+	return ""
+}
+
 var launchURL = regexp.MustCompile(`https?://[A-Za-z0-9._~:/?#\[\]@!$&'*+,;=%-]+`)
 var launchBoldLine = regexp.MustCompile(`(?mi)^\s*\*\*([^*\r\n]+)\*\*`)
+
+func launchTitle(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		match := launchBoldLine.FindStringSubmatch(line)
+		if len(match) < 2 {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), strings.TrimSpace(match[0])))
+		if rest == "" || rest == "\\" || strings.HasPrefix(rest, "[http") || strings.HasPrefix(rest, "http") {
+			return strings.TrimSpace(match[1])
+		}
+	}
+	return ""
+}
+
+func launchServerURLs(text string) []string {
+	// Prefer explicitly named server lines over website/support links elsewhere
+	// in an announcement. Messages containing only bare links still work.
+	selected := []string{}
+	inLines := false
+	for _, line := range strings.Split(text, "\n") {
+		label := strings.TrimLeftFunc(line, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+		heading := false
+		for _, prefix := range []string{"当前线路", "服务器地址", "服务器线路", "Emby地址", "主地址", "主线路", "原线路", "备用线路"} {
+			if strings.HasPrefix(label, prefix) {
+				heading = true
+				break
+			}
+		}
+		if heading {
+			inLines = true
+		}
+		if !inLines {
+			continue
+		}
+		urls := launchURL.FindAllString(line, -1)
+		if !heading && len(urls) > 0 && !strings.HasPrefix(label, "http://") && !strings.HasPrefix(label, "https://") {
+			inLines = false
+			continue
+		}
+		if len(urls) > 0 {
+			selected = append(selected, urls...)
+			continue
+		}
+		if !heading && strings.Trim(line, " \t\r\\") != "" {
+			inLines = false
+		}
+	}
+	if len(selected) > 0 {
+		return selected
+	}
+	return launchURL.FindAllString(text, -1)
+}
 
 func parseSiteMessageRecord(text string) (siteImportRecord, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return siteImportRecord{}, errors.New("请粘贴开服消息")
 	}
-	urls := launchURL.FindAllString(text, -1)
+	urls := launchServerURLs(text)
 	if len(urls) == 0 {
 		return siteImportRecord{}, errors.New("没有找到有效的回源地址")
 	}
 	name := "导入站点"
-	if m := launchBoldLine.FindStringSubmatch(text); len(m) > 1 {
-		name = strings.TrimSpace(m[1])
+	title := launchTitle(text)
+	if title != "" {
+		name = title
 	}
-	account := SiteAccountInput{}
-	if m := launchMessageField.FindStringSubmatch(text); len(m) > 1 {
-		account.AccountName = strings.TrimSpace(m[1])
-		account.Username = account.AccountName
-	}
-	if m := launchPasswordField.FindStringSubmatch(text); len(m) > 1 {
-		account.Password = strings.TrimSpace(m[1])
-	}
-	if m := launchSecurityField.FindStringSubmatch(text); len(m) > 1 {
-		account.SecurityPassword = strings.TrimSpace(m[1])
-	}
-	if m := launchExpiryField.FindStringSubmatch(text); len(m) > 1 {
-		account.ExpiresAt = strings.TrimSpace(m[1])
+	account := SiteAccountInput{
+		AccountName:      launchField(text, "账号名称", "账户名称"),
+		Username:         launchField(text, "用户名称", "用户名", "账号", "帐号", "账户", "username", "user"),
+		Password:         launchField(text, "用户密码", "登录密码", "密码", "password", "pass"),
+		SecurityPassword: launchField(text, "安全密码", "二次密码"),
+		ExpiresAt:        launchField(text, "到期时间", "到期日期", "有效期至", "expires"),
+		Note:             launchField(text, "备注"),
 	}
 	if account.AccountName == "" {
-		if m := launchBoldLine.FindStringSubmatch(text); len(m) > 1 {
-			words := strings.Fields(strings.ReplaceAll(m[1], "&#x20;", " "))
+		account.AccountName = account.Username
+	}
+	if account.Username == "" {
+		account.Username = account.AccountName
+	}
+	if account.ExpiresAt == "永久" || account.ExpiresAt == "永不过期" || account.ExpiresAt == "无" {
+		account.ExpiresAt = ""
+	}
+	if account.AccountName == "" {
+		if title != "" {
+			words := strings.Fields(strings.ReplaceAll(title, "&#x20;", " "))
 			if len(words) >= 3 {
 				name, account.AccountName, account.Username, account.Password = words[0], words[1], words[1], words[2]
 			} else if len(words) == 2 {
@@ -630,12 +709,17 @@ func parseSiteMessageRecord(text string) (siteImportRecord, error) {
 	if len(urls) == 0 {
 		return siteImportRecord{}, errors.New("没有找到有效的回源地址")
 	}
+	if explicit := launchField(text, "站点名称", "服务器名称", "站点", "名称"); explicit != "" {
+		name = explicit
+	} else if heading := regexp.MustCompile(`(?m)^#{1,6}\s+([^\r\n]+)`).FindStringSubmatch(text); len(heading) > 1 {
+		name = strings.TrimSpace(heading[1])
+	}
 	if name == "导入站点" {
 		if u, err := url.Parse(urls[0]); err == nil {
 			name = u.Hostname()
 		}
 	}
-	record := siteImportRecord{Name: name, TargetURL: strings.TrimRight(urls[0], "，。)】"), IngressMode: ingressModePath, PathPrefix: importSlug(name), FailoverTargets: append([]string(nil), urls[1:]...), Accounts: []SiteAccountInput{account}}
+	record := siteImportRecord{PlaybackMode: "direct", MainVideoStreamMode: "proxy", DynamicDiscoveryEnabled: true, DynamicProfile: "compatible", Name: name, TargetURL: strings.TrimRight(urls[0], "，。)】"), IngressMode: ingressModePath, PathPrefix: importSlug(name), FailoverTargets: append([]string(nil), urls[1:]...), Accounts: []SiteAccountInput{account}}
 	if account.AccountName == "" && account.Username == "" {
 		record.Accounts = nil
 	}
@@ -643,6 +727,7 @@ func parseSiteMessageRecord(text string) (siteImportRecord, error) {
 }
 
 func (a *App) handleSiteMessageParse(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
 		a.jsonErr(w, 405, "method not allowed")
 		return

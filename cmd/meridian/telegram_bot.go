@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"path"
 	"slices"
@@ -262,7 +261,7 @@ func (b *telegramBot) handleUpdate(ctx context.Context, u telegramUpdate) error 
 			if errors.As(err, &deliveryErr) {
 				return err
 			}
-			return b.send(ctx, chat.ID, "操作未完成："+err.Error(), telegramBackKeyboard())
+			return b.inputError(ctx, chat.ID, err)
 		}
 		return nil
 	}
@@ -283,17 +282,17 @@ func (b *telegramBot) handleUpdate(ctx context.Context, u telegramUpdate) error 
 		return nil
 	}
 	if len(text) > 4096 {
-		return b.send(ctx, chat.ID, "内容过长，请缩短后重试。", nil)
+		return b.send(ctx, chat.ID, "💬 这段内容有点长，缩短一下再发我吧。", nil)
 	}
 	if text == "" {
-		return b.send(ctx, chat.ID, "请发送文字或点击菜单按钮。", nil)
+		return b.send(ctx, chat.ID, "💬 发我文字，或者点下面的菜单按钮吧。", nil)
 	}
 	if err = b.handleText(ctx, from.ID, text); err != nil {
 		var deliveryErr *telegramPanelError
 		if errors.As(err, &deliveryErr) {
 			return err
 		}
-		return b.send(ctx, chat.ID, fmt.Sprintf("操作未完成：%s", err), telegramBackKeyboard())
+		return b.inputError(ctx, chat.ID, err)
 	}
 	return nil
 }

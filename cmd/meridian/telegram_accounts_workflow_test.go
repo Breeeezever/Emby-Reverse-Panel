@@ -15,9 +15,10 @@ func TestTelegramLaunchDraftCanEditNameIngressAndPath(t *testing.T) {
 	message := "✅ 账户 demo 成功绑定\\\n\\\n· 用户名称 | `demo`\\\n· 用户密码 | `demo-password`\\\n· 安全密码 | `demo-security`（仅发送一次）\\\n· 到期时间 | `2030-11-09 22:08:59.342128`\\\n\\\n· 当前线路：\\\n[https://primary.example:443](https://primary.example:443)\\\n[https://backup.example:443](https://backup.example:443)\\\n请不要泄露服务器地址哦0.0\\\n\\\n· **在【服务器】按钮 - 查看线路和密码**"
 	tgText(t, b, message)
 	s := b.sessions[101]
-	if s == nil || s.Step != "confirm" || len(s.Accounts) != 1 || s.Accounts[0].Password != "demo-password" {
+	if s == nil || s.Step != "draft_account" || len(s.Accounts) != 1 || s.Accounts[0].Password != "demo-password" {
 		t.Fatalf("launch parse failed: %+v / %s", s, fake.lastText())
 	}
+	tgChoose(t, b, "done")
 	tgChoose(t, b, "draft_name")
 	tgText(t, b, "My imported server")
 	if b.sessions[101].Step != "confirm" || !strings.Contains(fake.lastText(), "My imported server") {

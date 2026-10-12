@@ -33,19 +33,13 @@ func (b *telegramBot) siteAccounts(ctx context.Context, chatID, siteID int64, pa
 		if err != nil {
 			return fmt.Errorf("账号信息读取失败")
 		}
-		reminders = append(reminders, fmt.Sprintf("\n账号：%s\n用户名：%s\n登录密码：%s\n安全密码：%s", plain.AccountName, plain.Username, plain.Password, plain.SecurityPassword))
-		if plain.Note != "" {
-			reminders = append(reminders, "备注："+plain.Note)
-		}
-		if plain.ReminderDays != nil {
-			reminders = append(reminders, fmt.Sprintf("提前提醒：%d 天（每次到期一次）", *plain.ReminderDays))
-		}
+		reminders = append(reminders, "\n"+telegramAccountMemo(plain))
 
 		label := account.AccountName
 		if label == "" {
 			label = account.Username
 		}
-		keys = append(keys, []telegramButton{telegramButtonFor("编辑 "+truncateTelegramText(label, 42), fmt.Sprintf("account:%d:%d:edit", siteID, account.ID)), telegramButtonFor("删除", fmt.Sprintf("account:%d:%d:delete", siteID, account.ID))})
+		keys = append(keys, []telegramButton{telegramButtonFor("✏️ 编辑 "+truncateTelegramText(label, 42), fmt.Sprintf("account:%d:%d:edit", siteID, account.ID)), telegramButtonFor("删除", fmt.Sprintf("account:%d:%d:delete", siteID, account.ID))})
 		if account.ExpiresAt != "" {
 			if expiry, expiryErr := parseSiteAccountExpiry(account.ExpiresAt); expiryErr == nil {
 				days := int(math.Ceil(expiry.Sub(time.Now()).Hours() / 24))
@@ -69,9 +63,11 @@ func (b *telegramBot) siteAccounts(ctx context.Context, chatID, siteID int64, pa
 	}
 	keys = append(keys, []telegramButton{telegramButtonFor("添加账号", fmt.Sprintf("account:%d:new", siteID)), telegramButtonFor("导出账号", fmt.Sprintf("account:%d:export", siteID))})
 	keys = append(keys, []telegramButton{telegramButtonFor("返回站点", fmt.Sprintf("site:%d:menu", siteID)), telegramButtonFor("主菜单", "home")})
-	message := fmt.Sprintf("%s · 账号管理\n当前账号：%d 个", site.Name, len(accounts))
+	message := fmt.Sprintf("🧾 %s · 账号备忘录\n共 %d 个账号", site.Name, len(accounts))
 	if len(reminders) > 0 {
 		message += "\n" + strings.Join(reminders, "\n")
+	} else {
+		message += "\n\n还没有保存账号，点下面添加一个吧。"
 	}
 	return b.send(ctx, chatID, message, keys)
 }
@@ -82,7 +78,7 @@ func (b *telegramBot) startAccountCreate(ctx context.Context, id, siteID int64) 
 	}
 	s := b.newSession(id, "account-create", nil)
 	s.SiteID = siteID
-	return b.prompt(ctx, id, s, "account_name", "请输入账号名称：")
+	return b.prompt(ctx, id, s, "account_name", "👤 先给账号起个名字吧，方便以后找到它。")
 }
 
 func (b *telegramBot) startAccountEdit(ctx context.Context, id, siteID, accountID int64) error {
@@ -91,7 +87,7 @@ func (b *telegramBot) startAccountEdit(ctx context.Context, id, siteID, accountI
 	}
 	s := b.newSession(id, "account-update", nil)
 	s.SiteID, s.AccountID = siteID, accountID
-	return b.prompt(ctx, id, s, "account_field", "请选择要修改的账号字段：", telegramButtonFor("账号名称", "name"), telegramButtonFor("用户名", "username"), telegramButtonFor("登录密码", "password"), telegramButtonFor("安全密码", "security"), telegramButtonFor("到期时间", "expires"), telegramButtonFor("提前提醒", "reminder"), telegramButtonFor("备注", "note"))
+	return b.prompt(ctx, id, s, "account_field", "🧾 这次想修改账号的哪一项？", telegramButtonFor("账号名称", "name"), telegramButtonFor("用户名", "username"), telegramButtonFor("登录密码", "password"), telegramButtonFor("安全密码", "security"), telegramButtonFor("到期时间", "expires"), telegramButtonFor("提前提醒", "reminder"), telegramButtonFor("备注", "note"))
 }
 
 func (b *telegramBot) startAccountDelete(ctx context.Context, id, siteID, accountID int64) error {
@@ -110,7 +106,7 @@ func (b *telegramBot) accountExportMenu(ctx context.Context, id, siteID int64) e
 	if siteID > 0 {
 		data = fmt.Sprintf("account:%d:export", siteID)
 	}
-	return b.send(ctx, id, "选择客户端线路格式：", telegramKeyboard{
+	return b.send(ctx, id, "🔗 想导出哪些线路？\n\n多线路：原线路和反代线路都保留。\n也可以只导出其中一种。", telegramKeyboard{
 		{telegramButtonFor("多线路", data+":multi")},
 		{telegramButtonFor("原线路", data+":original")},
 		{telegramButtonFor("反代线路", data+":proxy")},
@@ -120,9 +116,9 @@ func (b *telegramBot) accountExportMenu(ctx context.Context, id, siteID int64) e
 
 func (b *telegramBot) exportMenu(ctx context.Context, id int64) error {
 	delete(b.sessions, id)
-	return b.send(ctx, id, "选择导出格式：", telegramKeyboard{
+	return b.send(ctx, id, "📤 想把数据存成哪种文件？\n\nTXT：方便阅读和复制。\nCSV：适合表格整理。\nJSON：用于完整配置迁移。", telegramKeyboard{
 		{telegramButtonFor("JSON 配置", "export:json"), telegramButtonFor("CSV 表格", "export:csv")},
-		{telegramButtonFor("客户端格式", "export:client")},
+		{telegramButtonFor("TXT 账号备忘录", "export:client")},
 		{telegramButtonFor("返回主菜单", "home")},
 	})
 }
@@ -141,7 +137,7 @@ func (b *telegramBot) startExport(ctx context.Context, id int64, format string, 
 	s := b.newSession(id, "site-export", nil)
 	s.SiteID = siteID
 	s.Draft["format"], s.Draft["line_mode"] = format, mode
-	return b.prompt(ctx, id, s, "export_accounts", "导出是否包含账号信息？", telegramButtonFor("包含账号", "include"), telegramButtonFor("仅站点和线路", "exclude"))
+	return b.prompt(ctx, id, s, "export_accounts", "🧾 要把账号信息一起带上吗？\n没有账号的站点也会保留。", telegramButtonFor("包含账号", "include"), telegramButtonFor("仅站点和线路", "exclude"))
 }
 
 func (b *telegramBot) sendSiteExport(ctx context.Context, id int64, s *telegramSession) error {
@@ -157,12 +153,12 @@ func (b *telegramBot) sendSiteExport(ctx context.Context, id int64, s *telegramS
 		return &telegramPanelError{err: err}
 	}
 	delete(b.sessions, id)
-	return b.send(ctx, id, "导出文件已发送。", telegramBackKeyboard())
+	return b.send(ctx, id, "✅ 文件整理好啦，已经作为附件发给你。\n可以直接下载保存。", telegramBackKeyboard())
 }
 
 func (b *telegramBot) importMenu(ctx context.Context, id int64) error {
 	delete(b.sessions, id)
-	return b.send(ctx, id, "发送 JSON/CSV 文件，或选择格式后粘贴内容，先预览再确认：", telegramKeyboard{
+	return b.send(ctx, id, "📥 把 JSON/CSV 文件发给我，或选一种方式粘贴内容吧。\n先预览，再由你决定保存哪些项目。", telegramKeyboard{
 		{telegramButtonFor("JSON 配置", "import:json"), telegramButtonFor("CSV 表格", "import:csv")},
 		{telegramButtonFor("粘贴开号信息", "import:launch")},
 		{telegramButtonFor("返回主菜单", "home")},
@@ -174,7 +170,7 @@ func (b *telegramBot) startImport(ctx context.Context, id int64, format string) 
 		if err := b.startAdd(ctx, id); err != nil {
 			return err
 		}
-		return b.prompt(ctx, id, b.sessions[id], "launch", "请粘贴完整开号信息，解析后可以修改名称、入口模式和路径：")
+		return b.prompt(ctx, id, b.sessions[id], "launch", "📋 把完整开号消息粘贴过来吧。\n我会先整理成草稿，你可以修改账号和提醒，确认后再保存。")
 	}
 	if format != "json" && format != "csv" {
 		return fmt.Errorf("不支持的导入格式")
@@ -182,7 +178,7 @@ func (b *telegramBot) startImport(ctx context.Context, id int64, format string) 
 	s := b.newSession(id, "site-import", nil)
 	s.Draft["format"] = format
 	s.ImportRequest = &siteImportRequest{Format: format, Actions: map[int]string{}}
-	return b.prompt(ctx, id, s, "site-import-data", "请粘贴完整的 "+strings.ToUpper(format)+" 内容（导入的站点会默认停用）：")
+	return b.prompt(ctx, id, s, "site-import-data", "📋 把完整的 "+strings.ToUpper(format)+" 内容发给我吧。\n我先整理预览，新增站点会暂时保持停用。")
 }
 
 func (b *telegramBot) previewImport(ctx context.Context, id int64, s *telegramSession) error {
@@ -195,7 +191,7 @@ func (b *telegramBot) previewImport(ctx context.Context, id int64, s *telegramSe
 	pages := (len(preview.Items) + 3) / 4
 	s.ImportPage = max(0, min(s.ImportPage, pages-1))
 	var out strings.Builder
-	fmt.Fprintf(&out, "导入预览 · %d/%d 页\n新增站点默认停用；更新已有站点保留启停状态。\n未提供密码时保留已有密码。\n", s.ImportPage+1, pages)
+	fmt.Fprintf(&out, "📥 导入预览 · %d/%d 页\n新增站点默认停用；更新已有站点保留启停状态。\n未提供密码时保留已有密码。\n", s.ImportPage+1, pages)
 	choices := []telegramButton{}
 	for _, item := range preview.Items[s.ImportPage*4 : min((s.ImportPage+1)*4, len(preview.Items))] {
 		fmt.Fprintf(&out, "\n%d. %s · %s · 账号 %d 个\n", item.Index+1, truncateTelegramText(item.Name, 70), map[string]string{"new": "新增", "update": "更新", "skip": "跳过"}[item.Action], item.AccountCount)
@@ -242,7 +238,7 @@ func (b *telegramBot) applyImportSession(ctx context.Context, id int64, s *teleg
 		return fmt.Errorf("数据或选项已变化，请重新导入并预览")
 	}
 	result := b.app.applySiteImport(ctx, preview)
-	message := fmt.Sprintf("导入完成：新增 %d、更新 %d、跳过 %d、失败 %d。\n新增站点默认停用。", result.Created, result.Updated, result.Skipped, result.Failed)
+	message := fmt.Sprintf("📥 导入结果\n\n新增 %d、更新 %d、跳过 %d、失败 %d。\n新增站点暂未启用，检查好后就可以开启。", result.Created, result.Updated, result.Skipped, result.Failed)
 	for _, item := range result.Items {
 		if item.Error != "" {
 			message += fmt.Sprintf("\n%s：%s", item.Name, item.Error)

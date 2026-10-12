@@ -306,6 +306,7 @@ func TestTelegramBotAccountManagementAndLaunchImport(t *testing.T) {
 	tgText(t, b, "/add")
 	tgChoose(t, b, "launch")
 	tgText(t, b, "**launch-site**\n· 用户名称 | `launch-user`\n· 用户密码 | `launch-pass`\nhttps://origin.example/emby\nhttps://backup.example/emby")
+	tgChoose(t, b, "done")
 	tgChoose(t, b, "yes")
 	sites, err := b.app.db.ListSites()
 	if err != nil || len(sites) != 2 {

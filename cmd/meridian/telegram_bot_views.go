@@ -25,7 +25,7 @@ func (b *telegramBot) home(ctx context.Context, id int64) error {
 	if b.settings.PublicURL != "" {
 		keys = append(keys, []telegramButton{{Text: "打开面板", URL: b.settings.PublicURL}})
 	}
-	return b.send(ctx, id, "Meridian 管理\n请选择操作。随时发送 /cancel 可取消当前操作。", keys)
+	return b.send(ctx, id, "👋 Meridian 管理\n\n今天想处理点什么？选一个入口，我带你继续。\n随时发送 /cancel 可以取消当前操作。", keys)
 }
 func (b *telegramBot) report(ctx context.Context, id int64) error {
 	b.app.pm.FlushTraffic()
@@ -44,7 +44,7 @@ func (b *telegramBot) overview(ctx context.Context, id int64) error {
 	if snap.BillingMode == trafficBillingModeOutbound {
 		billing = "仅出站流量"
 	}
-	return b.send(ctx, id, fmt.Sprintf("Meridian 运行概览\n站点：%d 个，运行 %d 个\n本周期：%s\n累计：%s\n计费方式：%s\n运行时间：%s", snap.TotalSites, snap.RunningSites, formatTelegramBytes(snap.MonthlyTraffic), formatTelegramBytes(snap.TotalTraffic), billing, (time.Duration(snap.UptimeSeconds)*time.Second).Round(time.Minute)), telegramBackKeyboard())
+	return b.send(ctx, id, fmt.Sprintf("📊 Meridian 运行概览\n\n站点：%d 个，运行 %d 个\n本周期：%s\n累计：%s\n计费方式：%s\n运行时间：%s", snap.TotalSites, snap.RunningSites, formatTelegramBytes(snap.MonthlyTraffic), formatTelegramBytes(snap.TotalTraffic), billing, (time.Duration(snap.UptimeSeconds)*time.Second).Round(time.Minute)), telegramBackKeyboard())
 }
 func (b *telegramBot) listSites(ctx context.Context, id int64, action string, page int) error {
 	delete(b.sessions, id)
@@ -53,7 +53,7 @@ func (b *telegramBot) listSites(ctx context.Context, id int64, action string, pa
 		return fmt.Errorf("读取站点失败")
 	}
 	if len(sites) == 0 {
-		return b.send(ctx, id, "还没有站点。", telegramKeyboard{{telegramButtonFor("添加站点", "add")}, {telegramButtonFor("返回主菜单", "home")}})
+		return b.send(ctx, id, "🌱 还没有站点，先添加第一个吧。", telegramKeyboard{{telegramButtonFor("添加站点", "add")}, {telegramButtonFor("返回主菜单", "home")}})
 	}
 	page = max(0, min(page, (len(sites)-1)/8))
 	start := page * 8
@@ -78,7 +78,7 @@ func (b *telegramBot) listSites(ctx context.Context, id int64, action string, pa
 	}
 	keys = append(keys, []telegramButton{telegramButtonFor("添加站点", "add"), telegramButtonFor("主菜单", "home")})
 	label := map[string]string{"menu": "管理站点", "address": "发送站点地址", "traffic": "查看站点流量", "accounts": "管理站点账号"}[action]
-	return b.send(ctx, id, fmt.Sprintf("%s · 第 %d/%d 页\n请选择站点：", label, page+1, (len(sites)+7)/8), keys)
+	return b.send(ctx, id, fmt.Sprintf("🌐 %s · 第 %d/%d 页\n\n想查看哪个站点？点下面的名字就好。", label, page+1, (len(sites)+7)/8), keys)
 }
 
 func (a *App) telegramSiteAddress(site Site, origin string) (string, error) {
@@ -138,14 +138,14 @@ func (b *telegramBot) siteView(ctx context.Context, chatID, siteID int64, action
 		if !site.Enabled {
 			note = "\n站点当前已停用。"
 		}
-		return b.send(ctx, chatID, site.Name+"\n"+addr+note, telegramSiteKeys(site.ID))
+		return b.send(ctx, chatID, "🔗 "+site.Name+"\n\n访问地址\n"+addr+note, telegramSiteKeys(site.ID))
 	case "traffic":
 		live := b.app.pm.LiveSiteTraffic([]Site{*site})[site.ID]
 		quota := "不限额"
 		if site.TrafficQuota > 0 {
 			quota = formatTelegramBytes(site.TrafficQuota)
 		}
-		return b.send(ctx, chatID, fmt.Sprintf("%s · 流量\n本周期：%s\n累计：%s\n配额：%s\n速率上限：%s\n统计口径与面板的全局计费方式一致。", site.Name, formatTelegramBytes(live.MonthlyTraffic), formatTelegramBytes(live.TrafficUsed), quota, telegramSpeedLabel(site.SpeedLimit)), telegramSiteKeys(site.ID))
+		return b.send(ctx, chatID, fmt.Sprintf("📈 %s · 流量\n\n本周期：%s\n累计：%s\n配额：%s\n速率上限：%s\n统计口径与面板的全局计费方式一致。", site.Name, formatTelegramBytes(live.MonthlyTraffic), formatTelegramBytes(live.TrafficUsed), quota, telegramSpeedLabel(site.SpeedLimit)), telegramSiteKeys(site.ID))
 	case "accounts":
 		return b.siteAccounts(ctx, chatID, site.ID)
 	case "export":
@@ -154,12 +154,12 @@ func (b *telegramBot) siteView(ctx context.Context, chatID, siteID int64, action
 		return b.editMenu(ctx, chatID, *site)
 	case "toggle", "delete":
 		session := b.newSession(chatID, action, site)
-		summary := "启用站点 " + site.Name
+		summary := "▶️ 准备启用站点：" + site.Name
 		if site.Enabled {
-			summary = "停用站点 " + site.Name
+			summary = "⏸ 准备停用站点：" + site.Name
 		}
 		if action == "delete" {
-			summary = "删除站点 " + site.Name + "\n将停止代理并删除该站点及相关统计，无法撤销。"
+			summary = "🗑️ 准备删除站点：" + site.Name + "\n将停止代理并删除该站点及相关统计，无法撤销。"
 		}
 		return b.confirm(ctx, chatID, session, summary)
 	case "diag":
@@ -176,7 +176,7 @@ func (b *telegramBot) siteView(ctx context.Context, chatID, siteID int64, action
 			status = "运行中"
 		}
 		address, _ := b.app.telegramSiteAddress(*site, b.settings.PublicURL)
-		return b.send(ctx, chatID, fmt.Sprintf("%s\n状态：%s\n入口：%s\n播放：%s", site.Name, status, address, telegramPlaybackLabel(*site)), telegramSiteKeys(site.ID))
+		return b.send(ctx, chatID, fmt.Sprintf("🌐 %s\n\n状态：%s\n🎬 播放：%s\n\n🔗 访问地址\n%s", site.Name, status, telegramPlaybackLabel(*site), address), telegramSiteKeys(site.ID))
 	}
 }
 func telegramSpeedLabel(speed int) string {
