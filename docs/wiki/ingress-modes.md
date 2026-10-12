@@ -82,7 +82,7 @@ https://panel.example.com:8443/cinema/
 1. 将 `panel.example.com` 和 `media.example.com` 都解析到入口服务器。
 2. 在“全局设置 → TLS 设置”保存面板域名 `panel.example.com`、节点泛域名 `*.example.com` 和 Meridian 的**内部监听端口**。
 3. 在 Nginx 等网关中为两个域名配置 HTTPS，并把请求转发到同一个 Meridian 监听端口，保留原始 `Host`。证书必须覆盖两个域名；使用 `*.example.com` 时，它会覆盖这两个一层子域名。
-4. 添加站点时选择“域名前缀”，填写 `media`。Meridian 会生成 `media.example.com`，客户端使用该地址访问站点。
+4. 外部 HTTPS 模式通过站点 API 设置 `ingress_mode: "host"` 和 `public_host: "media.example.com"`，客户端使用该地址访问站点。当前新增表单的“域名前缀”仍要求原生 TLS，完整操作见 [外部 HTTPS 模式创建域名站点](reverse-proxy.md#external-https-host-site)。
 
 如果站点域名不在 `PANEL_ROUTE_DOMAIN` 对应的基础域名下，也可以通过 API 直接填写完整 `public_host`，但仍需自行准备 DNS、证书和网关路由；面板表单的“域名前缀”只生成 `前缀.PANEL_ROUTE_DOMAIN`。
 

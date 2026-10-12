@@ -36,8 +36,8 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 | 项目 | 示例 | 配置位置 |
 | --- | --- | --- |
 | 面板域名 | `panel.example.com` | 环境管理时使用 `PANEL_DOMAIN`；面板手动保存后使用“TLS 设置”中的域名 |
-| 站点域名 | `media.example.com` | 站点编辑中的“域名前缀”或 `public_host` |
-| 节点基础域名 | `example.com` | “TLS 设置”中的 `*.example.com`；首次启动也可由 `PANEL_ROUTE_DOMAIN` 提供 |
+| 站点域名 | `media.example.com` | 外部 HTTPS 模式通过站点 API 的 `public_host` 配置；当前新增表单的“域名前缀”仍要求原生 TLS |
+| 节点基础域名 | `example.com` | 用于生成域名前缀；API 直接填写完整 `public_host` 时不要求配置 |
 | Meridian 内部地址 | `127.0.0.1:9090` | `PORT` / 面板监听设置 |
 | 对外 HTTPS 端口 | `443` | Nginx 的 `listen` 和 DNS/CDN 入口 |
 
@@ -73,7 +73,7 @@ server {
 }
 ```
 
-站点选择“域名前缀”并填写 `media` 后，访问地址是 `https://media.example.com/`；面板仍从 `https://panel.example.com/` 打开。若公开端口不是 `443`，两个地址都要带实际公开端口。Telegram Bot 的“面板外部地址”填写面板地址，不要填写站点域名。
+将站点的 `public_host` 设置为 `media.example.com` 后，访问地址是 `https://media.example.com/`；面板仍从 `https://panel.example.com/` 打开。若公开端口不是 `443`，两个地址都要带实际公开端口。Telegram Bot 的“面板外部地址”填写面板地址，不要填写站点域名。
 
 网关必须把 `Host` 原样传给 Meridian。若所有请求都被改写成面板域名，Meridian 只能看到管理入口，站点请求会返回未识别 Host。若前置代理不是本机回环地址，还要把它的实际来源加入 `TRUSTED_PROXY_CIDRS`；面板监听在回环地址时通常无需额外放开站点入口。
 
@@ -88,7 +88,9 @@ PANEL_DOMAIN=panel.example.com
 PANEL_ROUTE_DOMAIN=example.net
 ```
 
-在站点编辑中选择“域名前缀”并填写 `media`。已有部署在“TLS 设置”填写完整面板域名 `panel.example.com` 和节点泛域名 `*.example.net`，检查、保存后按提示重启；只改环境中的 `PANEL_ROUTE_DOMAIN` 不会改动已保存的基础域名。改变基础域名会迁移使用旧基础域名的站点入口，应先准备新站点域名的 DNS、证书与网关配置。
+`PANEL_ROUTE_DOMAIN` 用于把 `media` 这样的前缀生成完整站点域名，不能使外部 HTTPS 模式下的新增表单自动获得原生 TLS 能力。当前这类部署通过下方 API 步骤填写完整 `public_host`，可以省略 `PANEL_ROUTE_DOMAIN`。
+
+需要管理节点基础域名的已有部署，可在“TLS 设置”填写完整面板域名 `panel.example.com` 和节点泛域名 `*.example.net`，检查、保存后按提示重启；只改环境中的 `PANEL_ROUTE_DOMAIN` 不会改动已保存的基础域名。改变基础域名会迁移使用旧基础域名的站点入口，应先准备新站点域名的 DNS、证书与网关配置。
 
 外部 Nginx 可以在同一 `443` 端口使用两个 HTTPS server，分别管理证书：
 
@@ -102,6 +104,34 @@ PANEL_ROUTE_DOMAIN=example.net
 Meridian 当前的原生 HTTPS 共用一套证书，内置 Cloudflare 申请流程要求面板属于节点基础域名。不同基础域名使用原生 HTTPS 时，需导入**同一张同时覆盖** `panel.example.com` 和 `*.example.net` 的证书；目前不能分别导入两张证书并按域名自动选择。需要独立申请、续期两张证书时，使用外部网关管理。
 
 仅更换环境管理的面板域名不会迁移独立站点域名或改写站点配置；`https://面板域名/watch/` 这类路径入口则需要使用新的面板域名。移除面板域名会解除面板 Host 限制，但已配置的站点 Host 仍优先进入站点代理。重建容器或重启服务期间会短暂中断连接；测试通过不代表公共 DNS、防火墙或你的网关配置已自动完成。
+
+### 外部 HTTPS 模式创建域名站点 {#external-https-host-site}
+
+当前新增站点表单的“域名前缀”要求原生 TLS 已启用；仅由 Nginx 提供 HTTPS 时，该选项仍被禁用。后端支持外部网关的 Host 路由，可以通过 API 创建，不需要为此在 Meridian 中启用原生证书。
+
+在已登录的面板页面打开浏览器开发者工具的控制台，替换域名与 Emby 回源地址后执行一次：
+
+```javascript
+await (async () => {
+  const response = await fetch('/api/sites', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name: 'Emby',
+      ingress_mode: 'host',
+      public_host: 'media.example.net',
+      target_url: 'http://127.0.0.1:8096'
+    })
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+  console.log('站点已创建', result.id, result.public_host);
+})();
+```
+
+浏览器会使用当前登录会话提交同源请求。`target_url` 是 Meridian 能访问的实际 Emby 地址；上例只适用于 Emby 位于同一服务器且端口为 `8096`。完整 `public_host` 不必属于已配置的节点基础域名，也不要求设置 `PANEL_ROUTE_DOMAIN`。刷新面板后可以查看站点和流量；当前域名前缀编辑表单不能表达所有这类完整域名配置，后续改入口时仍应使用 API。
+
+成功后分别访问面板域名和站点域名，确认前者打开 Meridian、后者进入 Emby。只使用 `media.example.net` 时，网关证书覆盖该具体域名即可；配置 `*.example.net` 泛域名证书需要通过证书工具的 DNS 验证流程。
 
 ## Nginx 示例
 
