@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 type panelListenerSpec struct {
@@ -15,6 +17,29 @@ type panelListenerSpec struct {
 type panelListenerFailure struct {
 	spec panelListenerSpec
 	err  error
+}
+
+// Probe with the same bind addresses as startup, releasing every socket before
+// returning. This catches existing conflicts; availability can still change
+// before restart, so the restart endpoint performs this check again.
+func checkPanelListenPort(bindAddress string, port int) error {
+	listeners, failures, err := listenPanel(bindAddress, port)
+	defer func() {
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}()
+	if err != nil {
+		return err
+	}
+	for _, failure := range failures {
+		// A working IPv6 socket must not mask an occupied IPv4 port (or vice
+		// versa). An unsupported address family can still use startup's fallback.
+		if errors.Is(failure.err, syscall.EADDRINUSE) {
+			return failure.err
+		}
+	}
+	return nil
 }
 
 func panelListenerSpecs(bindAddress string, port int) ([]panelListenerSpec, error) {

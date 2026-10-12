@@ -30,6 +30,7 @@ type App struct {
 	panelTLSEnabled   bool
 	panelCertificates *panelCertificateManager
 	panelBindLoopback bool
+	panelBindHost     string
 	panelListenPort   int
 	dynamicRouteKey   []byte
 	restartCh         chan struct{}

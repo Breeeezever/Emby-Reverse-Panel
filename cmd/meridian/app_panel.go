@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -94,12 +95,28 @@ type panelSettingsRequest struct {
 	ListenPort     int    `json:"listen_port"`
 }
 
-// managedExternalTLSProxy reports the standard installation shape where Nginx
-// terminates HTTPS on the public 443 socket and Meridian serves the panel over
-// a loopback HTTP port. Persisting 443 in this mode would make the next
-// restart fail because Nginx already owns that socket.
+// An HTTP panel bound to loopback with a domain or trusted proxy configuration
+// depends on an external proxy. A missing PANEL_DOMAIN does not remove that
+// dependency: changing the backend port or protocol still breaks the proxy.
 func (a *App) managedExternalTLSProxy() bool {
-	return a != nil && a.panelBindLoopback && !a.panelTLSEnabled && strings.TrimSpace(a.panelHost) != ""
+	return a != nil && a.panelBindLoopback && !a.panelTLSEnabled &&
+		(strings.TrimSpace(a.panelHost) != "" || len(a.trustedProxies) > 0)
+}
+
+func (a *App) validatePanelPortChange(port int) error {
+	if err := validatePanelListenPort(port); err != nil {
+		return err
+	}
+	if port == a.panelListenPort {
+		return nil // The current process already owns this port.
+	}
+	if a.managedExternalTLSProxy() {
+		return errors.New("当前面板由外部 HTTPS 反向代理管理，不能只在面板内修改监听端口；请使用安装器执行端口切换")
+	}
+	if err := checkPanelListenPort(a.panelBindHost, port); err != nil {
+		return fmt.Errorf("面板监听端口 %d 不可用，请选择其他端口：%w", port, err)
+	}
+	return nil
 }
 
 func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
@@ -140,8 +157,8 @@ func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
 		a.jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if a.managedExternalTLSProxy() && req.ListenPort != a.panelListenPort {
-		a.jsonErr(w, http.StatusConflict, "当前面板由外部 HTTPS 反向代理管理，不能只在面板内修改监听端口；请使用安装器执行端口切换")
+	if err := a.validatePanelPortChange(req.ListenPort); err != nil {
+		a.jsonErr(w, http.StatusConflict, err.Error())
 		return
 	}
 	current, err := a.db.PanelSettings()
@@ -341,6 +358,14 @@ func (a *App) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
 	status := a.panelCertificateStatus(settings)
 	if settings.PanelDomain == "" || settings.ListenPort == 0 {
 		a.jsonErr(w, http.StatusConflict, "请先保存面板域名和监听端口")
+		return
+	}
+	if err := a.validatePanelPortChange(settings.ListenPort); err != nil {
+		a.jsonErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if a.managedExternalTLSProxy() && settings.TLSEnabled {
+		a.jsonErr(w, http.StatusConflict, "当前面板由外部 HTTPS 反向代理管理，请先完成代理与原生 HTTPS 的切换配置后再重启")
 		return
 	}
 	if settings.TLSEnabled && (!status.Configured || !status.CertificateCurrent || !status.CertificateValid) {

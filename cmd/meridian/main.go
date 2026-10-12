@@ -230,6 +230,7 @@ func main() {
 		panelTLSEnabled:   panelTLSEnabled,
 		panelCertificates: panelCertificates,
 		panelBindLoopback: panelBindIP != nil && panelBindIP.IsLoopback(),
+		panelBindHost:     panelBindHost,
 		panelListenPort:   port,
 		dynamicRouteKey:   dynamicRouteKey,
 		restartCh:         make(chan struct{}),
