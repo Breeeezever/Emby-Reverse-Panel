@@ -76,6 +76,7 @@ type restoreMarker struct {
 }
 
 type backupPanelSettings struct {
+	PanelDomainSource   string
 	CertificateSource   string
 	CertificatePath     string
 	PrivateKeyPath      string
@@ -623,9 +624,9 @@ func readBackupPanelSettings(db *sql.DB) (*backupPanelSettings, error) {
 	}
 	var settings backupPanelSettings
 	err := db.QueryRow(`SELECT panel_domain, route_domain, listen_port, tls_enabled, configured,
-		acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging, certificate_source, certificate_path, private_key_path FROM panel_settings WHERE id=1`).Scan(
+		acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging, certificate_source, certificate_path, private_key_path, panel_domain_source FROM panel_settings WHERE id=1`).Scan(
 		&settings.PanelDomain, &settings.RouteDomain, &settings.ListenPort, &settings.TLSEnabled, &settings.Configured,
-		&settings.ACMEEmail, &settings.ACMEDNSProvider, &settings.ACMETokenCiphertext, &settings.ACMEStaging, &settings.CertificateSource, &settings.CertificatePath, &settings.PrivateKeyPath,
+		&settings.ACMEEmail, &settings.ACMEDNSProvider, &settings.ACMETokenCiphertext, &settings.ACMEStaging, &settings.CertificateSource, &settings.CertificatePath, &settings.PrivateKeyPath, &settings.PanelDomainSource,
 	)
 	if err != nil {
 		return nil, err
@@ -638,6 +639,7 @@ func ensureBackupPanelACMEColumns(db *sql.DB) error {
 		name       string
 		definition string
 	}{
+		{"panel_domain_source", "TEXT NOT NULL DEFAULT 'legacy'"},
 		{"acme_email", "TEXT NOT NULL DEFAULT ''"},
 		{"acme_dns_provider", "TEXT NOT NULL DEFAULT 'cloudflare'"},
 		{"acme_token_ciphertext", "TEXT NOT NULL DEFAULT ''"},
@@ -674,9 +676,9 @@ func preserveBackupPanelSettings(path string, settings *backupPanelSettings) err
 		return err
 	}
 	_, err = db.Exec(`UPDATE panel_settings SET panel_domain=?, route_domain=?, listen_port=?, tls_enabled=?, configured=?,
-		acme_email=?, acme_dns_provider=?, acme_token_ciphertext=?, acme_staging=?, certificate_source=?, certificate_path=?, private_key_path=?, updated_at=CURRENT_TIMESTAMP WHERE id=1`,
+		acme_email=?, acme_dns_provider=?, acme_token_ciphertext=?, acme_staging=?, certificate_source=?, certificate_path=?, private_key_path=?, panel_domain_source=?, updated_at=CURRENT_TIMESTAMP WHERE id=1`,
 		settings.PanelDomain, settings.RouteDomain, settings.ListenPort, settings.TLSEnabled, settings.Configured,
-		settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, settings.ACMEStaging, settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath)
+		settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, settings.ACMEStaging, settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath, settings.PanelDomainSource)
 	return err
 }
 

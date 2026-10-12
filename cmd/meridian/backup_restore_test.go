@@ -440,7 +440,7 @@ func TestRestoreWithoutTLSPreservesTargetSettingsAndFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := targetDB.db.Exec(`UPDATE panel_settings SET panel_domain='target.example.com', route_domain='route.target.example.com', listen_port=9443, tls_enabled=1, configured=1 WHERE id=1`); err != nil {
+	if _, err := targetDB.db.Exec(`UPDATE panel_settings SET panel_domain='target.example.com', panel_domain_source='database', route_domain='route.target.example.com', listen_port=9443, tls_enabled=1, configured=1 WHERE id=1`); err != nil {
 		targetDB.Close()
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestRestoreWithoutTLSPreservesTargetSettingsAndFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backupDB.Exec(`UPDATE panel_settings SET panel_domain='source.example.com', route_domain='route.source.example.com', listen_port=8443, tls_enabled=0, configured=1 WHERE id=1`); err != nil {
+	if _, err := backupDB.Exec(`UPDATE panel_settings SET panel_domain='source.example.com', panel_domain_source='environment', route_domain='route.source.example.com', listen_port=8443, tls_enabled=0, configured=1 WHERE id=1`); err != nil {
 		backupDB.Close()
 		t.Fatal(err)
 	}
@@ -510,13 +510,16 @@ func TestRestoreWithoutTLSPreservesTargetSettingsAndFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var panelDomain, routeDomain, acmeEmail, acmeCiphertext string
+	var panelDomain, routeDomain, acmeEmail, acmeCiphertext, panelDomainSource string
 	var listenPort, tlsEnabled, configured, acmeStaging int
-	if err := restoredDB.QueryRow(`SELECT panel_domain, route_domain, listen_port, tls_enabled, configured, acme_email, acme_token_ciphertext, acme_staging FROM panel_settings WHERE id=1`).Scan(&panelDomain, &routeDomain, &listenPort, &tlsEnabled, &configured, &acmeEmail, &acmeCiphertext, &acmeStaging); err != nil {
+	if err := restoredDB.QueryRow(`SELECT panel_domain, route_domain, listen_port, tls_enabled, configured, acme_email, acme_token_ciphertext, acme_staging, panel_domain_source FROM panel_settings WHERE id=1`).Scan(&panelDomain, &routeDomain, &listenPort, &tlsEnabled, &configured, &acmeEmail, &acmeCiphertext, &acmeStaging, &panelDomainSource); err != nil {
 		restoredDB.Close()
 		t.Fatal(err)
 	}
 	restoredDB.Close()
+	if panelDomainSource != preserved.PanelDomainSource {
+		t.Fatalf("target domain ownership was not preserved: %s", panelDomainSource)
+	}
 	if panelDomain != preserved.PanelDomain || routeDomain != preserved.RouteDomain || listenPort != preserved.ListenPort || tlsEnabled != preserved.TLSEnabled || configured != preserved.Configured {
 		t.Fatalf("target panel settings were not preserved: %q %q %d %d %d", panelDomain, routeDomain, listenPort, tlsEnabled, configured)
 	}

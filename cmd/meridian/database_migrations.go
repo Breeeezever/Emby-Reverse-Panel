@@ -465,6 +465,7 @@ func (d *DB) migrateOnce() error {
 func ensurePanelSettingsListenPortSchema(ctx context.Context, conn *sql.Conn) error {
 	for _, migration := range []struct{ column, sql string }{
 		{"listen_port", "ALTER TABLE panel_settings ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 0"},
+		{"panel_domain_source", "ALTER TABLE panel_settings ADD COLUMN panel_domain_source TEXT NOT NULL DEFAULT 'legacy'"},
 		{"acme_email", "ALTER TABLE panel_settings ADD COLUMN acme_email TEXT NOT NULL DEFAULT ''"},
 		{"acme_dns_provider", "ALTER TABLE panel_settings ADD COLUMN acme_dns_provider TEXT NOT NULL DEFAULT 'cloudflare'"},
 		{"acme_token_ciphertext", "ALTER TABLE panel_settings ADD COLUMN acme_token_ciphertext TEXT NOT NULL DEFAULT ''"},

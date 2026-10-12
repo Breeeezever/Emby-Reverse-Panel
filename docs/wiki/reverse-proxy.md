@@ -23,7 +23,7 @@ PANEL_ROUTE_DOMAIN=example.com
 TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 ```
 
-这些内容添加到已有环境配置，保留所有原密钥。`PANEL_DOMAIN`、`PANEL_ROUTE_DOMAIN`、面板 TLS 和监听端口在已初始化的数据库中由面板设置维护；需要修改时在“TLS 设置”保存并按提示重启。
+这些内容添加到已有环境配置，保留所有原密钥。环境管理的 `PANEL_DOMAIN` 在每次启动同步，移除或置空解除旧域名限制。在面板手动保存域名或配置原生证书后，改由数据库维护。`PANEL_ROUTE_DOMAIN`、原生 TLS 和监听端口仍以已保存的面板设置为准；需要修改时在“TLS 设置”保存并按提示重启。
 
 `TRUSTED_PROXY_CIDRS` 必须匹配 Meridian 实际看到的代理来源。Docker、远程网关和 IPv6 连接不能直接照搬同机地址，也不要填 `0.0.0.0/0`。
 
@@ -35,7 +35,7 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 
 | 项目 | 示例 | 配置位置 |
 | --- | --- | --- |
-| 面板域名 | `panel.example.com` | “TLS 设置”中的面板访问域名；首次启动也可由 `PANEL_DOMAIN` 提供 |
+| 面板域名 | `panel.example.com` | 环境管理时使用 `PANEL_DOMAIN`；面板手动保存后使用“TLS 设置”中的域名 |
 | 站点域名 | `media.example.com` | 站点编辑中的“域名前缀”或 `public_host` |
 | 节点基础域名 | `example.com` | “TLS 设置”中的 `*.example.com`；首次启动也可由 `PANEL_ROUTE_DOMAIN` 提供 |
 | Meridian 内部地址 | `127.0.0.1:9090` | `PORT` / 面板监听设置 |
@@ -77,7 +77,7 @@ server {
 
 网关必须把 `Host` 原样传给 Meridian。若所有请求都被改写成面板域名，Meridian 只能看到管理入口，站点请求会返回未识别 Host。若前置代理不是本机回环地址，还要把它的实际来源加入 `TRUSTED_PROXY_CIDRS`；面板监听在回环地址时通常无需额外放开站点入口。
 
-`PANEL_DOMAIN`、`PANEL_ROUTE_DOMAIN` 和 `PORT` 是首次启动的默认值。数据库初始化后，TLS 设置和监听端口以数据库为准；只改环境变量并重启可能看不到变化。修改面板域名、基础域名或监听端口时，应在面板 TLS 设置保存，再按提示重启并同步 Nginx。
+`PANEL_DOMAIN` 在环境管理模式下可通过修改、移除或置空后重启来同步。面板手动保存或配置原生证书后，域名由数据库维护；`PANEL_ROUTE_DOMAIN` 和 `PORT` 仍是首次初始化默认值。数据库管理的配置在 TLS 设置修改；使用外部 HTTPS 代理时，内部端口切换应由安装器完成，并同步 Nginx。旧数据库迁移规则见 [配置与环境变量](configuration.md)。
 
 ## Nginx 示例
 

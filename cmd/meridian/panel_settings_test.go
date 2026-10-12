@@ -41,22 +41,35 @@ func TestNormalizeManagedPanelPrefixAcceptsWildcardForm(t *testing.T) {
 	}
 }
 
-func TestBootstrapPanelSettingsImportsEnvironmentOnlyOnce(t *testing.T) {
+func TestBootstrapPanelSettingsSynchronizesOnlyEnvironmentPanelDomain(t *testing.T) {
 	db, err := openDB(":memory:")
 	if err != nil {
-		t.Fatalf("open database: %v", err)
+		t.Fatal(err)
 	}
 	defer db.Close()
 	first, err := db.BootstrapPanelSettings("panel.example.com", "example.com", false, 9090)
 	if err != nil {
-		t.Fatalf("bootstrap settings: %v", err)
+		t.Fatal(err)
 	}
-	second, err := db.BootstrapPanelSettings("other.example.net", "example.net", true, 8080)
-	if err != nil {
-		t.Fatalf("second bootstrap settings: %v", err)
+	if _, err := db.db.Exec(`INSERT INTO sites (name, listen_port, public_host, target_url) VALUES ('media', 19001, 'media.example.com', 'http://127.0.0.1:8096')`); err != nil {
+		t.Fatal(err)
 	}
-	if first != second || second.PanelDomain != "panel.example.com" || second.RouteDomain != "example.com" || second.TLSEnabled {
-		t.Fatalf("environment settings were not imported once: first=%+v second=%+v", first, second)
+	for _, domain := range []string{"Other.Example.net.", "", "panel.example.com"} {
+		settings, err := db.BootstrapPanelSettings(domain, "different.example.org", true, 8080)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := normalizePublicHost(domain)
+		if settings.PanelDomain != want || settings.RouteDomain != first.RouteDomain || settings.TLSEnabled != first.TLSEnabled || settings.ListenPort != first.ListenPort {
+			t.Fatalf("domain synchronization changed unrelated endpoint settings: %+v", settings)
+		}
+		var host string
+		if err := db.db.QueryRow("SELECT public_host FROM sites WHERE name='media'").Scan(&host); err != nil {
+			t.Fatal(err)
+		}
+		if host != "media.example.com" {
+			t.Fatalf("site host changed: %s", host)
+		}
 	}
 }
 
