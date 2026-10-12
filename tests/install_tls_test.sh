@@ -128,6 +128,25 @@ done
     grep -Fqx 'systemctl restart meridian-updater.service' "${TEST_ROOT}/actions"
     grep -Fqx 'systemctl restart meridian' "${TEST_ROOT}/actions"
 
+    # With bash <(curl ...), the original stream is no longer a regular file
+    # when updater setup runs. An old installed version must not make this
+    # path replace a newly fixed installer with that old version's script.
+    (
+        fixture_functions=$(declare -f panel_updater_supported_install as_root install_env_file service_is_active wait_for_health)
+        # shellcheck disable=SC1090
+        source <(cat "${REPO_ROOT}/install.sh")
+        eval "$fixture_functions"
+        download() {
+            [ "$1" = https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh ] \
+                || { echo 'streamed repair requested an obsolete installer' >&2; return 1; }
+            cp "${REPO_ROOT}/install.sh" "$2"
+            printf 'downloaded\n' > "${TEST_ROOT}/streamed-installer-downloaded"
+        }
+        setup_panel_updater
+    ) > "${TEST_ROOT}/updater-streamed-repair.log"
+    grep -Fqx downloaded "${TEST_ROOT}/streamed-installer-downloaded"
+    cmp "${REPO_ROOT}/install.sh" "${updater_files}/usr/local/libexec/meridian/install.sh"
+
     cp "${DATA_DIR}/.env" "${TEST_ROOT}/updater-enabled.env"
     : > "${TEST_ROOT}/actions"
     setup_panel_updater > "${TEST_ROOT}/updater-repair.log"

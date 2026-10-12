@@ -2048,16 +2048,17 @@ panel_updater_supported_install() {
 setup_panel_updater() {
     panel_updater_supported_install || return 0
     "${INSTALL_DIR}/${BIN_NAME}" --version --features 2>/dev/null | grep -x panel-updater-v1 >/dev/null || { warn "当前二进制尚不支持面板更新服务，请更新到包含此功能的版本后重新运行 install -y"; return 0; }
-    local tmp_dir source_script version socket_changed=0
+    local tmp_dir source_script socket_changed=0
     tmp_dir=$(mktemp -d)
     chmod 0700 "$tmp_dir"
     source_script="${BASH_SOURCE[0]:-}"
     if [ -f "$source_script" ]; then
         cp -- "$source_script" "${tmp_dir}/install.sh" || { rm -rf -- "$tmp_dir"; return 1; }
     else
-        version=$(get_current_version)
-        valid_version "$version" || { rm -rf -- "$tmp_dir"; return 1; }
-        download "https://raw.githubusercontent.com/${REPO}/${version}/install.sh" "${tmp_dir}/install.sh" \
+        # curl | bash and process substitution do not leave a reusable source
+        # file. Fetch the maintained installer, not the installed binary's old
+        # tag: that would silently undo installer-only compatibility repairs.
+        download "https://raw.githubusercontent.com/${REPO}/master/install.sh" "${tmp_dir}/install.sh" \
             || { rm -rf -- "$tmp_dir"; return 1; }
     fi
     bash -n "${tmp_dir}/install.sh" || { rm -rf -- "$tmp_dir"; return 1; }
