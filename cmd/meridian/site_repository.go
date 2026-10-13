@@ -212,7 +212,7 @@ func (d *DB) CreateSiteWithCustomUA(name string, port int, targetURL, playbackTa
 	})
 }
 
-func (d *DB) CreateSiteRecord(site Site) (*Site, error) {
+func (d *DB) CreateSiteRecord(site Site, accounts ...SiteAccountInput) (*Site, error) {
 	var err error
 	site.PrimaryLineName, err = normalizePrimaryLineName(site.PrimaryLineName)
 	if err != nil {
@@ -277,7 +277,12 @@ func (d *DB) CreateSiteRecord(site Site) (*Site, error) {
 		return nil, err
 	}
 	site.DynamicPolicyRevision = 1
-	res, err := d.db.Exec(
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(
 		"INSERT INTO sites (sort_order, name, listen_port, public_host, path_prefix, ingress_mode, target_url, primary_line_name, playback_target_url, playback_mode, main_video_stream_mode, failover_targets, failover_lines, stream_hosts, ua_mode, custom_user_agent, custom_client, custom_version, client_ip_mode, upstream_headers, dynamic_discovery_enabled, dynamic_profile, dynamic_discovery_sources, dynamic_domain_rules, dynamic_allow_https_downgrade, dynamic_policy_revision, ping_cache_enabled, image_cache_enabled, progress_coalescing_enabled, asset_cache_enabled, asset_cache_ttl_sec, asset_cache_max_bytes, asset_cache_rules, traffic_quota, speed_limit) VALUES ((SELECT COALESCE(MAX(sort_order), -1) + 1 FROM sites),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		site.Name, site.ListenPort, site.PublicHost, site.PathPrefix, site.IngressMode, site.TargetURL, site.PrimaryLineName, site.PlaybackTargetURL, site.PlaybackMode, site.MainVideoStreamMode, site.FailoverTargets, site.StoredFailoverLines, site.StreamHosts, site.UAMode, site.CustomUserAgent, site.CustomClient, site.CustomVersion, site.ClientIPMode, site.StoredUpstreamHeaders, sqliteBool(site.DynamicDiscoveryEnabled), site.DynamicProfile, site.StoredDynamicDiscoverySources, site.StoredDynamicDomainRules, sqliteBool(site.DynamicAllowHTTPSDowngrade), site.DynamicPolicyRevision, sqliteBool(site.PingCacheEnabled), sqliteBool(site.ImageCacheEnabled), sqliteBool(site.ProgressCoalescingEnabled), sqliteBool(site.AssetCacheEnabled), site.AssetCacheTTLSec, site.AssetCacheMaxBytes, site.AssetCacheRules, site.TrafficQuota, site.SpeedLimit,
 	)
@@ -286,6 +291,14 @@ func (d *DB) CreateSiteRecord(site Site) (*Site, error) {
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
+		return nil, err
+	}
+	for _, account := range accounts {
+		if _, err := saveSiteAccountIn(tx, id, 0, account); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return d.GetSite(id)

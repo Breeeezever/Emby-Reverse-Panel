@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -53,6 +56,34 @@ func telegramAPICall(ctx context.Context, client *http.Client, token, method str
 		return fmt.Errorf("无法生成 Telegram 请求")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	return telegramAPIRequest(ctx, client, req, out)
+}
+
+func telegramSendDocument(ctx context.Context, client *http.Client, token string, chatID int64, filename string, data []byte) error {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return fmt.Errorf("无法生成文件请求")
+	}
+	part, err := writer.CreateFormFile("document", filename)
+	if err != nil {
+		return fmt.Errorf("无法生成文件请求")
+	}
+	if _, err := part.Write(data); err != nil {
+		return fmt.Errorf("无法生成文件请求")
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("无法生成文件请求")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.telegram.org/bot"+url.PathEscape(token)+"/sendDocument", &body)
+	if err != nil {
+		return fmt.Errorf("无法生成文件请求")
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return telegramAPIRequest(ctx, client, req, nil)
+}
+
+func telegramAPIRequest(ctx context.Context, client *http.Client, req *http.Request, out any) error {
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -112,12 +143,53 @@ type telegramChat struct {
 	Type string `json:"type"`
 }
 type telegramMessage struct {
-	ID   int64        `json:"message_id"`
-	Date int64        `json:"date"`
-	From telegramUser `json:"from"`
-	Chat telegramChat `json:"chat"`
-	Text string       `json:"text"`
+	ID       int64             `json:"message_id"`
+	Date     int64             `json:"date"`
+	From     telegramUser      `json:"from"`
+	Chat     telegramChat      `json:"chat"`
+	Text     string            `json:"text"`
+	Document *telegramDocument `json:"document,omitempty"`
 }
+
+type telegramDocument struct {
+	ID   string `json:"file_id"`
+	Name string `json:"file_name"`
+	Size int64  `json:"file_size"`
+}
+
+func (b *telegramBot) downloadImportDocument(ctx context.Context, document telegramDocument) (string, error) {
+	if document.Size > 2<<20 {
+		return "", fmt.Errorf("导入文件不能超过 2 MB")
+	}
+	var file struct {
+		Path string `json:"file_path"`
+		Size int64  `json:"file_size"`
+	}
+	if err := telegramAPICall(ctx, b.client, b.token, "getFile", map[string]string{"file_id": document.ID}, &file); err != nil {
+		return "", err
+	}
+	if file.Size > 2<<20 || file.Path == "" || strings.HasPrefix(file.Path, "/") || path.Clean(file.Path) != file.Path || strings.ContainsAny(file.Path, "\\?#:") || strings.HasPrefix(file.Path, "..") {
+		return "", fmt.Errorf("Telegram 文件路径或大小无效")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.telegram.org/file/bot"+url.PathEscape(b.token)+"/"+file.Path, nil)
+	if err != nil {
+		return "", fmt.Errorf("无法生成文件下载请求")
+	}
+	response, err := b.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("无法下载 Telegram 文件")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Telegram 文件下载失败")
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
+	if err != nil || len(data) > 2<<20 {
+		return "", fmt.Errorf("文件读取失败或超过 2 MB")
+	}
+	return string(data), nil
+}
+
 type telegramCallback struct {
 	ID      string           `json:"id"`
 	From    telegramUser     `json:"from"`

@@ -78,6 +78,7 @@ func (a *App) handleSites(w http.ResponseWriter, r *http.Request) {
 
 	case "POST":
 		var req struct {
+			Accounts                   []SiteAccountInput    `json:"accounts"`
 			Name                       string                `json:"name"`
 			ListenPort                 int                   `json:"listen_port"`
 			PublicHost                 string                `json:"public_host"`
@@ -113,8 +114,17 @@ func (a *App) handleSites(w http.ResponseWriter, r *http.Request) {
 			Quota                      int64                 `json:"traffic_quota"`
 			SpeedLimit                 int                   `json:"speed_limit"`
 		}
-		if err := decodeJSONBody(w, r, &req); err != nil {
+		// Imports may contain up to 2 MB of CSV text, expanded by JSON escaping.
+		limit := int64(maxJSONBodyBytes)
+		if importing, _ := r.Context().Value(siteCommandImportKey{}).(bool); importing {
+			limit = 16 << 20
+		}
+		if err := decodeJSONBodyLimit(w, r, &req, limit); err != nil {
 			a.jsonErr(w, 400, "invalid request")
+			return
+		}
+		if err := validateNewSiteAccounts(req.Accounts); err != nil {
+			a.jsonErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		dynamicEnabled := false
@@ -305,7 +315,7 @@ func (a *App) handleSites(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		site, err := a.db.CreateSiteRecord(Site{
+		candidate := Site{
 			Name:                          req.Name,
 			ListenPort:                    req.ListenPort,
 			PublicHost:                    req.PublicHost,
@@ -341,7 +351,12 @@ func (a *App) handleSites(w http.ResponseWriter, r *http.Request) {
 			AssetCacheRules:               assetCacheConfig.AssetCacheRules,
 			TrafficQuota:                  req.Quota,
 			SpeedLimit:                    req.SpeedLimit,
-		})
+		}
+		if dryRun, _ := r.Context().Value(siteCommandDryRunKey{}).(bool); dryRun {
+			a.jsonOK(w, candidate)
+			return
+		}
+		site, err := a.db.CreateSiteRecord(candidate, req.Accounts...)
 		if err != nil {
 			if isSQLiteUniqueConstraintError(err) {
 				a.jsonErr(w, http.StatusBadRequest, "listen_port or public_host is already assigned")
@@ -350,6 +365,14 @@ func (a *App) handleSites(w http.ResponseWriter, r *http.Request) {
 			log.Printf("create site record: %v", err)
 			a.jsonErr(w, http.StatusInternalServerError, "create site failed")
 			return
+		}
+		if importing, _ := r.Context().Value(siteCommandImportKey{}).(bool); importing {
+			if err := a.db.SetSiteEnabled(site.ID, false); err != nil {
+				_ = a.db.DeleteSite(site.ID)
+				a.jsonErr(w, 500, "保存导入站点失败")
+				return
+			}
+			site.Enabled = false
 		}
 		// Auto start
 		if site.Enabled {
@@ -411,6 +434,13 @@ func (a *App) handleSiteByID(w http.ResponseWriter, r *http.Request) {
 	action := ""
 	if len(parts) > 1 {
 		action = parts[1]
+	}
+	if strings.HasPrefix(action, "accounts") {
+		tail := strings.TrimPrefix(action, "accounts")
+		if tail == "" || strings.HasPrefix(tail, "/") {
+			a.handleSiteAccounts(w, r, id, strings.TrimPrefix(tail, "/"))
+			return
+		}
 	}
 
 	switch {
@@ -919,6 +949,10 @@ func (a *App) handleSiteByID(w http.ResponseWriter, r *http.Request) {
 				a.jsonErr(w, http.StatusBadRequest, "path_prefix is already assigned to another site")
 				return
 			}
+		}
+		if dryRun, _ := r.Context().Value(siteCommandDryRunKey{}).(bool); dryRun {
+			a.jsonOK(w, candidate)
+			return
 		}
 		needsPreStop := oldSite.Enabled && ingressUsesPort(oldSite.IngressMode) && ingressUsesPort(candidate.IngressMode) && oldSite.ListenPort == candidate.ListenPort && a.pm.IsRunning(id)
 		if needsPreStop {

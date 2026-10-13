@@ -220,6 +220,7 @@ function loadModalHarness() {
         max_playback_addresses: 128,
       }),
       getDynamicProfiles: async () => structuredDiscoveryResponse(),
+      listSiteAccounts: async () => [],
       getDynamicObservations: async siteId => {
         state.observationGets.push(siteId);
         return {

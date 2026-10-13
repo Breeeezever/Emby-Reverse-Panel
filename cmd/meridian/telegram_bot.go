@@ -3,9 +3,10 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
+	"path"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -124,8 +125,15 @@ func (b *telegramBot) run(ctx context.Context) {
 	offset := b.settings.Offset
 	backoff := time.Second
 	commandsReady := false
+	var nextReminderCheck time.Time
 	b.app.setTelegramStatus(b.settings.Revision, "connecting", "正在连接 Telegram")
 	for ctx.Err() == nil {
+		if time.Now().After(nextReminderCheck) {
+			if err := b.deliverAccountReminders(ctx, time.Now()); err != nil && ctx.Err() == nil {
+				b.app.setTelegramStatus(b.settings.Revision, "error", "到期提醒发送失败，稍后重试")
+			}
+			nextReminderCheck = time.Now().Add(time.Minute)
+		}
 		// An initial tail read discards commands left over before enablement, token
 		// changes or administrator changes; stored offsets resume ordinary restarts.
 		timeout := 20
@@ -253,22 +261,38 @@ func (b *telegramBot) handleUpdate(ctx context.Context, u telegramUpdate) error 
 			if errors.As(err, &deliveryErr) {
 				return err
 			}
-			return b.send(ctx, chat.ID, "操作未完成："+err.Error(), telegramBackKeyboard())
+			return b.inputError(ctx, chat.ID, err)
+		}
+		return nil
+	}
+	if u.Message != nil && u.Message.Document != nil {
+		format := strings.TrimPrefix(strings.ToLower(path.Ext(u.Message.Document.Name)), ".")
+		if format != "json" && format != "csv" {
+			return b.send(ctx, chat.ID, "请发送 JSON 或 CSV 文件；开号消息可通过 /add 粘贴解析。", telegramBackKeyboard())
+		}
+		data, downloadErr := b.downloadImportDocument(ctx, *u.Message.Document)
+		if downloadErr != nil {
+			return b.send(ctx, chat.ID, downloadErr.Error(), telegramBackKeyboard())
+		}
+		s := b.newSession(from.ID, "site-import", nil)
+		s.ImportRequest = &siteImportRequest{Format: format, Data: data, Actions: map[int]string{}}
+		if err := b.previewImport(ctx, from.ID, s); err != nil {
+			return b.send(ctx, chat.ID, "导入预览失败："+err.Error(), telegramBackKeyboard())
 		}
 		return nil
 	}
 	if len(text) > 4096 {
-		return b.send(ctx, chat.ID, "内容过长，请缩短后重试。", nil)
+		return b.send(ctx, chat.ID, "💬 这段内容有点长，缩短一下再发我吧。", nil)
 	}
 	if text == "" {
-		return b.send(ctx, chat.ID, "请发送文字或点击菜单按钮。", nil)
+		return b.send(ctx, chat.ID, "💬 发我文字，或者点下面的菜单按钮吧。", nil)
 	}
 	if err = b.handleText(ctx, from.ID, text); err != nil {
 		var deliveryErr *telegramPanelError
 		if errors.As(err, &deliveryErr) {
 			return err
 		}
-		return b.send(ctx, chat.ID, fmt.Sprintf("操作未完成：%s", err), telegramBackKeyboard())
+		return b.inputError(ctx, chat.ID, err)
 	}
 	return nil
 }

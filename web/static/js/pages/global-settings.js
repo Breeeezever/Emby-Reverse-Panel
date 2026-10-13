@@ -31,7 +31,7 @@ function globalSettingsNav(active) {
 }
 
 function backupPasswordField(id, label) {
-  return `<label class="settings-field"><span>${label}</span><div><input class="form-input" id="${id}" type="password" minlength="12" maxlength="128" autocomplete="new-password" placeholder="至少 12 个字符"></div></label>`;
+  return `<label class="settings-field"><span>${label}</span><div><input class="form-input" id="${id}" type="password" minlength="6" maxlength="128" autocomplete="new-password" placeholder="至少 6 个字符"></div></label>`;
 }
 
 function renderBackupRestore() {
@@ -69,7 +69,7 @@ function backupFilename(disposition) {
 async function downloadMeridianBackup() {
   const password = document.getElementById('backup-password').value;
   const confirmation = document.getElementById('backup-password-confirm').value;
-  if (password.length < 12) return Toast.error('备份密码至少需要 12 个字符');
+  if (password.length < 6) return Toast.error('备份密码至少需要 6 个字符');
   if (password !== confirmation) return Toast.error('两次输入的备份密码不一致');
   const button = document.getElementById('backup-download');
   button.disabled = true;
@@ -101,7 +101,7 @@ async function restoreMeridianBackup() {
   const password = document.getElementById('restore-password').value;
   const confirmation = document.getElementById('restore-confirm').value.trim();
   if (!fileInput.files || !fileInput.files[0]) return Toast.error('请选择 Meridian 备份文件');
-  if (password.length < 12) return Toast.error('请输入正确的备份密码');
+  if (password.length < 6) return Toast.error('请输入正确的备份密码');
   if (confirmation !== '恢复') return Toast.error('请输入“恢复”确认操作');
   const button = document.getElementById('backup-restore-submit');
   button.disabled = true;
@@ -245,12 +245,9 @@ function renderLogSettingsForm(s) {
     <div style="margin-top:16px;">
       <h3 style="font-size:12px;margin:12px 0 8px;color:var(--white-60);">高级存储队列参数</h3>
       <div class="settings-grid">
-        ${settingsNumber('setting-log-delay', '写入延迟', s.log_write_delay_minutes, 0, 60, '分钟')}
-        ${settingsNumber('setting-log-threshold', '提前写入阈值', s.log_flush_threshold, 1, 1000, '条')}
         ${settingsNumber('setting-log-batch', '单批写入大小', s.log_batch_size, 1, 100, '条')}
         ${settingsNumber('setting-log-retries', '写入重试次数', s.log_retry_count, 0, 10, '次')}
         ${settingsNumber('setting-log-backoff', '重试退避', s.log_retry_backoff_ms, 0, 5000, 'ms')}
-        ${settingsNumber('setting-log-lease', '定时任务租约时长', s.log_task_lease_ms, 1000, 900000, 'ms')}
       </div>
       <h3 style="font-size:12px;margin:16px 0 8px;color:var(--white-60);">更多请求类别</h3>
       <div class="settings-check-grid">
@@ -323,12 +320,9 @@ async function saveGlobalSettings() {
     s.log_enabled = checkedSetting('setting-log-enabled', s.log_enabled);
     s.log_level = activeSettingChoice('log-level-choice', s.log_level);
     s.log_retention_days = numericSetting('setting-log-retention', s.log_retention_days);
-    s.log_write_delay_minutes = numericSetting('setting-log-delay', s.log_write_delay_minutes);
-    s.log_flush_threshold = numericSetting('setting-log-threshold', s.log_flush_threshold);
     s.log_batch_size = numericSetting('setting-log-batch', s.log_batch_size);
     s.log_retry_count = numericSetting('setting-log-retries', s.log_retry_count);
     s.log_retry_backoff_ms = numericSetting('setting-log-backoff', s.log_retry_backoff_ms);
-    s.log_task_lease_ms = numericSetting('setting-log-lease', s.log_task_lease_ms);
     s.log_write_image = checkedSetting('setting-write-image', false);
     s.log_write_playback = checkedSetting('setting-write-playback', true);
     s.log_write_metadata = checkedSetting('setting-write-metadata', false);
