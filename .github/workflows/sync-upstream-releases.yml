@@ -31,7 +31,7 @@ jobs:
 
           # 只镜像正式版；预发布版不纳入定时同步。
           gh api --paginate "repos/${UPSTREAM_REPOSITORY}/releases?per_page=100" \
-            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+            --jq '.[] | select(.draft == false) | .tag_name' \
             > release-tags.txt
 
           while IFS= read -r tag; do
