@@ -59,7 +59,17 @@ jobs:
             echo "Already up to date with upstream."
             exit 0
           fi
-          git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH"
+          if ! git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH"; then
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            NON_WF=$(echo "$CONFLICTS" | grep -v "^\.github/workflows/" || true)
+            if [ -n "$NON_WF" ]; then
+              echo "::error::Non-workflow conflicts, manual handling needed: $NON_WF"
+              exit 1
+            fi
+            git checkout --ours -- .github/workflows
+            git add -A .github/workflows
+            git merge --continue
+          fi
           # freeze .github/workflows at the pre-merge fork state
           PRE=$(git rev-parse HEAD^1)
           git diff-tree -r --name-only --diff-filter=A "$PRE" HEAD -- .github/workflows | while read -r f; do
