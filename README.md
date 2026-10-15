@@ -8,7 +8,7 @@
 
 [![Release](https://img.shields.io/github/v/release/snnabb/Meridian?style=flat-square&color=578cff)](https://github.com/snnabb/Meridian/releases/latest) [![CI](https://github.com/snnabb/Meridian/actions/workflows/ci.yml/badge.svg)](https://github.com/snnabb/Meridian/actions/workflows/ci.yml) [![Docker](https://img.shields.io/badge/GHCR-Docker-2496ed?style=flat-square&logo=docker&logoColor=white)](https://github.com/snnabb/Meridian/pkgs/container/meridian) [![License](https://img.shields.io/badge/license-MIT-8190a5?style=flat-square)](LICENSE)
 
-[在线演示](https://emby.qd.je) · [Wiki](https://github.com/snnabb/Meridian/wiki) · [文档站](https://snnabb.github.io/Meridian/index.html) · [快速安装](#快速安装) · [使用指南](docs/USAGE.md) · [部署文档](docs/DEPLOYMENT.md) · [更新记录](CHANGELOG.md)
+[在线演示](https://emby.qd.je) · [账号功能演示](https://emby.qd.je/test/) · [Wiki](https://github.com/snnabb/Meridian/wiki) · [文档站](https://snnabb.github.io/Meridian/index.html) · [快速安装](#快速安装) · [使用指南](docs/USAGE.md) · [部署文档](docs/DEPLOYMENT.md) · [更新记录](CHANGELOG.md)
 
 </div>
 
@@ -16,7 +16,7 @@
 
 <div align="center">
 
-**[体验只读演示站 →](https://emby.qd.je)**<br>账号 `demo` · 密码 `MeridianDemo2026`
+**[体验只读演示站 →](https://emby.qd.je)**<br>账号 `demo` · 密码 `MeridianDemo2026`<br><sub>[账号、提醒与导入导出测试版 →](https://emby.qd.je/test/)</sub>
 
 <sub>演示站和面板截图均使用虚构站点与示例数据，不提供媒体播放；配置修改与消息发送已关闭。</sub>
 

@@ -35,6 +35,7 @@ Meridian 是面向 Emby 的多站点管理与播放代理工具。本 Wiki 对�
 ## 体验与下载
 
 - [只读演示站](https://emby.qd.je)：账号 `demo`，密码 `MeridianDemo2026`。
+- [账号功能演示](https://emby.qd.je/test/)：体验账号备忘、提醒、开号识别、导入预览和文件导出。账号同为 `demo`，密码 `MeridianDemo2026`。
 - [下载正式版本](https://github.com/snnabb/Meridian/releases/latest)。
 - [查看更新记录](https://github.com/snnabb/Meridian/blob/master/CHANGELOG.md)。
 - [反馈问题](https://github.com/snnabb/Meridian/issues)。
