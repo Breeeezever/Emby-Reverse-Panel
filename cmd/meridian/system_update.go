@@ -21,6 +21,7 @@ import (
 const releaseAPI = "https://api.github.com/repos/snnabb/Meridian/releases/latest"
 
 var stableVersionPattern = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+var comparableVersionPattern = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?$`)
 
 type updateRelease struct {
 	Current   string `json:"current_version"`
@@ -40,7 +41,10 @@ type updateJob struct {
 }
 
 func versionNewer(candidate, current string) bool {
-	a, b := stableVersionPattern.FindStringSubmatch(candidate), stableVersionPattern.FindStringSubmatch(current)
+	// Release candidates are always stable tags. The installed build may carry
+	// a local preview/build suffix (for example, the account-feature test
+	// build), which must still be upgradeable to the next stable release.
+	a, b := stableVersionPattern.FindStringSubmatch(candidate), comparableVersionPattern.FindStringSubmatch(current)
 	if a == nil || b == nil {
 		return false
 	}

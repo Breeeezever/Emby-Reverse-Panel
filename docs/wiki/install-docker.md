@@ -1,6 +1,6 @@
 # Docker 部署
 
-官方镜像为 `ghcr.io/snnabb/meridian`，提供 Linux amd64 和 arm64。`latest` 跟随最新正式版本；固定版本可使用 `v1.13.5`。
+官方镜像为 `ghcr.io/snnabb/meridian`，提供 Linux amd64 和 arm64。`latest` 跟随最新正式版本；固定版本可使用 `v1.14.0`。
 
 ## 1. 准备目录与密钥
 
@@ -25,7 +25,7 @@ chmod 600 .env
 ```yaml
 services:
   meridian:
-    image: ghcr.io/snnabb/meridian:v1.13.5
+    image: ghcr.io/snnabb/meridian:v1.14.0
     user: "10001:10001"
     restart: unless-stopped
     read_only: true
@@ -115,5 +115,5 @@ docker compose ps
 | 创建后配置丢失 | `/app/data` 是否挂载持久卷。 |
 | 重建后凭据不可解密 | `.env` 或卷中的长期密钥是否被重新生成。 |
 | 路径入口可用，独立端口不通 | 新端口是否已映射并开放。 |
-| 更换或移除域名后仍只认旧域名 | 确认镜像已更新到 `v1.13.5` 并重建容器，检查 `env_file`；面板手动保存的域名在 TLS 设置中修改。 |
+| 更换或移除域名后仍只认旧域名 | 确认镜像已更新到 `v1.13.5` 或更新版本并重建容器，检查 `env_file`；面板手动保存的域名在 TLS 设置中修改。 |
 | 面板提示不能一键更新 | 属于预期行为，请通过 Compose 更新镜像。 |
