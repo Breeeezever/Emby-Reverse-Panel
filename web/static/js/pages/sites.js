@@ -1,6 +1,7 @@
 // Sites management page
 let siteSortingCleanup = null;
 let sitesLoadGeneration = 0;
+let siteToolMenuCleanup = null;
 function renderSites() {
   const page = document.getElementById('page-sites');
   if (!page) return;
@@ -11,18 +12,96 @@ function renderSites() {
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           添加站点
         </button>
+        <details class="sites-tool-menu">
+          <summary class="btn-ghost">导入</summary>
+          <div class="sites-tool-menu-popover">
+            <button type="button" class="btn-ghost" data-site-import-format="json">JSON 配置</button>
+            <button type="button" class="btn-ghost" data-site-import-format="csv">CSV 表格</button>
+          </div>
+        </details>
+        <details class="sites-tool-menu">
+          <summary class="btn-ghost">导出</summary>
+          <div class="sites-tool-menu-popover">
+            <button type="button" class="btn-ghost" data-site-export-format="json">JSON 配置</button>
+            <button type="button" class="btn-ghost" data-site-export-format="csv">CSV 表格</button>
+            <div class="sites-tool-menu-label">客户端线路</div>
+            <button type="button" class="btn-ghost" data-site-export-format="client" data-site-export-mode="multi">多线路</button>
+            <button type="button" class="btn-ghost" data-site-export-format="client" data-site-export-mode="original">原线路</button>
+            <button type="button" class="btn-ghost" data-site-export-format="client" data-site-export-mode="proxy">反代线路</button>
+          </div>
+        </details>
+        <input id="site-import-file" type="file" accept=".json,.csv,text/csv,application/json" hidden>
         <label class="sites-search"><span class="sr-only">搜索站点</span><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16" y1="16" x2="21" y2="21"/></svg><input id="sites-search" type="search" placeholder="搜索站点名称或回源地址"></label>
         <button class="btn-ghost btn-test-all" id="btn-test-all-sites"><span aria-hidden="true">⌁</span> 全部测速</button>
         <div class="toolbar-info" id="sites-count"></div>
       </div>
+      <div class="site-account-reminders" id="site-account-reminders" hidden></div>
       <div class="sites-grid" id="sites-grid"></div>
     `;
 
+    bindSiteToolMenus(page);
     document.getElementById('btn-add-site').onclick = () => showSiteModal();
     document.getElementById('btn-test-all-sites').onclick = testAllSitesLatency;
     document.getElementById('sites-search').addEventListener('input', event => filterSiteCards(event.target.value));
+    document.querySelectorAll('[data-site-import-format]').forEach(button => {
+      button.onclick = () => {
+        const input = document.getElementById('site-import-file');
+        if (!input) return;
+        input.dataset.format = button.dataset.siteImportFormat;
+        input.value = '';
+        input.click();
+      };
+    });
+    document.querySelectorAll('[data-site-export-format]').forEach(button => {
+      button.onclick = () => downloadSiteData(button.dataset.siteExportFormat, button.dataset.siteExportMode || '');
+    });
+    document.getElementById('site-import-file').addEventListener('change', importSiteDataFile);
   }
   loadSites();
+}
+
+function bindSiteToolMenus(page) {
+  siteToolMenuCleanup?.();
+  const controller = new AbortController();
+  const options = { signal: controller.signal };
+  const menus = [...page.querySelectorAll('.sites-tool-menu')];
+  let pinned = null;
+  const setOpen = (menu, open) => {
+    menu.open = open;
+    menu.querySelector('summary').setAttribute('aria-expanded', String(open));
+  };
+  const closeAll = () => { pinned = null; menus.forEach(menu => setOpen(menu, false)); };
+  menus.forEach(menu => {
+    const summary = menu.querySelector('summary');
+    setOpen(menu, false);
+    menu.addEventListener('pointerenter', event => {
+      if (event.pointerType !== 'mouse' || (pinned && pinned !== menu)) return;
+      menus.forEach(other => { if (other !== menu) setOpen(other, false); });
+      setOpen(menu, true);
+    }, options);
+    menu.addEventListener('pointerleave', event => {
+      if (event.pointerType === 'mouse' && pinned !== menu) setOpen(menu, false);
+    }, options);
+    summary.addEventListener('click', event => {
+      event.preventDefault();
+      const alreadyPinned = pinned === menu;
+      closeAll();
+      if (!alreadyPinned) { pinned = menu; setOpen(menu, true); }
+    }, options);
+    menu.addEventListener('click', event => {
+      if (event.target.closest('button[data-site-import-format], button[data-site-export-format]')) closeAll();
+    }, options);
+    menu.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.stopPropagation(); closeAll(); summary.focus(); }
+    }, options);
+    menu.addEventListener('focusout', event => {
+      if (pinned !== menu && !menu.contains(event.relatedTarget) && !menu.matches(':hover')) setOpen(menu, false);
+    }, options);
+  });
+  document.addEventListener('pointerdown', event => {
+    if (!menus.some(menu => menu.contains(event.target))) closeAll();
+  }, options);
+  siteToolMenuCleanup = () => { closeAll(); controller.abort(); };
 }
 
 async function loadSites() {
@@ -32,6 +111,7 @@ async function loadSites() {
 	if (generation !== sitesLoadGeneration || Router.current !== 'sites') return;
 	siteIngressCapabilities = normalizeSiteCapabilities(capabilities);
     document.getElementById('sites-count').innerHTML = `共 <strong>${sites.length}</strong> 个站点`;
+    loadSiteAccountReminders();
 
     const grid = document.getElementById('sites-grid');
     const searchQuery = document.getElementById('sites-search')?.value || '';
@@ -123,6 +203,131 @@ async function loadSites() {
     filterSiteCards(searchQuery);
   } catch (e) {
     Toast.error('加载站点失败: ' + e.message);
+  }
+}
+
+function downloadSiteData(format, mode) {
+  document.getElementById('modal-title').textContent = '导出站点';
+  document.getElementById('modal-body').innerHTML = `
+    <p>格式：${esc(format === 'client' ? '客户端文本 · ' + ({original: '原线路', proxy: '反代线路', multi: '多线路'}[mode] || '多线路') : format.toUpperCase())}。所有站点都会保留，包括没有账号的站点。</p>
+    <label class="form-group"><input type="checkbox" id="export-accounts" checked> 包含账号信息</label>
+    <label class="form-group"><input type="checkbox" id="export-passwords"> 包含登录密码和安全密码</label>`;
+  document.getElementById('modal-footer').innerHTML = '<button class="btn-modal secondary" id="export-cancel">取消</button><button class="btn-modal primary" id="export-confirm">下载文件</button>';
+  const accounts = document.getElementById('export-accounts');
+  const passwords = document.getElementById('export-passwords');
+  accounts.onchange = () => { passwords.disabled = !accounts.checked; if (!accounts.checked) passwords.checked = false; };
+  document.getElementById('export-cancel').onclick = closeModal;
+  document.getElementById('export-confirm').onclick = async event => {
+    event.currentTarget.disabled = true;
+    try { await downloadSiteDataFile(format, mode, { include_accounts: accounts.checked, include_passwords: passwords.checked && accounts.checked }); closeModal(); }
+    catch (error) { Toast.error(error.message || '导出失败'); event.target.disabled = false; }
+  };
+  openModal({ closeOnBackdrop: false });
+}
+
+async function downloadSiteDataFile(format, mode, options) {
+  try {
+    const blob = await API.exportSiteData(format, format === 'client' ? mode : '', options);
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `meridian-sites.${format === 'csv' ? 'csv' : format === 'client' ? 'txt' : 'json'}`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch (error) {
+    throw error;
+  }
+}
+
+async function importSiteDataFile(event) {
+  const input = event.currentTarget;
+  const file = input.files && input.files[0];
+  if (!file) return;
+  try {
+    const data = await file.text();
+    const format = input.dataset.format || (file.name.toLowerCase().endsWith('.csv') ? 'csv' : 'json');
+    await showSiteImportPreview(format, data);
+  } catch (error) {
+    Toast.error(error.message || '导入失败');
+  } finally {
+    input.value = '';
+  }
+}
+
+async function showSiteImportPreview(format, data) {
+  let actions = {};
+  let duplicateAction = 'skip';
+  let preview;
+  let generation = 0;
+  const refresh = async () => {
+    const current = ++generation;
+    const confirm = document.getElementById('import-confirm');
+    if (confirm) confirm.disabled = true;
+    const next = await API.importSiteData(format, data, { preview: true, duplicate_action: duplicateAction, actions });
+    if (current !== generation) return;
+    preview = next;
+    document.getElementById('modal-title').textContent = '导入预览';
+    document.getElementById('modal-body').innerHTML = `
+      <p>共 ${preview.items.length} 个站点。新增站点默认停用；更新保留启停状态。未提供密码时保留已有密码。</p>
+      <label class="form-group">重复站点默认处理<select class="form-select" id="import-duplicates">
+        <option value="skip">跳过</option><option value="update">更新已有站点</option><option value="new">另建站点</option>
+      </select></label>
+      <div class="site-import-list">${preview.items.map(item => `
+        <div class="site-import-row">
+          <strong>${esc(item.name)}</strong><div class="mono">${esc(item.target_url)}</div>
+          <div>${item.account_count} 个账号${item.duplicate_names.length ? ` · 已匹配：${esc(item.duplicate_names.join('、'))}` : ' · 新站点'}</div>
+          ${item.action === 'skip' ? '' : `<div>入口：${esc(({path: '路径', host: '域名', both: '域名', port: '独立端口'})[item.ingress_mode] || item.ingress_mode)} ${esc(item.path_prefix || item.public_host || '')} · 端口 ${item.listen_port}</div>`}
+          <label>处理方式<select class="form-select" data-import-index="${item.index}">
+            <option value="new" ${item.action === 'new' ? 'selected' : ''}>新增</option>
+            <option value="update" ${item.action === 'update' ? 'selected' : ''} ${item.duplicate_names.length !== 1 ? 'disabled' : ''}>更新</option>
+            <option value="skip" ${item.action === 'skip' ? 'selected' : ''}>跳过</option>
+          </select></label>
+          ${item.error ? `<p class="site-import-error">${esc(item.error)}</p>` : ''}
+        </div>`).join('')}</div>`;
+    document.getElementById('modal-footer').innerHTML = '<button class="btn-modal secondary" id="import-cancel">取消</button><button class="btn-modal primary" id="import-confirm">确认导入</button>';
+    const policy = document.getElementById('import-duplicates');
+    policy.value = duplicateAction;
+    policy.onchange = async () => { duplicateAction = policy.value; actions = {}; try { await refresh(); } catch (error) { Toast.error(error.message); } };
+    document.querySelectorAll('[data-import-index]').forEach(select => {
+      select.onchange = async () => { actions[select.dataset.importIndex] = select.value; try { await refresh(); } catch (error) { Toast.error(error.message); } };
+    });
+    document.getElementById('import-cancel').onclick = () => { generation++; closeModal(); };
+    const button = document.getElementById('import-confirm');
+    button.disabled = !preview.valid;
+    button.onclick = async () => {
+      button.disabled = true;
+      button.textContent = '导入中…';
+      try {
+        const result = await API.importSiteData(format, data, { duplicate_action: duplicateAction, actions, preview_token: preview.preview_token });
+        const summary = `新增 ${result.created_sites}、更新 ${result.updated_sites}、跳过 ${result.skipped_sites}、失败 ${result.failed_sites}`;
+        if (result.failed_sites) {
+          document.getElementById('modal-body').innerHTML = `<p>${esc(summary)}</p>${result.items.filter(item => item.error).map(item => `<p>${esc(item.name)}：${esc(item.error)}</p>`).join('')}`;
+          button.hidden = true;
+        } else { closeModal(); Toast.success(summary); }
+        await loadSites();
+      } catch (error) {
+        Toast.error(error.message || '导入失败');
+        try { await refresh(); } catch (_) { button.textContent = '请重新导入'; }
+      }
+    };
+  };
+  await refresh();
+  openModal({ closeOnBackdrop: false });
+}
+
+async function loadSiteAccountReminders() {
+  const target = document.getElementById('site-account-reminders');
+  if (!target || !API.getAccountReminders) return;
+  try {
+    const rows = await API.getAccountReminders();
+    if (!rows.length) {
+      target.hidden = true;
+      target.innerHTML = '';
+      return;
+    }
+    target.hidden = false;
+    target.innerHTML = `<span class="site-account-reminder-label">账号到期</span>${rows.sort((a, b) => a.days_left - b.days_left).slice(0, 8).map(row => `<span class="reminder-pill ${row.status}">${esc(row.site_name)} · ${esc(row.account.account_name)} · ${row.status === 'expired' ? '已到期' : `剩余 ${row.days_left} 天`}</span>`).join('')}`;
+  } catch (_) {
+    target.hidden = true;
   }
 }
 
@@ -1130,10 +1335,12 @@ async function showSiteModal(site) {
   const title = isEdit ? '编辑站点' : '添加站点';
 	let siteCapabilities;
 	let dynamicCapabilities;
+	let existingAccounts = [];
 	try {
-		[siteCapabilities, dynamicCapabilities] = await Promise.all([
+		[siteCapabilities, dynamicCapabilities, existingAccounts] = await Promise.all([
 			API.ingressCapabilities().then(normalizeSiteCapabilities),
 			loadDynamicProfiles(),
+			isEdit ? API.listSiteAccounts(site.id) : Promise.resolve([]),
 		]);
 	} catch (error) {
 		Toast.error(`无法读取站点能力：${error.message}`);
@@ -1152,6 +1359,8 @@ async function showSiteModal(site) {
 		dynamic_allow_https_downgrade: true,
 	});
 	let dynamicRules = [...dynamicPolicy.dynamic_domain_rules];
+	let modalAccounts = Array.isArray(existingAccounts) ? existingAccounts.map(account => ({ ...account })) : [];
+	let nextDraftAccountID = -1;
   const primaryTarget = splitUpstreamTargetAddress(isEdit ? site.target_url : '', 'http');
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = `
@@ -1165,6 +1374,13 @@ async function showSiteModal(site) {
         <label for="m-name">站点名称</label>
         <input type="text" class="form-input" id="m-name" value="${isEdit ? esc(site.name) : ''}" placeholder="如：Emby-US-01" maxlength="100" required>
       </div>
+	${!isEdit ? `<details class="form-group site-form-wide site-launch-import" id="m-launch-import">
+	  <summary>从开号信息填充</summary>
+	  <div class="site-launch-import-body">
+	    <textarea class="form-input" id="m-launch-message" rows="5" placeholder="粘贴包含站点名称、用户名、密码和线路的开号信息"></textarea>
+	    <div class="site-inline-actions"><button type="button" class="btn-ghost" id="m-launch-parse">解析并填充</button><span class="form-help" id="m-launch-result"></span></div>
+	  </div>
+	</details>` : ''}
 	<div class="form-group">
 	  <label for="m-ingress-mode">入口模式</label>
 	  <select class="form-select modal-select" id="m-ingress-mode" required>
@@ -1207,6 +1423,25 @@ async function showSiteModal(site) {
         </details>
         <button type="button" class="btn-ghost" id="m-test-all-lines">测试连接</button>
       </div>
+	  <details class="form-group site-form-wide site-accounts-module" id="m-account-options" ${modalAccounts.length ? 'open' : ''}>
+	    <summary>站点账号 <span class="site-account-count" id="m-account-count"></span></summary>
+	    <div class="site-accounts-body">
+	      <div id="m-account-list" class="site-account-list"></div>
+	      <div class="site-account-form">
+	        <input type="hidden" id="m-account-id">
+	        <div class="site-account-fields">
+	          <label>账号名称<input type="text" class="form-input" id="m-account-name" placeholder="可与用户名相同" maxlength="128"></label>
+	          <label>用户名<input type="text" class="form-input" id="m-account-username" placeholder="可与账号名称相同" maxlength="128"></label>
+	          <label>登录密码<input type="text" class="form-input" id="m-account-password" autocomplete="off" spellcheck="false"></label>
+	          <label>安全密码<input type="text" class="form-input" id="m-account-security" autocomplete="off" spellcheck="false"></label>
+	          <label>到期时间<input type="date" class="form-input" id="m-account-expires"></label>
+	          <label>提前提醒（天）<input type="number" class="form-input" id="m-account-reminder" min="0" max="3650" step="1" placeholder="留空关闭，0 为到期时"></label>
+	          <label>备注<input type="text" class="form-input" id="m-account-note" maxlength="2000"></label>
+	        </div>
+	        <div class="site-inline-actions"><button type="button" class="btn-ghost" id="m-account-save">添加账号</button><button type="button" class="btn-ghost" id="m-account-reset">清空</button><span class="form-help" id="m-account-hint">只填日期时按全局时区的 00:00 计算；提前提醒通过 TG Bot 向管理员发送，每次到期只提醒一次。${isEdit ? '修改后请保存账号。' : '账号随站点一起保存；解析只填入表单，可以先修改提醒。'}</span></div>
+	      </div>
+	    </div>
+	  </details>
     </div>
     <div class="site-modal-panel" id="site-panel-lines" role="tabpanel" aria-labelledby="site-tab-lines">
       <div class="form-group">
@@ -1329,6 +1564,7 @@ async function showSiteModal(site) {
   `;
 
   document.getElementById('modal-footer').innerHTML = `
+    <div class="site-account-save-notice" id="m-account-save-notice" role="status" aria-live="polite" hidden>账号有未保存的修改，请先保存账号或放弃修改。<button type="button" class="btn-ghost" id="m-account-review">查看账号</button></div>
     <button class="btn-modal secondary" id="m-cancel">取消</button>
     <button class="btn-modal primary" id="m-submit">${isEdit ? '保存' : '创建'}</button>
   `;
@@ -1392,6 +1628,149 @@ async function showSiteModal(site) {
     syncPrimaryAddress();
     return joinUpstreamTargetAddress(primarySchemeInput.value, primaryAddressInput.value, primaryPortInput.value);
   };
+
+  const accountList = document.getElementById('m-account-list');
+  const accountCount = document.getElementById('m-account-count');
+  const accountFormIDs = ['m-account-id', 'm-account-name', 'm-account-username', 'm-account-password', 'm-account-security', 'm-account-expires', 'm-account-reminder', 'm-account-note'];
+  let accountFormOriginal = null;
+  let saving = false;
+  let accountSaving = false;
+  const accountFingerprint = () => JSON.stringify(accountFormIDs.map(id => {
+    const input = document.getElementById(id);
+    const value = input?.value || '';
+    return [id === 'm-account-password' || id === 'm-account-security' ? value : value.trim(), !!input?.validity?.badInput];
+  }));
+  let accountBaseline = accountFingerprint();
+  const accountFormDirty = () => accountFingerprint() !== accountBaseline;
+  function reviewPendingAccount() {
+    document.getElementById('site-tab-basic')?.click();
+    document.getElementById('m-account-options').open = true;
+    document.getElementById('m-account-save').scrollIntoView({ block: 'center', behavior: 'smooth' });
+    document.getElementById('m-account-save').focus({ preventScroll: true });
+  }
+  function refreshAccountSaveState() {
+    const pending = isEdit && accountFormDirty();
+    const button = document.getElementById('m-submit');
+    if (button) {
+      button.disabled = saving || accountSaving || pending;
+      button.title = pending ? '请先保存账号，或放弃账号修改' : '';
+    }
+    document.getElementById('m-account-save-notice').hidden = !pending;
+    document.getElementById('m-account-reset').textContent = pending ? '放弃修改' : '清空';
+  }
+  accountFormIDs.forEach(id => {
+    document.getElementById(id).addEventListener('input', refreshAccountSaveState);
+    document.getElementById(id).addEventListener('change', refreshAccountSaveState);
+  });
+  document.getElementById('m-account-review').onclick = reviewPendingAccount;
+  function fillModalAccountForm(account) {
+    accountFormOriginal = { ...account };
+    const values = [account.id || '', account.account_name || '', account.username || '', account.password || '', account.security_password || '', String(account.expires_at || '').slice(0, 10), account.reminder_days ?? '', account.note || ''];
+    accountFormIDs.forEach((id, index) => { document.getElementById(id).value = values[index]; });
+    document.getElementById('m-account-save').textContent = isEdit ? '保存账号' : '确认账号信息';
+    accountBaseline = accountFingerprint();
+    refreshAccountSaveState();
+  }
+  function resetModalAccountForm() {
+    accountFormOriginal = null;
+    accountFormIDs.forEach(id => { const input = document.getElementById(id); if (input) input.value = ''; });
+    const save = document.getElementById('m-account-save');
+    if (save) save.textContent = '添加账号';
+    accountBaseline = accountFingerprint();
+    refreshAccountSaveState();
+  }
+  function renderModalAccounts() {
+    if (!accountList) return;
+    if (accountCount) accountCount.textContent = modalAccounts.length ? `（${modalAccounts.length} 个）` : '';
+    if (!modalAccounts.length) {
+      accountList.innerHTML = '<div class="form-help">暂无账号，可在下方添加。</div>';
+      return;
+    }
+    accountList.innerHTML = modalAccounts.map(account => `<div class="site-account-row">
+      <div><strong>${esc(account.account_name || account.username || '未命名账号')}${!isEdit ? ' · 待保存' : ''}</strong><span>${esc(account.username || account.account_name || '')}</span></div>
+      <div class="site-account-row-meta"><span>登录密码：<code>${esc(account.password || '未填写')}</code> · 安全密码：<code>${esc(account.security_password || '未填写')}</code>${account.expires_at ? ` · 到期：${esc(account.expires_at)}` : ''}${account.reminder_days != null ? ` · 提前 ${esc(String(account.reminder_days))} 天提醒` : ''}</span><div class="site-account-row-actions"><button type="button" class="icon-button" data-modal-account-edit="${account.id || ''}" title="编辑账号">编辑</button><button type="button" class="icon-button danger" data-modal-account-delete="${account.id || ''}" title="删除账号">删除</button></div></div>
+    </div>`).join('');
+    accountList.querySelectorAll('[data-modal-account-edit]').forEach(button => {
+      button.onclick = () => {
+        const account = modalAccounts.find(row => String(row.id || '') === String(button.dataset.modalAccountEdit));
+        if (!account) return;
+        if ((accountFormDirty() || (!isEdit && accountFormOriginal && !accountFormOriginal.id)) && !confirm('当前账号有未保存的修改，放弃后切换账号？')) return;
+        fillModalAccountForm(account);
+      };
+    });
+    accountList.querySelectorAll('[data-modal-account-delete]').forEach(button => {
+      button.onclick = async () => {
+        const accountID = Number(button.dataset.modalAccountDelete);
+        const index = modalAccounts.findIndex(row => Number(row.id) === accountID);
+        if (index < 0) return;
+        if (!confirm('确认删除这个账号？')) return;
+        try {
+          if (isEdit && accountID > 0) await API.deleteSiteAccount(site.id, accountID);
+          if (document.getElementById('m-account-list') !== accountList) return;
+          modalAccounts.splice(index, 1);
+          // Deleting another row must not discard the account currently being edited.
+          if (Number(document.getElementById('m-account-id')?.value || 0) === accountID) resetModalAccountForm();
+          renderModalAccounts();
+          loadSiteAccountReminders();
+          Toast.success('账号已删除');
+        } catch (error) { Toast.error(error.message || '删除账号失败'); }
+      };
+    });
+  }
+  async function saveModalAccount(showNotice = true) {
+    if (accountSaving || !validateFields(document.getElementById('m-account-options'))) return false;
+    const id = Number(document.getElementById('m-account-id')?.value || 0);
+    const data = {
+      account_name: document.getElementById('m-account-name')?.value.trim() || '',
+      username: document.getElementById('m-account-username')?.value.trim() || '',
+      password: document.getElementById('m-account-password')?.value || '',
+      security_password: document.getElementById('m-account-security')?.value || '',
+      expires_at: document.getElementById('m-account-expires')?.value || '',
+      note: document.getElementById('m-account-note')?.value.trim() || '',
+    };
+    const reminder = document.getElementById('m-account-reminder')?.value.trim() || '';
+    if (reminder && (!/^\d+$/.test(reminder) || Number(reminder) > 3650)) { Toast.error('提前提醒天数应为 0–3650'); return false; }
+    data.reminder_days = reminder === '' ? null : Number(reminder);
+    data.clear_reminder = reminder === '';
+    data.clear_password = data.password === '';
+    data.clear_security_password = data.security_password === '';
+    data.clear_expires_at = data.expires_at === '';
+    data.clear_note = data.note === '';
+    const original = accountFormOriginal || modalAccounts.find(row => Number(row.id) === id);
+    if (original && data.expires_at === String(original.expires_at || '').slice(0, 10)) data.expires_at = original.expires_at;
+    if (!data.account_name && !data.username) { Toast.error('请填写账号名称或用户名'); return false; }
+    accountSaving = true;
+    const locked = [...accountFormIDs, 'm-account-save', 'm-account-reset'].map(id => document.getElementById(id));
+    locked.forEach(input => { input.disabled = true; });
+    refreshAccountSaveState();
+    try {
+      if (isEdit) {
+        const saved = id ? await API.updateSiteAccount(site.id, id, data) : await API.createSiteAccount(site.id, data);
+        if (document.getElementById('m-account-save') !== locked[accountFormIDs.length]) return true;
+        const index = modalAccounts.findIndex(row => Number(row.id) === id);
+        if (index >= 0) modalAccounts[index] = saved;
+        else modalAccounts.push(saved);
+      } else {
+        const draft = { ...data, password_configured: !!data.password, security_password_configured: !!data.security_password };
+        const index = modalAccounts.findIndex(row => Number(row.id) === id && id < 0);
+        if (index >= 0) modalAccounts[index] = { ...modalAccounts[index], ...draft };
+        else modalAccounts.push({ ...draft, id: nextDraftAccountID-- });
+      }
+      resetModalAccountForm();
+      renderModalAccounts();
+      loadSiteAccountReminders();
+      if (showNotice) Toast.success(isEdit ? '账号已保存' : '账号信息已确认，创建站点后生效');
+      return true;
+    } catch (error) { Toast.error(error.message || '保存账号失败'); return false; }
+    finally {
+      accountSaving = false;
+      locked.forEach(input => { input.disabled = false; });
+      if (document.getElementById('m-account-save') === locked[accountFormIDs.length]) refreshAccountSaveState();
+    }
+  }
+  document.getElementById('m-account-save')?.addEventListener('click', () => saveModalAccount());
+  document.getElementById('m-account-reset')?.addEventListener('click', resetModalAccountForm);
+  renderModalAccounts();
 	const failoverLinesContainer = document.getElementById('m-failover-lines');
 	let failoverLines = isEdit && Array.isArray(site.failover_lines)
 		? site.failover_lines.map(line => ({name: line.name || '', url: line.url || '', enabled: line.enabled !== false}))
@@ -1515,6 +1894,42 @@ async function showSiteModal(site) {
 	}
 	updateIngressFields();
 	ingressSelect.addEventListener('change', updateIngressFields);
+	if (!isEdit) {
+	  document.getElementById('m-launch-parse')?.addEventListener('click', async () => {
+	    const result = document.getElementById('m-launch-result');
+	    const text = document.getElementById('m-launch-message')?.value.trim() || '';
+	    if (!text) { Toast.error('请先粘贴开号信息'); return; }
+      const parseButton = document.getElementById('m-launch-parse');
+      const activeForm = document.getElementById('m-submit');
+      if (parseButton.disabled) return;
+      parseButton.disabled = true;
+	    try {
+	      const parsed = await API.parseSiteMessage(text);
+      if (document.getElementById('m-submit') !== activeForm) return;
+	      document.getElementById('m-name').value = parsed.name || '';
+	      const target = splitUpstreamTargetAddress(parsed.target_url || '', 'http');
+	      primarySchemeInput.value = target.scheme;
+	      primaryAddressInput.value = target.address;
+	      primaryPortInput.value = target.port;
+      failoverLines = (parsed.failover_targets || []).map((url, index) => ({name: `备用 ${index + 1}`, url, enabled: true}));
+      renderFailoverLines();
+	      ingressSelect.value = parsed.ingress_mode || 'path';
+	      pathPrefixInput.value = String(parsed.path_prefix || '').replace(/^\//, '');
+	      updateIngressFields();
+      // Recognition fills the editable form; only an explicit save stages the account.
+      resetModalAccountForm();
+      const recognized = Array.isArray(parsed.accounts) ? parsed.accounts[0] : null;
+      if (recognized) {
+        const existing = modalAccounts.find(account => account.username === recognized.username);
+        fillModalAccountForm({ ...recognized, id: existing?.id });
+      }
+      result.textContent = recognized ? '已识别，尚未保存。请在下方核对账号、到期时间和提前提醒，再创建站点。' : '已识别站点线路，未找到账号信息。请检查后创建。';
+	      document.getElementById('m-account-options')?.setAttribute('open', '');
+	    } catch (error) {
+	      result.textContent = error.message || '解析失败';
+	    } finally { parseButton.disabled = false; }
+	  });
+	}
 
 	const uaSelect = document.getElementById('m-ua');
   const clientIPModeSelect = document.getElementById('m-client-ip-mode');
@@ -1719,10 +2134,12 @@ async function showSiteModal(site) {
   const modalBody = document.getElementById('modal-body');
   bindFieldValidation(modalBody);
   const submitButton = document.getElementById('m-submit');
-  let saving = false;
+  refreshAccountSaveState();
   submitButton.onclick = async () => {
+    if (accountSaving || saving) return;
+    if (isEdit && accountFormDirty()) { refreshAccountSaveState(); reviewPendingAccount(); return; }
     syncPrimaryAddress();
-    if (saving || !validateFields(modalBody)) return;
+    if (!validateFields(modalBody)) return;
     const uaMode = uaSelect.value;
     const customUAPayload = buildCustomUAPayload(
       uaMode,
@@ -1842,6 +2259,11 @@ async function showSiteModal(site) {
 			}
 		}
 
+    // Creating the site is an explicit save: include the currently edited account,
+    // including reminder changes, even when the user skips the separate account button.
+    if (!isEdit && accountFormIDs.slice(1).some(id => document.getElementById(id).value !== '')) {
+      if (!(await saveModalAccount(false))) return;
+    }
     saving = true;
     submitButton.disabled = true;
     submitButton.textContent = isEdit ? '保存中…' : '创建中…';
@@ -1851,8 +2273,17 @@ async function showSiteModal(site) {
         await API.updateSite(site.id, data);
         Toast.success('站点已更新');
       } else {
-        await API.createSite(data);
-        Toast.success('站点已创建');
+        const pendingAccounts = modalAccounts.filter(account => Number(account.id) < 0 || !account.id);
+        await API.createSite({ ...data, accounts: pendingAccounts.map(account => ({
+          account_name: account.account_name || '',
+          username: account.username || '',
+          password: account.password || '',
+          security_password: account.security_password || '',
+          expires_at: account.expires_at || '',
+          note: account.note || '',
+          reminder_days: account.reminder_days ?? null,
+        })) });
+        Toast.success(pendingAccounts.length ? `站点已创建，已保存 ${pendingAccounts.length} 个账号` : '站点已创建');
       }
       // A user may close this editor and open another while the request runs.
       if (document.getElementById('m-submit') === submitButton) closeModal();
@@ -1861,7 +2292,7 @@ async function showSiteModal(site) {
       Toast.error(e.message);
     } finally {
       saving = false;
-      submitButton.disabled = false;
+      if (document.getElementById('m-submit') === submitButton) refreshAccountSaveState();
       submitButton.textContent = isEdit ? '保存' : '创建';
       submitButton.removeAttribute('aria-busy');
     }

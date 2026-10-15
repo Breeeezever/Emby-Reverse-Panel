@@ -16,11 +16,19 @@ import (
 	"time"
 )
 
+type fakeTelegramDocument struct {
+	Name   string
+	Data   []byte
+	ChatID string
+}
+
 type fakeTelegramAPI struct {
-	mu       sync.Mutex
-	calls    []string
-	messages []map[string]any
-	updates  func(map[string]any) []telegramUpdate
+	mu         sync.Mutex
+	calls      []string
+	messages   []map[string]any
+	updates    func(map[string]any) []telegramUpdate
+	documents  []fakeTelegramDocument
+	importData string
 }
 
 func (f *fakeTelegramAPI) client() *http.Client {
@@ -28,12 +36,32 @@ func (f *fakeTelegramAPI) client() *http.Client {
 		if r.URL.Host != "api.telegram.org" {
 			return nil, fmt.Errorf("unexpected destination")
 		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			return nil, err
-		}
 		parts := strings.Split(r.URL.Path, "/")
 		method := parts[len(parts)-1]
+		if strings.HasPrefix(r.URL.Path, "/file/") {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(f.importData)), Header: http.Header{}}, nil
+		}
+		var body map[string]any
+		if method == "sendDocument" {
+			if err := r.ParseMultipartForm(4 << 20); err != nil {
+				return nil, err
+			}
+			defer r.MultipartForm.RemoveAll()
+			file, header, err := r.FormFile("document")
+			if err != nil {
+				return nil, err
+			}
+			defer file.Close()
+			data, err := io.ReadAll(file)
+			if err != nil {
+				return nil, err
+			}
+			f.mu.Lock()
+			f.documents = append(f.documents, fakeTelegramDocument{header.Filename, data, r.FormValue("chat_id")})
+			f.mu.Unlock()
+		} else if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			return nil, err
+		}
 		f.mu.Lock()
 		f.calls = append(f.calls, method)
 		if method == "sendMessage" || method == "editMessageText" {
@@ -41,6 +69,9 @@ func (f *fakeTelegramAPI) client() *http.Client {
 		}
 		f.mu.Unlock()
 		result := any(map[string]any{"message_id": 1})
+		if method == "getFile" {
+			result = map[string]any{"file_path": "documents/import.csv", "file_size": len(f.importData)}
+		}
 		if method == "getUpdates" {
 			result = []telegramUpdate{}
 			if f.updates != nil {
@@ -230,6 +261,69 @@ func TestTelegramBotAddEditReadToggleDeleteAndDuplicateConfirmation(t *testing.T
 	sites, _ = b.app.db.ListSites()
 	if len(sites) != 0 {
 		t.Fatalf("site not deleted: %s", f.lastText())
+	}
+}
+
+func TestTelegramBotAccountManagementAndLaunchImport(t *testing.T) {
+	b, f := newTestTelegramBot(t)
+	site, err := b.app.db.CreateSiteRecord(Site{
+		Name: "account-site", IngressMode: ingressModePath, PathPrefix: "/account-site",
+		ListenPort: 12346, TargetURL: "http://127.0.0.1:8096", PlaybackMode: "direct", UAMode: "passthrough",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tgHandle(t, b, testTelegramCallback(101, fmt.Sprintf("site:%d:accounts", site.ID)))
+	tgHandle(t, b, testTelegramCallback(101, fmt.Sprintf("account:%d:new", site.ID)))
+	tgText(t, b, "demo")
+	tgChoose(t, b, "same")
+	tgChoose(t, b, "secret")
+	tgChoose(t, b, "second")
+	tgChoose(t, b, "skip")
+	tgChoose(t, b, "skip")
+	tgChoose(t, b, "skip")
+	tgChoose(t, b, "yes")
+	accounts, err := b.app.db.listSiteAccounts(site.ID)
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("accounts=%d err=%v", len(accounts), err)
+	}
+	plain, err := accountPlaintext(accounts[0])
+	if err != nil || plain.Username != "demo" || plain.Password != "secret" || plain.SecurityPassword != "second" {
+		t.Fatalf("account=%+v err=%v", plain, err)
+	}
+
+	// The site-specific export menu must route through the site ID and return
+	// the requested client format instead of treating "export" as an account ID.
+	tgHandle(t, b, testTelegramCallback(101, fmt.Sprintf("account:%d:export", site.ID)))
+	tgHandle(t, b, testTelegramCallback(101, fmt.Sprintf("account:%d:export:original", site.ID)))
+	tgChoose(t, b, "include")
+	tgChoose(t, b, "include")
+	if len(f.documents) != 1 || !strings.Contains(string(f.documents[0].Data), "demo") || !strings.Contains(string(f.documents[0].Data), "http://127.0.0.1:8096") {
+		t.Fatalf("account export missing document: %+v", f.documents)
+	}
+
+	tgText(t, b, "/add")
+	tgChoose(t, b, "launch")
+	tgText(t, b, "**launch-site**\n· 用户名称 | `launch-user`\n· 用户密码 | `launch-pass`\nhttps://origin.example/emby\nhttps://backup.example/emby")
+	tgChoose(t, b, "done")
+	tgChoose(t, b, "yes")
+	sites, err := b.app.db.ListSites()
+	if err != nil || len(sites) != 2 {
+		t.Fatalf("sites=%d err=%v", len(sites), err)
+	}
+	var imported *Site
+	for i := range sites {
+		if sites[i].Name == "launch-site" {
+			imported = &sites[i]
+		}
+	}
+	if imported == nil || imported.TargetURL != "https://origin.example/emby" || len(imported.FailoverTargetList) != 1 || imported.FailoverTargetList[0] != "https://backup.example/emby" {
+		t.Fatalf("launch site=%+v", imported)
+	}
+	importedAccounts, err := b.app.db.listSiteAccounts(imported.ID)
+	if err != nil || len(importedAccounts) != 1 {
+		t.Fatalf("launch accounts=%d err=%v", len(importedAccounts), err)
 	}
 }
 func TestTelegramBotRejectsStaleDraftAndRevokedAdministrator(t *testing.T) {

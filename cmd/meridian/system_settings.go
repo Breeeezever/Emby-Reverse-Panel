@@ -141,6 +141,13 @@ func normalizeSystemSettings(settings SystemSettings) (SystemSettings, error) {
 	settings.UIRadius = 24
 	settings.ProbeTimeoutMS = 5000
 	settings.PingCacheMinutes = 10
+	// These legacy queue fields have no independent runtime worker anymore.
+	// Keep their database columns for backup and migration compatibility, but
+	// normalize them to the only supported behavior so an API client cannot
+	// persist settings that the logger silently ignores.
+	settings.LogWriteDelayMinutes = 0
+	settings.LogFlushThreshold = 1
+	settings.LogTaskLeaseMS = 300000
 	settings.UIMode = strings.ToLower(strings.TrimSpace(settings.UIMode))
 	settings.TrafficBillingMode = strings.ToLower(strings.TrimSpace(settings.TrafficBillingMode))
 	if settings.TrafficBillingMode == "" {

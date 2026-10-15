@@ -4522,6 +4522,151 @@ html[data-theme="light"] .toast.error {
 .site-modal-tabs {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+.sites-tool-menu {
+  position: relative;
+}
+.sites-tool-menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.sites-tool-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.sites-tool-menu-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  left: 0;
+  display: grid;
+  min-width: 148px;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .28);
+}
+.sites-tool-menu-popover .btn-ghost {
+  justify-content: flex-start;
+  min-height: 32px;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+.sites-tool-menu-popover::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 8px;
+}
+.site-config-modal .modal-footer {
+  flex-wrap: wrap;
+}
+.site-account-save-notice {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--amber, #f6bc63);
+}
+.site-account-save-notice .btn-ghost {
+  margin-left: 8px;
+  padding: 2px 6px;
+  font-size: inherit;
+}
+.sites-tool-menu-label {
+  padding: 6px 9px 2px;
+  color: var(--white-38);
+  font-size: 11px;
+}
+.site-account-reminders {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--white-12);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.site-account-reminder-label {
+  color: var(--white-60);
+  font-size: 12px;
+}
+.site-accounts-module > summary,
+.site-launch-import > summary {
+  cursor: pointer;
+  color: var(--white-87);
+  font-size: 13px;
+  font-weight: 600;
+}
+.site-accounts-body,
+.site-launch-import-body {
+  padding-top: 14px;
+}
+.site-account-count {
+  color: var(--white-38);
+  font-weight: 400;
+}
+.site-account-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.site-account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--white-12);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.site-account-row > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.site-account-row > div:first-child span,
+.site-account-row-meta {
+  color: var(--white-60);
+  font-size: 12px;
+}
+.site-account-row-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  text-align: right;
+}
+.site-account-row-actions,
+.site-inline-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.site-account-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.site-account-fields label {
+  display: grid;
+  gap: 6px;
+  color: var(--white-60);
+  font-size: 12px;
+}
+.site-account-form .site-inline-actions {
+  margin-top: 10px;
+}
+.site-launch-import textarea {
+  width: 100%;
+  resize: vertical;
+}
 @media (max-width: 768px) {
   .site-upstream-line {
     grid-template-columns: minmax(0, 1fr) auto;
@@ -4560,6 +4705,22 @@ html[data-theme="light"] .toast.error {
     min-height: 44px;
     font-size: 16px;
   }
+  .site-account-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .site-account-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .site-account-row-meta {
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+@media (max-width: 480px) {
+  .site-account-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 .update-release-notes {
@@ -4571,9 +4732,213 @@ html[data-theme="light"] .toast.error {
   max-height: 360px;
   overflow: auto;
 }
+
+/* Site account workspace */
+.accounts-layout {
+  display: grid;
+  gap: 18px;
+  max-width: 1440px;
+  margin-inline: auto;
+}
+.accounts-toolbar {
+  align-items: flex-start;
+}
+.accounts-toolbar .toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.accounts-export-mode {
+  width: auto;
+  min-width: 108px;
+}
+.file-button {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+.file-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.account-reminder-card,
+.account-list-panel,
+.account-form-panel,
+.account-import-panel {
+  border: 1px solid var(--white-12);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 18px;
+}
+.account-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr);
+  gap: 18px;
+  align-items: start;
+}
+.card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.card-heading h3,
+.account-form-panel h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.account-list-panel .card-heading .form-input {
+  width: min(260px, 55%);
+}
+.reminder-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.reminder-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--white-87);
+  font-size: 12px;
+}
+.reminder-pill.expired {
+  background: rgba(239, 68, 68, .16);
+  color: #fca5a5;
+}
+.reminder-pill.upcoming {
+  background: rgba(245, 158, 11, .16);
+  color: #fcd34d;
+}
+.account-list {
+  display: grid;
+  gap: 8px;
+}
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--white-12);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.account-row > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.account-row strong,
+.account-row span {
+  overflow-wrap: anywhere;
+}
+.account-row span,
+.account-row-meta {
+  color: var(--white-60);
+  font-size: 12px;
+}
+.account-row-meta {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.account-row-meta > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.account-line-mode {
+  width: auto;
+  min-height: 28px;
+  padding: 3px 24px 3px 8px;
+  font-size: 12px;
+}
+.account-row .icon-button {
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.account-row .icon-button.danger {
+  color: #fca5a5;
+}
+.account-form-panel form {
+  display: grid;
+  gap: 13px;
+}
+.account-form-panel label {
+  display: grid;
+  gap: 6px;
+  color: var(--white-60);
+  font-size: 12px;
+}
+.account-clear-field {
+  display: inline-flex !important;
+  grid-auto-flow: column;
+  align-items: center;
+  justify-content: start;
+  gap: 6px;
+  color: var(--white-38);
+  font-size: 11px;
+}
+.account-clear-field input {
+  accent-color: var(--blue);
+}
+.account-form-panel textarea {
+  resize: vertical;
+}
+.account-form-panel .form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 3px;
+}
+.account-import-panel textarea {
+  width: 100%;
+  resize: vertical;
+}
+@media (max-width: 860px) {
+  .account-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 560px) {
+  .accounts-toolbar,
+  .account-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .accounts-toolbar .toolbar-actions,
+  .accounts-toolbar .toolbar-actions > *,
+  .accounts-export-mode,
+  .account-list-panel .card-heading .form-input {
+    width: 100%;
+  }
+  .account-row-meta {
+    justify-items: start;
+  }
+  .account-list-panel .card-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
 #update-summary {
   overflow-wrap: anywhere;
 }
 #update-summary:empty {
   display: none;
 }
+
+.site-import-list { display: grid; gap: 12px; max-height: 55vh; overflow: auto; }
+.site-import-row { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--glass-border); border-radius: 10px; overflow-wrap: anywhere; }
+.site-import-error { color: var(--red, #d54949); margin: 0; }
+.site-account-row code { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }

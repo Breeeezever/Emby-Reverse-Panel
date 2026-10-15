@@ -27,6 +27,7 @@
 | | |
 | :--- | :--- |
 | **多站点入口**<br>路径、独立端口、子域名；主备线路自动切换，复制地址即可连接客户端。 | **三种播放模式**<br>自动发现、手动填写、直连播放；视频可直连，登录、海报与 API 继续代理。 |
+| **账号备忘与迁移**<br>一个站点保存多个账号、密码和到期日；开号消息识别、JSON/CSV 导入、JSON/CSV/TXT 导出。 | **到期提醒**<br>每个账号设置提前天数，通过 Telegram 管理员私聊提醒；可关闭，不重复日报。 |
 | **流量与状态**<br>实时趋势、站点配额、速率限制和静态资源缓存；日志筛选与连接诊断。 | **Telegram 管理**<br>私聊添加、编辑、启停站点，查看地址与用量；按钮操作更新原消息。 |
 | **证书与维护**<br>Cloudflare 泛域名证书及续期、证书路径或上传；加密备份和版本更新。 | **轻量且适配手机**<br>单个 Go 程序、内嵌前端与 SQLite；深色界面，本地字体，无外部数据库。 |
 
@@ -68,7 +69,8 @@
 
 在面板中填入 Bot Token、管理员数字用户 ID 和面板地址，启用后私聊发送 `/start`。
 
-- **按钮操作**：查看日报、地址与流量，添加、编辑、启停和删除站点。
+- **按钮操作**：查看日报、地址与流量，添加、编辑、启停和删除站点，管理多个账号和提前到期提醒。
+- **消息与文件**：粘贴开号信息填入可编辑草稿；JSON/CSV 导入先预览，JSON/CSV/TXT 导出以文件发送，可选择账号、密码和线路。
 - **原消息更新**：切换菜单、返回和填写步骤不连续刷屏，修改前显示确认摘要。
 - **权限分离**：只接受管理员私聊；日报接收人不会自动获得管理权限，日报可单独开关。
 
@@ -94,6 +96,6 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 <div align="center">
 
-最新发布：`v1.13.5` · [下载发行版](https://github.com/snnabb/Meridian/releases/latest) · [反馈问题](https://github.com/snnabb/Meridian/issues)<br>[MIT License](LICENSE)
+最新发布：`v1.14.0` · [下载发行版](https://github.com/snnabb/Meridian/releases/latest) · [反馈问题](https://github.com/snnabb/Meridian/issues)<br>[MIT License](LICENSE)
 
 </div>

@@ -293,9 +293,13 @@ func decryptPanelACMETokenWithSecret(ciphertext string, secret []byte) (string, 
 	} else if !strings.HasPrefix(ciphertext, panelACMETokenCipherPrefix) {
 		return "", errors.New("invalid Cloudflare DNS API token ciphertext")
 	}
-	payload, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimPrefix(ciphertext, prefix))
+	encoded := strings.TrimPrefix(ciphertext, prefix)
+	payload, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
 	if err != nil {
 		return "", fmt.Errorf("decode Cloudflare DNS API token: %w", err)
+	}
+	if base64.RawURLEncoding.EncodeToString(payload) != encoded {
+		return "", errors.New("invalid Cloudflare DNS API token ciphertext")
 	}
 	block, err := aes.NewCipher(keyForSecret(secret))
 	if err != nil {

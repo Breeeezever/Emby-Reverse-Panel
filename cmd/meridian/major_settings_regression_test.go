@@ -143,6 +143,9 @@ func TestFixedAppearanceAndProbeSettingsCannotBeOverridden(t *testing.T) {
 	settings.UIRadius = 1
 	settings.ProbeTimeoutMS = 10
 	settings.PingCacheMinutes = 999
+	settings.LogWriteDelayMinutes = 60
+	settings.LogFlushThreshold = 1000
+	settings.LogTaskLeaseMS = 1000
 	if err := app.db.saveSystemSettings(settings); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +153,7 @@ func TestFixedAppearanceAndProbeSettingsCannotBeOverridden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.UIRadius != 24 || settings.ProbeTimeoutMS != 5000 || settings.PingCacheMinutes != 10 {
+	if settings.UIRadius != 24 || settings.ProbeTimeoutMS != 5000 || settings.PingCacheMinutes != 10 || settings.LogWriteDelayMinutes != 0 || settings.LogFlushThreshold != 1 || settings.LogTaskLeaseMS != 300000 {
 		t.Fatalf("fixed settings overridden: %+v", settings)
 	}
 }
@@ -193,6 +196,12 @@ func TestReleaseCheckRejectsUnexpectedVersions(t *testing.T) {
 	}
 	if versionNewer("v1.9.99", "v1.10.0") || versionNewer("v1.13.0", "unknown") || versionNewer("v99999999999999999999999.0.0", "v1.0.0") {
 		t.Fatal("invalid version compared as newer")
+	}
+	if !versionNewer("v1.13.6", "v1.13.5-account-preview.20261013") {
+		t.Fatal("preview build should be upgradeable to a newer stable release")
+	}
+	if versionNewer("v1.13.5", "v1.13.5-account-preview.20261013") {
+		t.Fatal("preview build should not be upgraded to the same stable version")
 	}
 }
 func TestUpdateAgentSerializesJobsAndReportsFailure(t *testing.T) {

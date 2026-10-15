@@ -30,7 +30,7 @@ const (
 	backupMaxUploadBytes     = 256 << 20
 	backupMaxExpandedBytes   = 512 << 20
 	backupMaxFiles           = 8
-	backupMinPasswordBytes   = 12
+	backupMinPasswordBytes   = 6
 	backupMaxPasswordBytes   = 128
 	backupPendingSuffix      = ".restore-pending"
 	backupAppliedSuffix      = ".restore-applied"
@@ -500,6 +500,60 @@ func reencryptRestoredSecrets(path string, oldJWT, oldCredentialKey, oldHeaderKe
 	for _, item := range updates {
 		if _, err := tx.Exec("UPDATE sites SET upstream_headers=? WHERE id=?", item.raw, item.id); err != nil {
 			return err
+		}
+	}
+	if hasAccounts, err := backupSQLiteColumnExists(tx, "site_accounts", "password_ciphertext"); err != nil {
+		return err
+	} else if hasAccounts {
+		rows, err := tx.Query("SELECT id, password_ciphertext, security_password_ciphertext FROM site_accounts")
+		if err != nil {
+			return err
+		}
+		type accountUpdate struct {
+			id       int64
+			password string
+			security string
+		}
+		var accountUpdates []accountUpdate
+		for rows.Next() {
+			var item accountUpdate
+			if err := rows.Scan(&item.id, &item.password, &item.security); err != nil {
+				rows.Close()
+				return err
+			}
+			if item.password != "" {
+				plain, err := decryptSiteAccountSecretWithSecrets(item.password, [][]byte{oldCredentialKey, newCredentialKey})
+				if err != nil {
+					rows.Close()
+					return fmt.Errorf("无法解密站点账号 %d 的登录密码: %w", item.id, err)
+				}
+				item.password, err = encryptSiteAccountSecretWithSecret(plain, newCredentialKey)
+				if err != nil {
+					rows.Close()
+					return fmt.Errorf("无法迁移站点账号 %d 的登录密码: %w", item.id, err)
+				}
+			}
+			if item.security != "" {
+				plain, err := decryptSiteAccountSecretWithSecrets(item.security, [][]byte{oldCredentialKey, newCredentialKey})
+				if err != nil {
+					rows.Close()
+					return fmt.Errorf("无法解密站点账号 %d 的安全密码: %w", item.id, err)
+				}
+				item.security, err = encryptSiteAccountSecretWithSecret(plain, newCredentialKey)
+				if err != nil {
+					rows.Close()
+					return fmt.Errorf("无法迁移站点账号 %d 的安全密码: %w", item.id, err)
+				}
+			}
+			accountUpdates = append(accountUpdates, item)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, item := range accountUpdates {
+			if _, err := tx.Exec("UPDATE site_accounts SET password_ciphertext=?, security_password_ciphertext=? WHERE id=?", item.password, item.security, item.id); err != nil {
+				return err
+			}
 		}
 	}
 	var telegramCiphertext string
