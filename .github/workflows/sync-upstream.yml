@@ -67,9 +67,16 @@ jobs:
             git add -A .github/workflows
             git merge --continue
           fi
-          # GITHUB_TOKEN 无法修改 workflow 文件：将 .github/workflows 冻结在 fork 当前版本
-          if ! git diff --quiet HEAD -- .github/workflows; then
-            git checkout HEAD -- .github/workflows
+          # GITHUB_TOKEN 无法修改 workflow 文件：将 .github/workflows 整体冻结在 fork 当前版本
+          # （包括上游新增的 workflow 文件也要剔除，否则 push 仍会被拒绝）
+          git ls-tree -r --name-only HEAD -- .github/workflows > /tmp/wf-head.txt || true
+          if [ -d .github/workflows ]; then
+            find .github/workflows -type f | grep -vxFf /tmp/wf-head.txt || true | while read -r f; do
+              git rm -q -f "$f" || true
+            done
+          fi
+          git checkout HEAD -- .github/workflows 2>/dev/null || true
+          if ! git diff --quiet HEAD; then
             git commit --amend --no-edit >/dev/null
           fi
           git push origin "HEAD:${{ github.ref_name }}"
