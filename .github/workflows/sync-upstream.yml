@@ -2,7 +2,7 @@ name: Sync upstream (anchored)
 
 on:
   schedule:
-    - cron: "25 2 * * *"
+    - cron: "3 15 * * *"
   workflow_dispatch:
 
 permissions:
@@ -69,13 +69,12 @@ jobs:
           fi
           # GITHUB_TOKEN 无法修改 workflow 文件：将 .github/workflows 整体冻结在 fork 当前版本
           # （包括上游新增的 workflow 文件也要剔除，否则 push 仍会被拒绝）
-          git ls-tree -r --name-only HEAD -- .github/workflows > /tmp/wf-head.txt || true
-          if [ -d .github/workflows ]; then
-            find .github/workflows -type f | grep -vxFf /tmp/wf-head.txt || true | while read -r f; do
-              git rm -q -f "$f" || true
-            done
-          fi
-          git checkout HEAD -- .github/workflows 2>/dev/null || true
+          # 1) delete workflow files added upstream but absent in fork pre-merge
+          git diff-tree -r --name-only --diff-filter=A "HEAD~1" HEAD -- .github/workflows | while read -r f; do
+            [ -n "$f" ] && git rm -q -f "$f"
+          done
+          # 2) restore all workflow file contents to fork pre-merge state
+          git checkout "HEAD~1" -- .github/workflows 2>/dev/null || true
           if ! git diff --quiet HEAD; then
             git commit --amend --no-edit >/dev/null
           fi
