@@ -102,7 +102,7 @@ docker compose pull && docker compose up -d
 
 示例使用官方镜像初始化的命名卷，以 `10001:10001` 运行。官方程序带有端口绑定文件能力，需要保留 `NET_BIND_SERVICE` 能力边界；使用宿主目录时，先确保该目录可由服务 UID/GID 读写。
 
-设置 `PANEL_DOMAIN` 为面板域名；需要使用转发头时，将 `TRUSTED_PROXY_CIDRS` 精确设为实际反向代理地址或网段。备份 `.env` 和数据卷，重建容器时继续使用原密钥。
+设置 `PANEL_DOMAIN` 为面板域名。`v1.13.5` 起，环境管理的域名在每次启动同步，修改、移除或置空后用 `docker compose up -d` 重建容器；面板手动保存域名或配置原生证书后，以数据库为准。需要使用转发头时，将 `TRUSTED_PROXY_CIDRS` 精确设为实际反向代理地址或网段。备份 `.env` 和数据卷，重建容器时继续使用原密钥。
 
 ## Windows 与源码
 

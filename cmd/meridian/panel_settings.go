@@ -1,14 +1,20 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 )
 
-const panelSettingsRowID = 1
+const (
+	panelSettingsRowID           = 1
+	panelDomainSourceEnvironment = "environment"
+	panelDomainSourceDatabase    = "database"
+)
 
 type PanelSettings struct {
+	PanelDomainSource   string `json:"-"`
 	CertificateSource   string `json:"certificate_source"`
 	CertificatePath     string `json:"certificate_path,omitempty"`
 	PrivateKeyPath      string `json:"private_key_path,omitempty"`
@@ -68,7 +74,7 @@ func scanPanelSettings(scanner interface{ Scan(...any) error }) (PanelSettings, 
 	var tlsEnabled, configured, acmeStaging int
 	err := scanner.Scan(
 		&settings.PanelDomain, &settings.RouteDomain, &settings.ListenPort, &tlsEnabled, &configured,
-		&settings.ACMEEmail, &settings.ACMEDNSProvider, &settings.ACMETokenCiphertext, &acmeStaging, &settings.CertificateSource, &settings.CertificatePath, &settings.PrivateKeyPath,
+		&settings.ACMEEmail, &settings.ACMEDNSProvider, &settings.ACMETokenCiphertext, &acmeStaging, &settings.CertificateSource, &settings.CertificatePath, &settings.PrivateKeyPath, &settings.PanelDomainSource,
 	)
 	settings.TLSEnabled = tlsEnabled != 0
 	settings.Configured = configured != 0
@@ -82,7 +88,7 @@ func (d *DB) PanelSettings() (PanelSettings, error) {
 	}
 	return scanPanelSettings(d.db.QueryRow(`
 		SELECT panel_domain, route_domain, listen_port, tls_enabled, configured,
-			acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging, certificate_source, certificate_path, private_key_path
+			acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging, certificate_source, certificate_path, private_key_path, panel_domain_source
 		FROM panel_settings WHERE id=?`, panelSettingsRowID))
 }
 
@@ -134,6 +140,20 @@ func validatePanelListenPort(port int) error {
 	return nil
 }
 
+// legacyPanelDomainSource recognizes the old, domain-only HTTP bootstrap used
+// by external reverse proxies. Older versions did not record provenance. Keep
+// existing route/TLS/certificate configurations under database control rather
+// than removing them merely because startup environment values are absent.
+func legacyPanelDomainSource(settings PanelSettings) string {
+	if !settings.Configured || (!settings.TLSEnabled && settings.RouteDomain == "" &&
+		settings.ACMEEmail == "" && settings.ACMETokenCiphertext == "" &&
+		(settings.CertificateSource == "" || settings.CertificateSource == "acme") &&
+		settings.CertificatePath == "" && settings.PrivateKeyPath == "") {
+		return panelDomainSourceEnvironment
+	}
+	return panelDomainSourceDatabase
+}
+
 func (d *DB) BootstrapPanelSettings(panelDomain, routeDomain string, tlsEnabled bool, listenPort int) (PanelSettings, error) {
 	if err := validatePanelListenPort(listenPort); err != nil {
 		return PanelSettings{}, err
@@ -142,34 +162,53 @@ func (d *DB) BootstrapPanelSettings(panelDomain, routeDomain string, tlsEnabled 
 	if err != nil {
 		return PanelSettings{}, err
 	}
-	if current.Configured {
-		if current.ListenPort == 0 {
-			if _, err := d.db.Exec("UPDATE panel_settings SET listen_port=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", listenPort, panelSettingsRowID); err != nil {
-				return PanelSettings{}, err
-			}
-			current.ListenPort = listenPort
+	candidate := current
+	if candidate.ListenPort == 0 {
+		candidate.ListenPort = listenPort
+	}
+	if !current.Configured {
+		initial, err := normalizeStoredPanelSettings(panelDomain, routeDomain, tlsEnabled)
+		if err != nil {
+			return PanelSettings{}, err
 		}
+		candidate.PanelDomain = initial.PanelDomain
+		candidate.RouteDomain = initial.RouteDomain
+		candidate.TLSEnabled = initial.TLSEnabled
+		candidate.PanelDomainSource = panelDomainSourceEnvironment
+		if initial.TLSEnabled {
+			candidate.PanelDomainSource = panelDomainSourceDatabase
+		}
+	} else {
+		if candidate.PanelDomainSource == "" || candidate.PanelDomainSource == "legacy" {
+			candidate.PanelDomainSource = legacyPanelDomainSource(current)
+		}
+		if candidate.PanelDomainSource == panelDomainSourceEnvironment {
+			// Only PANEL_DOMAIN is synchronized. Removing it removes the old
+			// Host restriction without changing ports, route hosts or TLS.
+			candidate.PanelDomain, err = normalizePublicHost(panelDomain)
+			if err != nil {
+				return PanelSettings{}, fmt.Errorf("invalid panel domain: %w", err)
+			}
+		}
+	}
+	candidate.Configured = candidate.PanelDomain != "" || candidate.RouteDomain != "" || candidate.TLSEnabled
+	if candidate == current {
 		return current, nil
 	}
-	candidate, err := normalizeStoredPanelSettings(panelDomain, routeDomain, tlsEnabled)
-	if err != nil {
-		return PanelSettings{}, err
-	}
-	candidate.ListenPort = listenPort
-	if !candidate.Configured {
-		if current.ListenPort == 0 {
-			if _, err := d.db.Exec("UPDATE panel_settings SET listen_port=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND configured=0", listenPort, panelSettingsRowID); err != nil {
-				return PanelSettings{}, err
-			}
-			current.ListenPort = listenPort
+	if candidate.PanelDomain != "" && candidate.PanelDomain != current.PanelDomain {
+		var conflicts bool
+		if err := d.db.QueryRow("SELECT EXISTS(SELECT 1 FROM sites WHERE public_host = ? COLLATE NOCASE)", candidate.PanelDomain).Scan(&conflicts); err != nil {
+			return PanelSettings{}, err
 		}
-		return current, nil
+		if conflicts {
+			return PanelSettings{}, errors.New("面板访问域名与站点冲突")
+		}
 	}
 	_, err = d.db.Exec(`
 		UPDATE panel_settings
-		SET panel_domain=?, route_domain=?, listen_port=?, tls_enabled=?, configured=1, updated_at=CURRENT_TIMESTAMP
-		WHERE id=? AND configured=0`,
-		candidate.PanelDomain, candidate.RouteDomain, candidate.ListenPort, sqliteBool(candidate.TLSEnabled), panelSettingsRowID)
+		SET panel_domain=?, route_domain=?, listen_port=?, tls_enabled=?, configured=?, panel_domain_source=?, updated_at=CURRENT_TIMESTAMP
+		WHERE id=?`,
+		candidate.PanelDomain, candidate.RouteDomain, candidate.ListenPort, sqliteBool(candidate.TLSEnabled), sqliteBool(candidate.Configured), candidate.PanelDomainSource, panelSettingsRowID)
 	if err != nil {
 		return PanelSettings{}, err
 	}
@@ -195,6 +234,61 @@ func routePrefixFromConfiguredHost(host, routeDomain string) (string, bool) {
 type panelHostMigration struct {
 	SiteID int64
 	Host   string
+}
+
+type panelSettingsQueryer interface {
+	Query(string, ...any) (*sql.Rows, error)
+}
+
+// Preview and commit use the same routing plan. The commit calls this inside
+// its transaction again so a stale preview cannot allow conflicting sites.
+func planPanelHostMigrations(queryer panelSettingsQueryer, current, candidate PanelSettings) ([]panelHostMigration, error) {
+	rows, err := queryer.Query("SELECT id, public_host, ingress_mode, listen_port FROM sites ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var migrations []panelHostMigration
+	assigned := make(map[string]int64)
+	for rows.Next() {
+		var siteID int64
+		var host, mode string
+		var port int
+		if err := rows.Scan(&siteID, &host, &mode, &port); err != nil {
+			return nil, err
+		}
+		if ingressUsesPort(mode) && port == candidate.ListenPort {
+			return nil, fmt.Errorf("监听端口 %d 已分配给站点 %d，请选择其他端口", port, siteID)
+		}
+		if host == "" {
+			continue
+		}
+		host, err = normalizePublicHost(host)
+		if err != nil {
+			return nil, fmt.Errorf("站点 %d 的访问域名无效: %w", siteID, err)
+		}
+		newHost := host
+		if current.RouteDomain != candidate.RouteDomain {
+			if prefix, ok := routePrefixFromConfiguredHost(host, current.RouteDomain); ok {
+				newHost, err = routeHostForPrefix(prefix, candidate.RouteDomain)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		if newHost == candidate.PanelDomain {
+			return nil, fmt.Errorf("面板访问域名与站点 %d 冲突", siteID)
+		}
+		key := strings.ToLower(newHost)
+		if otherID, exists := assigned[key]; exists && otherID != siteID {
+			return nil, fmt.Errorf("修改节点基础域名后站点 %d 与站点 %d 的访问域名冲突", otherID, siteID)
+		}
+		assigned[key] = siteID
+		if newHost != host {
+			migrations = append(migrations, panelHostMigration{SiteID: siteID, Host: newHost})
+		}
+	}
+	return migrations, rows.Err()
 }
 
 func (d *DB) SaveManagedPanelSettings(panelDomain, routeDomain string, listenPort int, tlsEnabled bool) (PanelSettings, int, error) {
@@ -230,57 +324,13 @@ func (d *DB) savePanelEndpointSettings(candidate PanelSettings, listenPort int, 
 
 	current, err := scanPanelSettings(tx.QueryRow(`
 		SELECT panel_domain, route_domain, listen_port, tls_enabled, configured,
-			acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging, certificate_source, certificate_path, private_key_path
+			acme_email, acme_dns_provider, acme_token_ciphertext, acme_staging, certificate_source, certificate_path, private_key_path, panel_domain_source
 		FROM panel_settings WHERE id=?`, panelSettingsRowID))
 	if err != nil {
 		return PanelSettings{}, 0, err
 	}
-	rows, err := tx.Query("SELECT id, public_host FROM sites WHERE public_host <> '' ORDER BY id")
+	migrations, err := planPanelHostMigrations(tx, current, candidate)
 	if err != nil {
-		return PanelSettings{}, 0, err
-	}
-	var migrations []panelHostMigration
-	assigned := make(map[string]int64)
-	for rows.Next() {
-		var siteID int64
-		var host string
-		if err := rows.Scan(&siteID, &host); err != nil {
-			rows.Close()
-			return PanelSettings{}, 0, err
-		}
-		host, err = normalizePublicHost(host)
-		if err != nil {
-			rows.Close()
-			return PanelSettings{}, 0, fmt.Errorf("站点 %d 的访问域名无效: %w", siteID, err)
-		}
-		newHost := host
-		if current.RouteDomain != candidate.RouteDomain {
-			if prefix, ok := routePrefixFromConfiguredHost(host, current.RouteDomain); ok {
-				newHost, err = routeHostForPrefix(prefix, candidate.RouteDomain)
-				if err != nil {
-					rows.Close()
-					return PanelSettings{}, 0, err
-				}
-			}
-		}
-		if newHost == candidate.PanelDomain {
-			rows.Close()
-			return PanelSettings{}, 0, fmt.Errorf("面板访问域名与站点 %d 冲突", siteID)
-		}
-		key := strings.ToLower(newHost)
-		if otherID, exists := assigned[key]; exists && otherID != siteID {
-			rows.Close()
-			return PanelSettings{}, 0, fmt.Errorf("修改节点基础域名后站点 %d 与站点 %d 的访问域名冲突", otherID, siteID)
-		}
-		assigned[key] = siteID
-		if newHost != host {
-			migrations = append(migrations, panelHostMigration{SiteID: siteID, Host: newHost})
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return PanelSettings{}, 0, err
-	}
-	if err := rows.Err(); err != nil {
 		return PanelSettings{}, 0, err
 	}
 	for _, migration := range migrations {
@@ -290,7 +340,7 @@ func (d *DB) savePanelEndpointSettings(candidate PanelSettings, listenPort int, 
 	}
 	if _, err := tx.Exec(`
 		UPDATE panel_settings
-		SET panel_domain=?, route_domain=?, listen_port=?, tls_enabled=?, configured=1, updated_at=CURRENT_TIMESTAMP
+		SET panel_domain=?, route_domain=?, listen_port=?, tls_enabled=?, configured=1, panel_domain_source='database', updated_at=CURRENT_TIMESTAMP
 		WHERE id=?`, candidate.PanelDomain, candidate.RouteDomain, candidate.ListenPort, sqliteBool(candidate.TLSEnabled), panelSettingsRowID); err != nil {
 		return PanelSettings{}, 0, err
 	}
@@ -323,8 +373,8 @@ func (d *DB) SetPanelTLSEnabled(enabled bool) error {
 	}
 	_, err := d.db.Exec(`
 		UPDATE panel_settings
-		SET tls_enabled=?, updated_at=CURRENT_TIMESTAMP
-		WHERE id=?`, sqliteBool(enabled), panelSettingsRowID)
+		SET tls_enabled=?, panel_domain_source=CASE WHEN ? THEN 'database' ELSE panel_domain_source END, updated_at=CURRENT_TIMESTAMP
+		WHERE id=?`, sqliteBool(enabled), sqliteBool(enabled), panelSettingsRowID)
 	return err
 }
 
@@ -335,13 +385,13 @@ func (d *DB) restorePanelSettings(settings PanelSettings) error {
 	_, err := d.db.Exec(`
 		UPDATE panel_settings
 		SET panel_domain=?, route_domain=?, listen_port=?, tls_enabled=?, configured=?,
-			acme_email=?, acme_dns_provider=?, acme_token_ciphertext=?, acme_staging=?, certificate_source=?, certificate_path=?, private_key_path=?, updated_at=CURRENT_TIMESTAMP
+			acme_email=?, acme_dns_provider=?, acme_token_ciphertext=?, acme_staging=?, certificate_source=?, certificate_path=?, private_key_path=?, panel_domain_source=?, updated_at=CURRENT_TIMESTAMP
 		WHERE id=?`, settings.PanelDomain, settings.RouteDomain, settings.ListenPort, sqliteBool(settings.TLSEnabled), sqliteBool(settings.Configured),
-		settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, sqliteBool(settings.ACMEStaging), settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath, panelSettingsRowID)
+		settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, sqliteBool(settings.ACMEStaging), settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath, settings.PanelDomainSource, panelSettingsRowID)
 	return err
 }
 
 func (d *DB) setPanelCertificateSource(source, certPath, keyPath string) error {
-	_, err := d.db.Exec(`UPDATE panel_settings SET certificate_source=?, certificate_path=?, private_key_path=?, tls_enabled=1, updated_at=CURRENT_TIMESTAMP WHERE id=1`, source, certPath, keyPath)
+	_, err := d.db.Exec(`UPDATE panel_settings SET certificate_source=?, certificate_path=?, private_key_path=?, tls_enabled=1, panel_domain_source='database', updated_at=CURRENT_TIMESTAMP WHERE id=1`, source, certPath, keyPath)
 	return err
 }

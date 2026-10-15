@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2317,SC2329
+# shellcheck disable=SC2317,SC2329,SC2030,SC2031
 # This file is a mock harness: the mock functions it defines are invoked
 # indirectly by the sourced install.sh, which ShellCheck cannot statically
 # trace, so every mock body would otherwise look unreachable.
+# Fixture paths intentionally change only inside isolated subshells; the
+# following tests must continue using their original parent-scope paths.
 
 set -euo pipefail
 
@@ -80,6 +82,56 @@ assert_not_contains() {
 
 assert_eq 'snnabb/Meridian' "$REPO" 'default repository owner'
 assert_eq 'v2.6.4' "$COSIGN_VERSION" 'pinned cosign bootstrap version'
+
+# An updater service does not inherit Meridian's .env. Native HTTPS health
+# checks must use the installed binary and pass its actual database/cert paths,
+# including relative paths resolved from the service working directory.
+test_installer_health() (
+    local INSTALL_DIR="${TEST_ROOT}/health bin"
+    local DATA_DIR="${TEST_ROOT}/health data"
+    mkdir -p "$INSTALL_DIR" "$DATA_DIR"
+    export HEALTH_TEST_DIR="$DATA_DIR"
+    cat > "${INSTALL_DIR}/meridian" <<'HEALTHBIN'
+#!/usr/bin/env bash
+if [ "$*" = '--version --features' ]; then
+    printf 'panel-updater-v1\nmanaged-tls-v1\n'
+    exit 0
+fi
+[ "$*" = --healthcheck ] || exit 91
+[ "$DB_PATH" = "${HEALTH_TEST_DIR}/custom.db" ] || exit 92
+[ "$PANEL_DOMAIN" = panel.example.com ] || exit 93
+[ "$PANEL_TLS_CERT_FILE" = "${HEALTH_TEST_DIR}/tls/local chain.pem" ] || exit 94
+printf 'checked\n' >> "${HEALTH_TEST_DIR}/probes"
+[ ! -f "${HEALTH_TEST_DIR}/unhealthy" ]
+HEALTHBIN
+    chmod 0755 "${INSTALL_DIR}/meridian"
+    printf 'DB_PATH=custom.db\nPANEL_DOMAIN=panel.example.com\nPANEL_TLS_CERT_FILE=tls/local chain.pem\n' > "${DATA_DIR}/.env"
+    curl() { printf 'unexpected HTTP fallback\n' >> "${DATA_DIR}/http-fallback"; return 1; }
+    sleep() { :; }
+    wait_for_health 1 || { echo 'FAIL: TLS-capable health probe failed' >&2; exit 1; }
+    touch "${DATA_DIR}/unhealthy"
+    if wait_for_health 2; then
+        echo 'FAIL: unhealthy TLS service was accepted' >&2; exit 1
+    fi
+    assert_eq 3 "$(wc -l < "${DATA_DIR}/probes" | tr -d '[:space:]')" 'bounded native health retries'
+    [ ! -e "${DATA_DIR}/http-fallback" ] || { echo 'FAIL: TLS probe fell back to HTTP' >&2; exit 1; }
+
+    # Older binaries need the original HTTP probe and must never receive an
+    # unrecognized --healthcheck command that could start a second daemon.
+    cat > "${INSTALL_DIR}/meridian" <<'LEGACYBIN'
+#!/usr/bin/env bash
+[ "$*" = '--version --features' ] || exit 95
+printf 'v1.0.0\n'
+LEGACYBIN
+    chmod 0755 "${INSTALL_DIR}/meridian"
+    printf 'PORT=19222\n' > "${DATA_DIR}/.env"
+    curl() {
+        [[ "$*" == *"--proto =http"* && "$*" == *"http://127.0.0.1:19222/api/auth/check"* ]] || return 1
+        printf '200'
+    }
+    wait_for_health 1 || { echo 'FAIL: legacy HTTP health probe failed' >&2; exit 1; }
+)
+test_installer_health
 
 # Signed releases bootstrap a temporary, checksum-pinned cosign instead of
 # requiring a fresh machine to install it manually.

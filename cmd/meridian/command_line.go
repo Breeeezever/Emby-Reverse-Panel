@@ -50,11 +50,16 @@ func runCommandLine(args []string, input io.Reader, output io.Writer) (bool, err
 
 func healthcheckPanelDomain(dbPath string) string {
 	domain := strings.TrimSpace(os.Getenv("PANEL_DOMAIN"))
-	if domain == "" && strings.TrimSpace(dbPath) != "" && dbPath != ":memory:" && !strings.HasPrefix(dbPath, "file:") {
+	if strings.TrimSpace(dbPath) != "" && dbPath != ":memory:" && !strings.HasPrefix(dbPath, "file:") {
 		db, err := sql.Open("sqlite", dbPath)
 		if err == nil {
 			defer db.Close()
-			_ = db.QueryRow(`SELECT panel_domain FROM panel_settings WHERE id=1`).Scan(&domain)
+			// The running listener uses the database value after startup. A stale
+			// environment default must not override a domain saved in the panel.
+			var stored string
+			if err := db.QueryRow(`SELECT panel_domain FROM panel_settings WHERE id=1`).Scan(&stored); err == nil {
+				domain = stored
+			}
 		}
 	}
 	if domain == "" {

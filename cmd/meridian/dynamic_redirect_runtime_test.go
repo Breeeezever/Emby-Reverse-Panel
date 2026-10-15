@@ -216,6 +216,160 @@ func TestDynamicRedirectRuntimeEligibilityIsNarrow(t *testing.T) {
 	}
 }
 
+func TestDynamicRedirectRuntimeRetriesSelfTargetWithUpstreamHeaders(t *testing.T) {
+	limits, ok := dynamicLimitsForProfile(dynamicProfileExtreme)
+	if !ok {
+		t.Fatal("extreme limits are unavailable")
+	}
+	runtime := newDynamicRuntime()
+	runtime.resolver = dynamicIPResolverFunc(func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
+	})
+	runtime.selfTargets.Store(newTestDynamicSelfTargetPolicy(t))
+	state := newDynamicSiteState(runtime, limits)
+	defer state.close()
+
+	var calls atomic.Int32
+	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			if req.Header.Get("X-Forwarded-Host") != "panel.example.com" || req.Header.Get("X-Forwarded-Prefix") != "/ee" {
+				t.Fatalf("initial ingress headers = %q/%q", req.Header.Get("X-Forwarded-Host"), req.Header.Get("X-Forwarded-Prefix"))
+			}
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"https://panel.example.com/ee/emby/Videos/1/stream.m3u8"}},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		case 2:
+			if got := req.Header.Get("X-Forwarded-Host"); got != "origin.example.com" {
+				t.Fatalf("self-target retry advertised host=%q, want configured upstream", got)
+			}
+			if got := req.Header.Get("X-Forwarded-Prefix"); got != "" {
+				t.Fatalf("self-target retry retained X-Forwarded-Prefix=%q", got)
+			}
+			if got := req.Header.Get("X-Forwarded-Proto"); got != "https" {
+				t.Fatalf("self-target retry advertised scheme=%q, want upstream scheme", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"https://origin.example.com/stream/http_resolver/fixture/media/1?s=signature"}},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		case 3:
+			if req.URL.String() != "https://origin.example.com/stream/http_resolver/fixture/media/1?s=signature" ||
+				req.Header.Get("X-Forwarded-Host") != "origin.example.com" || req.Header.Get("X-Forwarded-Prefix") != "" {
+				t.Fatal("resolver redirect did not retain the upstream URL and advertised host")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/vnd.apple.mpegurl"}},
+				Body:       io.NopCloser(strings.NewReader("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment.ts\n#EXT-X-ENDLIST\n")),
+				Request:    req,
+			}, nil
+		default:
+			t.Fatalf("unexpected upstream request count %d", calls.Load())
+			return nil, nil
+		}
+	})
+	policy := dynamicRedirectPolicy{
+		configured: true,
+		available:  true,
+		profile:    dynamicProfileExtreme,
+		limits:     limits,
+		sources:    allDynamicDiscoverySources(),
+	}
+	transport := &redirectFollowTransport{
+		base:                   base,
+		configuredAuthorities:  map[string]bool{"https://origin.example.com": true},
+		followUnknownRedirects: true,
+		dynamicPolicy:          policy,
+		dynamicState:           state,
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://origin.example.com/emby/Videos/1/stream.m3u8", nil)
+	req.Header.Set("X-Forwarded-Host", "panel.example.com")
+	req.Header.Set("X-Forwarded-Prefix", "/ee")
+	req.Header.Set("X-Forwarded-Proto", "http")
+	req = req.WithContext(context.WithValue(req.Context(), dynamicRequestEligibleContextKey{}, true))
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("self-target retry: %v", err)
+	}
+	if resp == nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("self-target retry response = %#v, want 200", resp)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("upstream calls = %d, want 3", calls.Load())
+	}
+	_ = resp.Body.Close()
+}
+
+func TestDynamicRedirectRuntimeSelfTargetRetryBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		forwardedHost string
+		configured    bool
+		wantCalls     int
+	}{
+		{"persistent self redirect", "panel.example.com", true, 2},
+		{"no public host", "", true, 1},
+		{"different public host", "other.example.com", true, 1},
+		{"unconfigured origin", "panel.example.com", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limits, _ := dynamicLimitsForProfile(dynamicProfileExtreme)
+			_, state := redirectRuntimeState(t, limits, nil)
+			defer state.close()
+			var bodies []*redirectRuntimeCloseSpy
+			calls := 0
+			transport := &redirectFollowTransport{
+				configuredAuthorities:  map[string]bool{"https://origin.example.com": tc.configured},
+				followUnknownRedirects: true,
+				dynamicState:           state,
+				dynamicPolicy: dynamicRedirectPolicy{
+					configured: true, available: true, profile: dynamicProfileExtreme,
+					limits: limits, sources: allDynamicDiscoverySources(),
+				},
+				base: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if calls > tc.wantCalls {
+						t.Fatal("self redirect retried beyond its limit")
+					}
+					if r.URL.String() != "https://origin.example.com/emby/Videos/1/stream.m3u8?api_key=fixture" ||
+						r.Header.Get("X-Emby-Token") != "fixture-token" {
+						t.Fatal("retry changed the configured target or lost authentication")
+					}
+					body := &redirectRuntimeCloseSpy{Reader: strings.NewReader("redirect")}
+					bodies = append(bodies, body)
+					return &http.Response{
+						StatusCode: http.StatusFound, Request: r, Body: body,
+						Header: http.Header{"Location": []string{"https://panel.example.com/ee/emby/Videos/1/stream.m3u8"}},
+					}, nil
+				}),
+			}
+			req := redirectRuntimeEligibleRequest(http.MethodGet, "https://origin.example.com/emby/Videos/1/stream.m3u8?api_key=fixture")
+			req.Header.Set("X-Forwarded-Host", tc.forwardedHost)
+			req.Header.Set("X-Forwarded-Prefix", "/ee")
+			req.Header.Set("X-Emby-Token", "fixture-token")
+			resp, err := transport.RoundTrip(req)
+			redirectRuntimeAssertError(t, err, dynamicObservationReasonSelfTarget)
+			if resp != nil || calls != tc.wantCalls {
+				t.Fatalf("response=%v calls=%d want %d", resp, calls, tc.wantCalls)
+			}
+			for _, body := range bodies {
+				if !body.closed.Load() {
+					t.Fatal("redirect body was not closed")
+				}
+			}
+			if req.Header.Get("X-Forwarded-Host") != tc.forwardedHost || req.Header.Get("X-Forwarded-Prefix") != "/ee" {
+				t.Fatal("retry mutated the original headers")
+			}
+		})
+	}
+}
+
 func TestDynamicRedirectRuntimeUsesOnlyLiveLearnedPlaybackPaths(t *testing.T) {
 	limits, ok := dynamicLimitsForProfile(dynamicProfileCompatible)
 	if !ok {

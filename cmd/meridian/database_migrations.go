@@ -173,6 +173,13 @@ func (d *DB) migrateOnce() error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	INSERT OR IGNORE INTO panel_settings (id) VALUES (1);
+	CREATE TABLE IF NOT EXISTS panel_certificate_renewals (
+		target_key TEXT PRIMARY KEY,
+		last_checked_at TEXT NOT NULL DEFAULT '',
+		last_success_at TEXT NOT NULL DEFAULT '',
+		last_error TEXT NOT NULL DEFAULT '',
+		next_attempt_at TEXT NOT NULL DEFAULT ''
+	);
 	CREATE TABLE IF NOT EXISTS telegram_report_settings (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		enabled INTEGER NOT NULL DEFAULT 0,
@@ -465,6 +472,7 @@ func (d *DB) migrateOnce() error {
 func ensurePanelSettingsListenPortSchema(ctx context.Context, conn *sql.Conn) error {
 	for _, migration := range []struct{ column, sql string }{
 		{"listen_port", "ALTER TABLE panel_settings ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 0"},
+		{"panel_domain_source", "ALTER TABLE panel_settings ADD COLUMN panel_domain_source TEXT NOT NULL DEFAULT 'legacy'"},
 		{"acme_email", "ALTER TABLE panel_settings ADD COLUMN acme_email TEXT NOT NULL DEFAULT ''"},
 		{"acme_dns_provider", "ALTER TABLE panel_settings ADD COLUMN acme_dns_provider TEXT NOT NULL DEFAULT 'cloudflare'"},
 		{"acme_token_ciphertext", "ALTER TABLE panel_settings ADD COLUMN acme_token_ciphertext TEXT NOT NULL DEFAULT ''"},

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -31,7 +32,12 @@ func TestPanelACMETokenEncryptionRoundTripAndIsolation(t *testing.T) {
 	if _, err := decryptPanelACMETokenWithSecret(ciphertext, otherSecret); err == nil {
 		t.Fatal("ciphertext decrypted with a different JWT secret")
 	}
-	tampered := ciphertext[:len(ciphertext)-1] + "A"
+	payload, err := base64.RawURLEncoding.DecodeString(ciphertext[len(panelACMETokenCipherPrefix):])
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload[len(payload)-1] ^= 1
+	tampered := panelACMETokenCipherPrefix + base64.RawURLEncoding.EncodeToString(payload)
 	if _, err := decryptPanelACMETokenWithSecret(tampered, secret); err == nil {
 		t.Fatal("tampered ciphertext was accepted")
 	}
@@ -54,7 +60,7 @@ func TestCertificateRenewalWindow(t *testing.T) {
 	}
 }
 
-func TestDisableExpiredPanelTLSIfNeeded(t *testing.T) {
+func TestExpiredPanelCertificateKeepsHTTPS(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "meridian.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -105,22 +111,19 @@ func TestDisableExpiredPanelTLSIfNeeded(t *testing.T) {
 	}
 
 	manager := &panelCertificateManager{certFile: certFile, keyFile: keyFile, accountDir: tlsDir}
-	disabled, err := disableExpiredPanelTLSIfNeeded(db, manager)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !disabled {
-		t.Fatal("expired certificate was not disabled")
+	config, enabled, err := manager.tlsConfig(true)
+	if err != nil || !enabled || config == nil {
+		t.Fatalf("HTTPS did not remain available: %v", err)
 	}
 	settings, err := db.PanelSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.TLSEnabled {
-		t.Fatal("TLS remained enabled after certificate expiry")
+	if !settings.TLSEnabled {
+		t.Fatal("certificate expiry disabled TLS")
 	}
-	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("TLS marker still exists: %v", err)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("TLS marker removed: %v", err)
 	}
 	if _, err := os.Stat(certFile); err != nil {
 		t.Fatalf("certificate files should be preserved: %v", err)

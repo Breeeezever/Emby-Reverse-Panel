@@ -35,7 +35,7 @@ const (
 var startTime = time.Now()
 
 // appVersion is overridable at build time via -ldflags "-X main.appVersion=vX.Y.Z".
-var appVersion = "v1.13.2"
+var appVersion = "v1.13.5"
 
 func main() {
 	if handled, err := runCommandLine(os.Args[1:], os.Stdin, os.Stdout); handled {
@@ -140,18 +140,11 @@ func main() {
 	if err := reloadExternalPanelCertificate(db, panelCertificates); err != nil {
 		log.Printf("external certificate reload: %v", err)
 	}
-	if disabled, err := disableExpiredPanelTLSIfNeeded(db, panelCertificates); err != nil {
-		log.Fatalf("check panel TLS certificate: %v", err)
-	} else if disabled {
-		panelSettings, err = db.PanelSettings()
-		if err != nil {
-			log.Fatalf("reload panel settings after HTTPS fallback: %v", err)
-		}
-	}
 	panelTLSConfig, panelTLSEnabled, err := panelCertificates.tlsConfig(panelSettings.TLSEnabled)
 	if err != nil {
 		log.Fatalf("invalid panel TLS configuration: %v", err)
 	}
+	panelCertificates.bindRuntimeSettings(panelSettings)
 	if !panelTLSEnabled && panelBindIP != nil && !panelBindIP.IsLoopback() {
 		if !envBool("ALLOW_INSECURE_HTTP") {
 			log.Fatalf("refusing to expose the management panel over plain HTTP on %s; set ALLOW_INSECURE_HTTP=true only for a deliberate temporary compatibility deployment, or bind PANEL_BIND_ADDR=127.0.0.1 behind an HTTPS reverse proxy", panelBindIP.String())
@@ -230,16 +223,18 @@ func main() {
 		panelTLSEnabled:   panelTLSEnabled,
 		panelCertificates: panelCertificates,
 		panelBindLoopback: panelBindIP != nil && panelBindIP.IsLoopback(),
+		panelBindHost:     panelBindHost,
 		panelListenPort:   port,
 		dynamicRouteKey:   dynamicRouteKey,
 		restartCh:         make(chan struct{}),
 	}
-	go runPanelCertificateRenewalScheduler(ctx, db, panelCertificates, app.requestRestart)
+	go runPanelCertificateRenewalScheduler(ctx, db, panelCertificates)
 	go app.runTelegramBot(ctx)
 
 	mux := http.NewServeMux()
 
 	// Public auth routes
+	mux.HandleFunc("/api/panel-ready", app.handlePanelReady)
 	mux.HandleFunc("/api/auth/setup", cors(app.csrfMiddleware(app.handleSetup)))
 	mux.HandleFunc("/api/auth/login", cors(app.csrfMiddleware(app.handleLogin)))
 	mux.HandleFunc("/api/auth/logout", cors(app.csrfMiddleware(app.handleLogout)))
@@ -256,6 +251,7 @@ func main() {
 	mux.HandleFunc("/api/system/update/check", cors(app.authMiddleware(app.handleSystemUpdateCheck)))
 	mux.HandleFunc("/api/system/update", cors(app.authMiddleware(app.handleSystemUpdate)))
 	mux.HandleFunc("/api/panel-settings", cors(app.authMiddleware(app.handlePanelSettings)))
+	mux.HandleFunc("/api/panel-settings/check", cors(app.authMiddleware(app.handlePanelSettingsCheck)))
 	mux.HandleFunc("/api/panel-certificate/import", cors(app.authMiddleware(app.handlePanelCertificateImport)))
 	mux.HandleFunc("/api/panel-certificate/issue", cors(app.authMiddleware(app.handlePanelCertificateIssue)))
 	mux.HandleFunc("/api/system/restart", cors(app.authMiddleware(app.handleSystemRestart)))
@@ -281,7 +277,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize embedded files: %v", err)
 	}
-	mux.Handle("/", staticHandler(staticFS))
+	mux.Handle("/", app.panelRestartSecurityPolicy(staticHandler(staticFS)))
 
 	// HTTP/HTTPS server with graceful shutdown. Site listeners remain independently
 	// bound by ProxyManager and are not affected by PANEL_BIND_ADDR.

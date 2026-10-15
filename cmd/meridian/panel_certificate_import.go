@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -98,6 +97,12 @@ func importPanelCertificate(db *DB, manager *panelCertificateManager, source, ce
 	if err != nil {
 		return err
 	}
+	return importPanelCertificateLocked(db, manager, settings, source, certPath, keyPath, certPEM, keyPEM, activate)
+}
+
+// The caller holds operationMu across validation, installation and persistence.
+func importPanelCertificateLocked(db *DB, manager *panelCertificateManager, settings PanelSettings, source, certPath, keyPath string, certPEM, keyPEM []byte, activate bool) error {
+	var err error
 	if !settings.Configured || settings.PanelDomain == "" || settings.ListenPort == 0 {
 		return errors.New("请先保存面板域名和监听端口")
 	}
@@ -137,7 +142,18 @@ func importPanelCertificate(db *DB, manager *panelCertificateManager, source, ce
 		return err
 	}
 	if activate {
-		manager.activate(issued)
+		updated := settings
+		updated.CertificateSource, updated.CertificatePath, updated.PrivateKeyPath = source, certPath, keyPath
+		updated.TLSEnabled = true
+		manager.activateForSettings(issued, updated)
+	}
+	updated, err := db.PanelSettings()
+	if err == nil {
+		next := time.Now().Add(panelCertificateRenewalInterval)
+		if source == "path" {
+			next = time.Now().Add(time.Minute)
+		}
+		db.recordPanelRenewal(updated, true, nil, next)
 	}
 	return nil
 }
@@ -158,13 +174,29 @@ func (a *App) handlePanelCertificateImport(w http.ResponseWriter, r *http.Reques
 		a.jsonErr(w, 400, "证书请求无效或过大")
 		return
 	}
+	if a.panelCertificates == nil {
+		a.jsonErr(w, http.StatusServiceUnavailable, "证书管理不可用")
+		return
+	}
+	unlock, ok := a.beginPanelConfiguration(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	settings, err := a.db.PanelSettings()
 	if err != nil {
 		a.jsonErr(w, 500, "无法读取 TLS 设置")
 		return
 	}
+	tlsCandidate := settings
+	tlsCandidate.TLSEnabled = true
+	validation := a.validatePanelEndpoint(r.Context(), settings, tlsCandidate, r)
+	if !validation.CanSave {
+		a.panelEndpointValidationError(w, validation, false)
+		return
+	}
 	activate := a.panelTLSEnabled && settings.PanelDomain == a.panelHost && settings.RouteDomain == a.routeDomain && settings.ListenPort == a.panelListenPort
-	err = importPanelCertificate(a.db, a.panelCertificates, req.Source, req.CertificatePath, req.PrivateKeyPath, []byte(req.CertificatePEM), []byte(req.PrivateKeyPEM), activate)
+	err = importPanelCertificateLocked(a.db, a.panelCertificates, settings, req.Source, req.CertificatePath, req.PrivateKeyPath, []byte(req.CertificatePEM), []byte(req.PrivateKeyPEM), activate)
 	if err != nil {
 		code := 400
 		if errors.Is(err, errCertificateIssuanceBusy) {
@@ -181,21 +213,29 @@ func (a *App) handlePanelCertificateImport(w http.ResponseWriter, r *http.Reques
 	a.jsonOK(w, a.panelCertificateStatus(settings))
 }
 
-func reloadExternalPanelCertificate(db *DB, manager *panelCertificateManager) error {
+func reloadExternalPanelCertificate(db *DB, manager *panelCertificateManager) (operationErr error) {
 	if db == nil || manager == nil {
 		return nil
 	}
 	if !manager.operationMu.TryLock() {
-		return nil
+		return errCertificateIssuanceBusy
 	}
 	defer manager.operationMu.Unlock()
-	settings, err := db.PanelSettings()
+	saved, err := db.PanelSettings()
 	if err != nil {
 		return err
 	}
+	settings := manager.maintenanceSettings(saved)
 	if settings.CertificateSource != "path" || !settings.TLSEnabled {
 		return nil
 	}
+	renewed := false
+	defer func() {
+		if operationErr != nil {
+			operationErr = safePanelCertificateError(operationErr, settings)
+		}
+		db.recordPanelRenewal(settings, renewed, operationErr, time.Now().Add(time.Minute))
+	}()
 	certPEM, err := readPanelCertificateFile(settings.CertificatePath, maxPanelCertificateBytes)
 	if err != nil {
 		return err
@@ -208,18 +248,14 @@ func reloadExternalPanelCertificate(db *DB, manager *panelCertificateManager) er
 	if err != nil {
 		return err
 	}
-	oldCert, _, certErr := readOptionalFile(manager.certFile)
-	oldKey, _, keyErr := readOptionalFile(manager.keyFile)
-	if certErr == nil && keyErr == nil && bytes.Equal(oldCert, certPEM) && bytes.Equal(oldKey, keyPEM) {
+	current, currentErr := manager.maintenanceCertificate()
+	// Compare against the served certificate, not a file for pending settings.
+	if currentErr == nil && current != nil && samePanelCertificateChain(current, &issued.certificate) {
 		return nil
 	}
-	backup, err := manager.backupInstalledFiles()
-	if err != nil {
-		return err
-	}
-	if err := manager.install(issued, true); err != nil {
-		_ = manager.restoreInstalledFiles(backup)
+	if err := manager.installMaintainedCertificate(issued, settings, saved); err != nil {
 		return fmt.Errorf("重新加载路径证书失败: %w", err)
 	}
+	renewed = true
 	return nil
 }

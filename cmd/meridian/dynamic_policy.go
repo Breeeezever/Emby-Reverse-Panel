@@ -95,19 +95,21 @@ type DynamicFeatureFlags struct {
 }
 
 type DynamicProfileLimits struct {
-	AllowedSchemes             []string `json:"allowed_schemes"`
-	AllowedPorts               []int    `json:"allowed_ports"`
-	AllowAnyPort               bool     `json:"allow_any_port"`
-	MaxRedirects               int      `json:"max_redirects"`
-	MaxAuthorities             int      `json:"max_authorities"`
-	MaxActiveCapabilities      int      `json:"max_active_capabilities"`
-	MaxURLsPerResponse         int      `json:"max_urls_per_response"`
-	MaxBodyBytes               int64    `json:"max_body_bytes"`
-	MaxDNSIPs                  int      `json:"max_dns_ips"`
-	MaxNewAuthoritiesPerMinute int      `json:"max_new_authorities_per_minute"`
-	MaxStreams                 int      `json:"max_streams"`
-	IdleExpirySeconds          int64    `json:"idle_expiry_seconds"`
-	AbsoluteLifetimeSeconds    int64    `json:"absolute_lifetime_seconds"`
+	AllowedSchemes []string `json:"allowed_schemes"`
+	AllowedPorts   []int    `json:"allowed_ports"`
+	AllowAnyPort   bool     `json:"allow_any_port"`
+	// Zero removes the per-response/per-chain count cap. Runtime resource
+	// budgets and the redirect-chain deadline still apply.
+	MaxRedirects               int   `json:"max_redirects"`
+	MaxAuthorities             int   `json:"max_authorities"`
+	MaxActiveCapabilities      int   `json:"max_active_capabilities"`
+	MaxURLsPerResponse         int   `json:"max_urls_per_response"`
+	MaxBodyBytes               int64 `json:"max_body_bytes"`
+	MaxDNSIPs                  int   `json:"max_dns_ips"`
+	MaxNewAuthoritiesPerMinute int   `json:"max_new_authorities_per_minute"`
+	MaxStreams                 int   `json:"max_streams"`
+	IdleExpirySeconds          int64 `json:"idle_expiry_seconds"`
+	AbsoluteLifetimeSeconds    int64 `json:"absolute_lifetime_seconds"`
 }
 
 type DynamicProfile struct {
@@ -215,10 +217,10 @@ func dynamicProfilesCatalog() []DynamicProfile {
 				AllowedSchemes:             []string{"http", "https"},
 				AllowedPorts:               []int{},
 				AllowAnyPort:               true,
-				MaxRedirects:               10,
+				MaxRedirects:               0,
 				MaxAuthorities:             4096,
 				MaxActiveCapabilities:      65536,
-				MaxURLsPerResponse:         4096,
+				MaxURLsPerResponse:         0,
 				MaxBodyBytes:               64 << 20,
 				MaxDNSIPs:                  64,
 				MaxNewAuthoritiesPerMinute: 1200,
@@ -617,6 +619,12 @@ func hydrateStoredDynamicSitePolicy(site *Site, dynamicEnabled, dynamicDowngrade
 	site.DynamicAllowHTTPSDowngrade = downgrade
 	site.DynamicDomainRules = normalized
 	site.DynamicDiscoverySources = sources
+	if site.DynamicProfile == dynamicProfileExtreme {
+		// Older databases may retain opt-outs from when Extreme was a set of
+		// independent switches. Expose the effective preset without rewriting DBs.
+		site.DynamicDiscoverySources = allDynamicDiscoverySources()
+		site.DynamicAllowHTTPSDowngrade = true
+	}
 	return nil
 }
 
@@ -631,7 +639,7 @@ func normalizeDynamicSitePolicy(site *Site) error {
 			return fmt.Errorf("safe dynamic profile must not allow HTTPS downgrade")
 		}
 		site.DynamicAllowHTTPSDowngrade = false
-	} else if profile == dynamicProfileCompatible {
+	} else if profile == dynamicProfileCompatible || profile == dynamicProfileExtreme {
 		site.DynamicAllowHTTPSDowngrade = true
 	}
 	sources := site.DynamicDiscoverySources
@@ -650,6 +658,9 @@ func normalizeDynamicSitePolicy(site *Site) error {
 	}
 	if err := validateDynamicDiscoverySourcesForProfile(profile, sources); err != nil {
 		return err
+	}
+	if profile == dynamicProfileExtreme {
+		sources = allDynamicDiscoverySources()
 	}
 	if site.DynamicDiscoveryEnabled && len(sources) == 0 {
 		return fmt.Errorf("dynamic discovery requires at least one discovery source")

@@ -1,5 +1,5 @@
 site_name: Meridian Wiki
-site_description: Meridian v1.13.2 安装、站点管理、播放与维护指南
+site_description: Meridian v1.13.5 安装、站点管理、播放与维护指南
 site_url: https://snnabb.github.io/Meridian/
 repo_url: https://github.com/snnabb/Meridian
 repo_name: snnabb/Meridian
@@ -51,6 +51,7 @@ nav:
       - Docker 部署: install-docker.md
       - Windows 与源码: install-source.md
       - HTTPS 反向代理: reverse-proxy.md
+      - 面板与站点分域名: nginx-separate-domains.md
   - 站点与播放:
       - 站点管理: site-management.md
       - 入口模式: ingress-modes.md

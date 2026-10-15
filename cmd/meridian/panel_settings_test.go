@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 )
@@ -37,22 +41,35 @@ func TestNormalizeManagedPanelPrefixAcceptsWildcardForm(t *testing.T) {
 	}
 }
 
-func TestBootstrapPanelSettingsImportsEnvironmentOnlyOnce(t *testing.T) {
+func TestBootstrapPanelSettingsSynchronizesOnlyEnvironmentPanelDomain(t *testing.T) {
 	db, err := openDB(":memory:")
 	if err != nil {
-		t.Fatalf("open database: %v", err)
+		t.Fatal(err)
 	}
 	defer db.Close()
 	first, err := db.BootstrapPanelSettings("panel.example.com", "example.com", false, 9090)
 	if err != nil {
-		t.Fatalf("bootstrap settings: %v", err)
+		t.Fatal(err)
 	}
-	second, err := db.BootstrapPanelSettings("other.example.net", "example.net", true, 8080)
-	if err != nil {
-		t.Fatalf("second bootstrap settings: %v", err)
+	if _, err := db.db.Exec(`INSERT INTO sites (name, listen_port, public_host, target_url) VALUES ('media', 19001, 'media.example.com', 'http://127.0.0.1:8096')`); err != nil {
+		t.Fatal(err)
 	}
-	if first != second || second.PanelDomain != "panel.example.com" || second.RouteDomain != "example.com" || second.TLSEnabled {
-		t.Fatalf("environment settings were not imported once: first=%+v second=%+v", first, second)
+	for _, domain := range []string{"Other.Example.net.", "", "panel.example.com"} {
+		settings, err := db.BootstrapPanelSettings(domain, "different.example.org", true, 8080)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := normalizePublicHost(domain)
+		if settings.PanelDomain != want || settings.RouteDomain != first.RouteDomain || settings.TLSEnabled != first.TLSEnabled || settings.ListenPort != first.ListenPort {
+			t.Fatalf("domain synchronization changed unrelated endpoint settings: %+v", settings)
+		}
+		var host string
+		if err := db.db.QueryRow("SELECT public_host FROM sites WHERE name='media'").Scan(&host); err != nil {
+			t.Fatal(err)
+		}
+		if host != "media.example.com" {
+			t.Fatalf("site host changed: %s", host)
+		}
 	}
 }
 
@@ -134,5 +151,50 @@ func TestSaveManagedPanelSettingsPreservesACMECredentials(t *testing.T) {
 	}
 	if settings.ACMEEmail != "admin@example.com" || settings.ACMEDNSProvider != "cloudflare" || settings.ACMETokenCiphertext != "v1:ciphertext" || !settings.ACMEStaging {
 		t.Fatalf("ACME credentials changed while saving panel settings: %+v", settings)
+	}
+}
+
+func TestManagedExternalTLSProxyRejectsNative443(t *testing.T) {
+	app := &App{panelBindLoopback: true, panelTLSEnabled: false, panelHost: "panel.example.com"}
+	if !app.managedExternalTLSProxy() {
+		t.Fatal("expected the loopback HTTP panel behind an external TLS proxy")
+	}
+	app.panelTLSEnabled = true
+	if app.managedExternalTLSProxy() {
+		t.Fatal("native TLS panel must not be treated as an external proxy")
+	}
+	app.panelTLSEnabled = false
+	app.panelHost = ""
+	if app.managedExternalTLSProxy() {
+		t.Fatal("domain-less local panel must not be treated as an external proxy")
+	}
+}
+
+func TestPanelSettingsHandlerRejects443BehindExternalTLSProxy(t *testing.T) {
+	app := newTestApp(t)
+	app.panelHost = "panel.example.com"
+	app.panelBindLoopback = true
+	app.panelTLSEnabled = false
+	app.panelListenPort = 9090
+	if _, err := app.db.BootstrapPanelSettings("panel.example.com", "example.com", false, 9090); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(panelSettingsRequest{PanelDomain: "panel.example.com", WildcardDomain: "*.example.com", ListenPort: 443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/panel-settings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	app.handlePanelSettings(resp, req)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	settings, err := app.db.PanelSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.ListenPort != 9090 {
+		t.Fatalf("rejected request changed listen port to %d", settings.ListenPort)
 	}
 }

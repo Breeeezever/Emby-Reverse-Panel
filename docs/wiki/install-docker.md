@@ -1,6 +1,6 @@
 # Docker 部署
 
-官方镜像为 `ghcr.io/snnabb/meridian`，提供 Linux amd64 和 arm64。`latest` 跟随最新正式版本；固定版本可使用 `v1.13.2`。
+官方镜像为 `ghcr.io/snnabb/meridian`，提供 Linux amd64 和 arm64。`latest` 跟随最新正式版本；固定版本可使用 `v1.13.5`。
 
 ## 1. 准备目录与密钥
 
@@ -25,7 +25,7 @@ chmod 600 .env
 ```yaml
 services:
   meridian:
-    image: ghcr.io/snnabb/meridian:v1.13.2
+    image: ghcr.io/snnabb/meridian:v1.13.5
     user: "10001:10001"
     restart: unless-stopped
     read_only: true
@@ -73,7 +73,9 @@ docker compose logs --tail 100 meridian
 
 设置 `PANEL_DOMAIN` 为实际面板域名。要采纳反向代理提供的客户端地址和协议，还需将 `TRUSTED_PROXY_CIDRS` 设置为**容器实际看到的代理来源地址**。宿主机 Nginx 连接 Docker 映射端口时，来源可能是桥接网关，而非容器内的 `127.0.0.1`。
 
-修改 Compose 环境配置后重新创建容器：
+从 `v1.13.5` 起，由环境变量设置的 `PANEL_DOMAIN` 会随容器启动同步。改成新域名即可切换；移除该变量或设置 `PANEL_DOMAIN: ""` 后，旧域名限制会解除，无需删除数据库或数据卷。若使用了 `env_file`，也要检查其中是否仍定义同名变量。在面板手动保存域名或配置原生证书后，域名改由数据库管理；完整优先级与旧版迁移规则见 [配置与环境变量](configuration.md)。
+
+修改 Compose 环境配置后重新创建容器（仅执行 `docker compose restart` 不会应用新环境）：
 
 ```bash
 docker compose up -d
@@ -113,4 +115,5 @@ docker compose ps
 | 创建后配置丢失 | `/app/data` 是否挂载持久卷。 |
 | 重建后凭据不可解密 | `.env` 或卷中的长期密钥是否被重新生成。 |
 | 路径入口可用，独立端口不通 | 新端口是否已映射并开放。 |
+| 更换或移除域名后仍只认旧域名 | 确认镜像已更新到 `v1.13.5` 并重建容器，检查 `env_file`；面板手动保存的域名在 TLS 设置中修改。 |
 | 面板提示不能一键更新 | 属于预期行为，请通过 Compose 更新镜像。 |

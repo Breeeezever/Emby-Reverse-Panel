@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -94,14 +96,42 @@ type panelSettingsRequest struct {
 	ListenPort     int    `json:"listen_port"`
 }
 
-func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
-	if a.panelCertificates != nil {
-		if !a.panelCertificates.operationMu.TryLock() {
-			a.jsonErr(w, http.StatusConflict, "另一项证书操作正在进行")
-			return
-		}
-		defer a.panelCertificates.operationMu.Unlock()
+// An HTTP panel bound to loopback with a domain or trusted proxy configuration
+// depends on an external proxy. A missing PANEL_DOMAIN does not remove that
+// dependency: changing the backend port or protocol still breaks the proxy.
+func (a *App) managedExternalTLSProxy() bool {
+	return a != nil && a.panelBindLoopback && !a.panelTLSEnabled &&
+		(strings.TrimSpace(a.panelHost) != "" || len(a.trustedProxies) > 0)
+}
+
+func (a *App) validatePanelPortChange(port int) error {
+	if err := validatePanelListenPort(port); err != nil {
+		return err
 	}
+	if port == a.panelListenPort {
+		return nil // The current process already owns this port.
+	}
+	if a.managedExternalTLSProxy() {
+		return errors.New("当前面板由外部 HTTPS 反向代理管理，不能只在面板内修改监听端口；请使用安装器执行端口切换")
+	}
+	if err := checkPanelListenPort(a.panelBindHost, port); err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return fmt.Errorf("面板监听端口 %d 不可用：已被其他程序占用，请选择其他端口", port)
+		}
+		if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+			return fmt.Errorf("面板监听端口 %d 不可用：当前服务账户没有绑定权限；请选择 1024 以上的可用端口，或调整服务的监听权限", port)
+		}
+		return fmt.Errorf("面板监听端口 %d 不可用，请选择其他端口：%w", port, err)
+	}
+	return nil
+}
+
+func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
+	unlock, ok := a.beginPanelConfiguration(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	if r.Method != http.MethodPost {
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -111,33 +141,22 @@ func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
 		a.jsonErr(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	var managed PanelSettings
-	var err error
-	if strings.TrimSpace(req.PanelDomain) != "" {
-		var routeDomain string
-		if strings.TrimSpace(req.WildcardDomain) != "" {
-			routeDomain, err = normalizeWildcardDomain(req.WildcardDomain)
-		}
-		if err == nil {
-			managed, err = normalizeStoredPanelSettings(req.PanelDomain, routeDomain, false)
-		}
-	} else {
-		managed, err = normalizeManagedPanelPrefix(req.PanelPrefix, req.WildcardDomain)
-	}
-	if err != nil {
-		a.jsonErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := validatePanelListenPort(req.ListenPort); err != nil {
-		a.jsonErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	current, err := a.db.PanelSettings()
 	if err != nil {
 		a.jsonErr(w, http.StatusInternalServerError, "failed to read panel settings")
 		return
 	}
-	settings, migrated, err := a.db.SavePanelEndpointSettings(managed.PanelDomain, managed.RouteDomain, req.ListenPort, current.TLSEnabled)
+	candidate, err := panelSettingsCandidate(req, current)
+	if err != nil {
+		a.jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	validation := a.validatePanelEndpoint(r.Context(), current, candidate, r)
+	if !validation.CanSave {
+		a.panelEndpointValidationError(w, validation, false)
+		return
+	}
+	settings, migrated, err := a.db.SavePanelEndpointSettings(candidate.PanelDomain, candidate.RouteDomain, candidate.ListenPort, candidate.TLSEnabled)
 	if err != nil {
 		a.jsonErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -149,15 +168,22 @@ func (a *App) handlePanelSettings(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) panelCertificateStatus(settings PanelSettings) panelCertificateStatus {
 	status := a.panelCertificates.status(settings, a.panelHost, a.routeDomain, a.panelListenPort, a.panelTLSEnabled)
+	status.ActivePanelDomain = a.panelHost
+	status.ActiveAccessURL = a.panelAccessURL()
+	status.SavedTLSEnabled = settings.TLSEnabled
+	status.ExternalProxy = a.managedExternalTLSProxy()
 	status.ACMEEmail = settings.ACMEEmail
 	status.ACMEDNSProvider = settings.ACMEDNSProvider
 	status.ACMEStaging = settings.ACMEStaging
 	status.DNSAPITokenConfigured = settings.ACMETokenCiphertext != ""
-	status.AutoRenewEnabled = settings.CertificateSource == "acme" && !jwtSecretEphemeral && settings.ACMEEmail != "" && settings.ACMETokenCiphertext != ""
-	if settings.ACMETokenCiphertext == "" {
+	active := a.panelCertificates.maintenanceSettings(settings)
+	status.Renewal = a.db.panelRenewalStatus(active)
+	status.Renewal.Pending = !samePanelCertificateBinding(active, settings) || !samePanelEndpoint(active, settings)
+	status.AutoRenewEnabled = active.TLSEnabled && active.CertificateSource == "acme" && !active.ACMEStaging && !jwtSecretEphemeral && active.ACMEEmail != "" && active.ACMETokenCiphertext != ""
+	if active.ACMETokenCiphertext == "" {
 		return status
 	}
-	if _, err := decryptPanelACMEToken(settings.ACMETokenCiphertext); err != nil {
+	if _, err := decryptPanelACMEToken(active.ACMETokenCiphertext); err != nil {
 		status.AutoRenewEnabled = false
 	}
 	return status
@@ -168,11 +194,11 @@ func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request
 		a.jsonErr(w, http.StatusServiceUnavailable, "证书管理不可用")
 		return
 	}
-	if !a.panelCertificates.operationMu.TryLock() {
-		a.jsonErr(w, http.StatusConflict, "另一项证书操作正在进行")
+	unlock, ok := a.beginPanelConfiguration(w)
+	if !ok {
 		return
 	}
-	defer a.panelCertificates.operationMu.Unlock()
+	defer unlock()
 	if r.Method != http.MethodPost {
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -194,6 +220,13 @@ func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request
 	}
 	if !settings.Configured || settings.PanelDomain == "" || settings.RouteDomain == "" || settings.ListenPort == 0 {
 		a.jsonErr(w, http.StatusConflict, "请先保存面板前缀、泛域名和监听端口")
+		return
+	}
+	tlsCandidate := settings
+	tlsCandidate.TLSEnabled = true
+	validation := a.validatePanelEndpoint(r.Context(), settings, tlsCandidate, r)
+	if !validation.CanSave {
+		a.panelEndpointValidationError(w, validation, false)
 		return
 	}
 	provider := strings.ToLower(strings.TrimSpace(req.Provider))
@@ -228,80 +261,84 @@ func (a *App) handlePanelCertificateIssue(w http.ResponseWriter, r *http.Request
 		a.jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if _, err := normalizeManagedPanelSettings(settings.PanelDomain, settings.RouteDomain); err != nil {
+		a.jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	// No production settings or files are changed by staging requests.
+	if req.UseStaging {
+		if err := a.panelCertificates.testCertificate(ctx, email, token, settings); err != nil {
+			a.jsonErr(w, http.StatusBadGateway, strings.ReplaceAll(err.Error(), token, "[已隐藏]"))
+			return
+		}
+		status := a.panelCertificateStatus(settings)
+		status.TestIssued = true
+		a.jsonOK(w, status)
+		return
+	}
 	ciphertext, err := encryptPanelACMEToken(token)
 	if err != nil {
 		a.jsonErr(w, http.StatusInternalServerError, "无法加密 DNS API Token")
 		return
 	}
-	if err := a.db.SavePanelACMECredentials(email, provider, ciphertext, req.UseStaging); err != nil {
-		a.jsonErr(w, http.StatusInternalServerError, "无法保存自动续签凭据")
-		return
-	}
-	settings, err = a.db.PanelSettings()
-	if err != nil {
-		a.jsonErr(w, http.StatusInternalServerError, "failed to read panel settings")
-		return
+	previousToken, previousTokenErr := decryptPanelACMEToken(settings.ACMETokenCiphertext)
+	sameCredentials := previousTokenErr == nil && token == previousToken && email == settings.ACMEEmail && provider == settings.ACMEDNSProvider
+	if previousTokenErr == nil && token == previousToken {
+		ciphertext = settings.ACMETokenCiphertext
 	}
 	currentStatus := a.panelCertificateStatus(settings)
-	if certificateCanBeReused(currentStatus) {
-		if !settings.TLSEnabled {
-			settings, _, err = a.db.SaveManagedPanelSettings(settings.PanelDomain, settings.RouteDomain, settings.ListenPort, true)
-			if err != nil {
-				a.jsonErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			currentStatus = a.panelCertificateStatus(settings)
+	// New credentials must complete a real production request before replacing
+	// working renewal credentials; merely reusing a certificate cannot test them.
+	reused := sameCredentials && canReusePanelACMECertificate(currentStatus, settings)
+	var issued *issuedPanelCertificate
+	if !reused {
+		issued, err = a.panelCertificates.requestCertificate(ctx, email, token, settings.PanelDomain, settings.RouteDomain, false)
+		if err == nil {
+			issued, err = a.panelCertificates.validateProductionCertificate(issued, settings)
 		}
-		if err := a.db.setPanelCertificateSource("acme", "", ""); err != nil {
-			a.jsonErr(w, 500, "无法保存证书来源")
+		if err != nil {
+			// Persist a redacted failure for the existing configuration. A bad
+			// replacement token must not overwrite working renewal credentials.
+			safeErr := errors.New(strings.ReplaceAll(err.Error(), token, "[已隐藏]"))
+			a.db.recordPanelRenewal(settings, false, safeErr, panelCertificateRetryTime(err))
+			log.Printf("panel certificate request failed for %s: %v", settings.RouteDomain, safeErr)
+			a.jsonErr(w, http.StatusBadGateway, safeErr.Error())
 			return
 		}
-		currentStatus.CertificateSource = "acme"
-		currentStatus.CertificateReused = true
-		a.jsonOK(w, currentStatus)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	issued, err := a.panelCertificates.issueCloudflare(ctx, email, token, settings.PanelDomain, settings.RouteDomain, req.UseStaging)
-	if err != nil {
-		status := http.StatusBadGateway
-		if errors.Is(err, errCertificateIssuanceBusy) {
-			status = http.StatusConflict
-		} else if validateErr := validatePanelCertificateRequest(email, token); validateErr != nil {
-			status = http.StatusBadRequest
-		}
-		log.Printf("panel certificate request failed for %s: %v", settings.RouteDomain, err)
-		a.jsonErr(w, status, err.Error())
-		return
 	}
 	backup, err := a.panelCertificates.backupInstalledFiles()
 	if err != nil {
-		a.jsonErr(w, http.StatusInternalServerError, err.Error())
+		a.jsonErr(w, 500, err.Error())
 		return
 	}
-	if err := a.panelCertificates.install(issued, false); err != nil {
-		_ = a.panelCertificates.restoreInstalledFiles(backup)
-		a.jsonErr(w, http.StatusInternalServerError, err.Error())
+	if !reused {
+		if err = a.panelCertificates.install(issued, false); err != nil {
+			err = errors.Join(err, a.panelCertificates.restoreInstalledFiles(backup))
+			a.jsonErr(w, 500, err.Error())
+			return
+		}
+	}
+	if err := a.db.savePanelACMECertificateSettings(email, provider, ciphertext); err != nil {
+		err = errors.Join(err, a.panelCertificates.restoreInstalledFiles(backup))
+		a.jsonErr(w, 500, err.Error())
 		return
 	}
-	settings, migrated, err := a.db.SaveManagedPanelSettings(settings.PanelDomain, settings.RouteDomain, settings.ListenPort, true)
-	if err != nil {
-		_ = a.panelCertificates.restoreInstalledFiles(backup)
-		a.jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := a.db.setPanelCertificateSource("acme", "", ""); err != nil {
-		_ = a.panelCertificates.restoreInstalledFiles(backup)
-		a.jsonErr(w, 500, "无法保存证书来源")
-		return
-	}
-	settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath = "acme", "", ""
+	settings.ACMEEmail, settings.ACMEDNSProvider, settings.ACMETokenCiphertext, settings.ACMEStaging = email, provider, ciphertext, false
+	settings.CertificateSource, settings.CertificatePath, settings.PrivateKeyPath, settings.TLSEnabled = "acme", "", "", true
 	status := a.panelCertificateStatus(settings)
 	if !status.RestartRequired {
-		a.panelCertificates.activate(issued)
+		if issued != nil {
+			a.panelCertificates.activateForSettings(issued, settings)
+		} else {
+			a.panelCertificates.bindRuntimeSettings(settings)
+		}
 	}
-	log.Printf("panel wildcard certificate installed for *.%s (migrated sites: %d, restart required: %t)", settings.RouteDomain, migrated, status.RestartRequired)
+	a.db.recordPanelRenewal(settings, !reused, nil, time.Now().Add(panelCertificateRenewalInterval))
+	status = a.panelCertificateStatus(settings)
+	status.CertificateReused = reused
+	log.Printf("panel certificate configured for %s (reused: %t, restart required: %t)", settings.PanelDomain, reused, status.RestartRequired)
 	a.jsonOK(w, status)
 }
 
@@ -317,34 +354,27 @@ func (a *App) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
 		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	unlock, ok := a.beginPanelConfiguration(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	settings, err := a.db.PanelSettings()
 	if err != nil {
 		a.jsonErr(w, http.StatusInternalServerError, "failed to read panel settings")
 		return
 	}
-	status := a.panelCertificateStatus(settings)
-	if settings.PanelDomain == "" || settings.ListenPort == 0 {
-		a.jsonErr(w, http.StatusConflict, "请先保存面板域名和监听端口")
+	validation := a.validatePanelEndpoint(r.Context(), settings, settings, r)
+	if !validation.CanRestart {
+		a.panelEndpointValidationError(w, validation, true)
 		return
 	}
-	if settings.TLSEnabled && (!status.Configured || !status.CertificateCurrent || !status.CertificateValid) {
-		a.jsonErr(w, http.StatusConflict, "泛域名已改变，请先申请匹配的 TLS 证书")
-		return
-	}
-	host := settings.PanelDomain
-	if settings.ListenPort != 443 {
-		host = net.JoinHostPort(host, strconv.Itoa(settings.ListenPort))
-	}
-	scheme := "http"
-	if settings.TLSEnabled {
-		scheme = "https"
-	}
+	a.requestRestart()
 	a.jsonOK(w, map[string]interface{}{
 		"restarting":   true,
-		"redirect_url": scheme + "://" + host,
+		"redirect_url": validation.TargetURL,
 	})
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	a.requestRestart()
 }

@@ -25,6 +25,8 @@ type dynamicRewriteSession struct {
 	source               string
 	depth                int
 	outputLimit          int64
+	outputEstimate       int64
+	reserveOutput        func(int64) bool
 	rewriteRelative      bool
 	inheritedHeaders     []dynamicCapabilityHeaderClaim
 	seen                 map[string]string
@@ -148,6 +150,25 @@ func (s *dynamicRewriteSession) structuredOutputLimit() int64 {
 	return limit
 }
 
+func (s *dynamicRewriteSession) reserveStructuredOutput(size int64) error {
+	if s.reserveOutput != nil && !s.reserveOutput(size) {
+		return errDynamicStructuredMemoryLimit
+	}
+	return nil
+}
+
+func (s *dynamicRewriteSession) accountOutputGrowth(original, rewritten string) error {
+	if s.reserveOutput == nil {
+		return nil
+	}
+	s.outputEstimate += int64(max(0, len(rewritten)-len(original)))
+	return s.reserveStructuredOutput(s.outputEstimate)
+}
+
+func (s *dynamicRewriteSession) outputBuffer() dynamicBoundedBuffer {
+	return dynamicBoundedBuffer{limit: s.structuredOutputLimit(), reserve: s.reserveStructuredOutput}
+}
+
 func (s *dynamicRewriteSession) rewrite(raw string) (string, error) {
 	return s.rewriteAgainstKind(raw, s.base, dynamicCapabilityKindResource)
 }
@@ -239,10 +260,18 @@ func (s *dynamicRewriteSession) rewriteAgainstSourceKindDepth(raw string, base *
 	return s.rewriteAgainstSourceKindDepthWithRequiredHeaders(raw, base, source, kind, depth, nil)
 }
 
-func (s *dynamicRewriteSession) rewriteAgainstSourceKindDepthWithRequiredHeaders(raw string, base *url.URL, source, kind string, depth int, requiredHeaders []dynamicCapabilityHeaderClaim) (string, error) {
+func (s *dynamicRewriteSession) rewriteAgainstSourceKindDepthWithRequiredHeaders(raw string, base *url.URL, source, kind string, depth int, requiredHeaders []dynamicCapabilityHeaderClaim) (result string, resultErr error) {
 	if s == nil || s.issuer == nil || base == nil {
 		return "", fmt.Errorf("invalid discovered URL: context")
 	}
+	original := raw
+	defer func() {
+		if resultErr == nil {
+			if err := s.accountOutputGrowth(original, result); err != nil {
+				result, resultErr = "", err
+			}
+		}
+	}()
 	switch {
 	case raw == "":
 		return "", fmt.Errorf("invalid discovered URL: empty")
@@ -273,8 +302,8 @@ func (s *dynamicRewriteSession) rewriteAgainstSourceKindDepthWithRequiredHeaders
 		return "", fmt.Errorf("invalid structured resource kind or depth")
 	}
 	s.urlCount++
-	if s.urlCount > s.issuer.policy.limits.MaxURLsPerResponse {
-		return "", fmt.Errorf("discovered URL count exceeds its limit")
+	if limit := s.issuer.policy.limits.MaxURLsPerResponse; limit > 0 && s.urlCount > limit {
+		return "", errDynamicStructuredURLLimit
 	}
 	reference, err := url.Parse(raw)
 	if err != nil {
@@ -494,13 +523,19 @@ func dynamicStructuredWorkingSetWithin(resp *http.Response, profileLimit, memory
 }
 
 type dynamicBoundedBuffer struct {
-	buffer bytes.Buffer
-	limit  int64
+	buffer  bytes.Buffer
+	limit   int64
+	reserve func(int64) error
 }
 
 func (b *dynamicBoundedBuffer) Write(payload []byte) (int, error) {
 	if b == nil || b.limit < 0 || int64(len(payload)) > b.limit-int64(b.buffer.Len()) {
 		return 0, fmt.Errorf("structured response output exceeds its limit")
+	}
+	if b.reserve != nil {
+		if err := b.reserve(int64(b.buffer.Len()) + int64(len(payload))); err != nil {
+			return 0, err
+		}
 	}
 	return b.buffer.Write(payload)
 }
@@ -508,6 +543,11 @@ func (b *dynamicBoundedBuffer) Write(payload []byte) (int, error) {
 func (b *dynamicBoundedBuffer) WriteString(value string) (int, error) {
 	if b == nil || b.limit < 0 || int64(len(value)) > b.limit-int64(b.buffer.Len()) {
 		return 0, fmt.Errorf("structured response output exceeds its limit")
+	}
+	if b.reserve != nil {
+		if err := b.reserve(int64(b.buffer.Len()) + int64(len(value))); err != nil {
+			return 0, err
+		}
 	}
 	return b.buffer.WriteString(value)
 }
@@ -623,6 +663,8 @@ func sanitizeDynamicResourceErrorResponse(resp *http.Response) {
 }
 
 var errDynamicCapabilityExpiredDuringUse = errors.New("dynamic capability expired during use")
+var errDynamicStructuredURLLimit = errors.New("discovered URL count exceeds its limit")
+var errDynamicStructuredMemoryLimit = errors.New("structured rewrite memory budget is unavailable")
 
 func rewriteDynamicStructuredResponse(resp *http.Response, issuer *dynamicCapabilityIssuer, rewriteRelative bool) error {
 	return rewriteDynamicStructuredResponseExpected(resp, issuer, rewriteRelative, "", 0, false)
@@ -737,7 +779,8 @@ func rewriteDynamicStructuredResponseAccepted(resp *http.Response, issuer *dynam
 	}
 	parseContext, cancelParse := context.WithTimeout(resp.Request.Context(), dynamicStructuredBodyTimeout)
 	defer cancelParse()
-	workingMemory, inputLimit, outputLimit, budgetErr := dynamicStructuredWorkingSetWithin(resp, issuer.policy.limits.MaxBodyBytes, issuer.state.availableParseMemory())
+	availableMemory := issuer.state.availableParseMemory()
+	workingMemory, inputLimit, outputLimit, budgetErr := dynamicStructuredWorkingSetWithin(resp, issuer.policy.limits.MaxBodyBytes, availableMemory)
 	if budgetErr != nil {
 		if resp.Body != nil {
 			_ = resp.Body.Close()
@@ -745,7 +788,10 @@ func rewriteDynamicStructuredResponseAccepted(resp *http.Response, issuer *dynam
 		issuer.observe(source, dynamicObservationDecisionDenied, dynamicObservationReasonCapacityLimit, authority)
 		return newDynamicProxyError(dynamicObservationReasonCapacityLimit)
 	}
-	release, acquired := issuer.state.acquireParse(workingMemory)
+	if issuer.policy.profile == dynamicProfileExtreme {
+		outputLimit = min(issuer.policy.limits.MaxBodyBytes, int64(globalDynamicMaxStructuredOutputBytes))
+	}
+	release, grow, acquired := issuer.state.acquireParseBudget(workingMemory)
 	if !acquired {
 		if resp.Body != nil {
 			_ = resp.Body.Close()
@@ -765,7 +811,27 @@ func rewriteDynamicStructuredResponseAccepted(resp *http.Response, issuer *dynam
 			learningBase = &clone
 		}
 	}
-	session := &dynamicRewriteSession{ctx: parseContext, issuer: issuer, base: resp.Request.URL, learningBase: learningBase, source: source, depth: depth, outputLimit: outputLimit, rewriteRelative: rewriteRelative, inheritedHeaders: inheritedHeaders}
+	var reserveOutput func(int64) bool
+	if issuer.policy.profile == dynamicProfileExtreme {
+		reserved := workingMemory
+		reserveOutput = func(size int64) bool {
+			if size < 0 || size > outputLimit {
+				return false
+			}
+			required := max(workingMemory, size*4)
+			if required <= reserved {
+				return true
+			}
+			// Reserve in MiB increments instead of locking for every URL.
+			required = (required + (1 << 20) - 1) / (1 << 20) * (1 << 20)
+			if !grow(required) {
+				return false
+			}
+			reserved = required
+			return true
+		}
+	}
+	session := &dynamicRewriteSession{ctx: parseContext, issuer: issuer, base: resp.Request.URL, learningBase: learningBase, source: source, depth: depth, outputLimit: outputLimit, outputEstimate: int64(len(payload)), reserveOutput: reserveOutput, rewriteRelative: rewriteRelative, inheritedHeaders: inheritedHeaders}
 	var rewritten []byte
 	switch source {
 	case dynamicDiscoverySourcePlaybackInfo:
@@ -785,6 +851,8 @@ func rewriteDynamicStructuredResponseAccepted(resp *http.Response, issuer *dynam
 			source:           source,
 			depth:            depth,
 			outputLimit:      outputLimit,
+			outputEstimate:   int64(len(payload)),
+			reserveOutput:    reserveOutput,
 			rewriteRelative:  false,
 			inheritedHeaders: inheritedHeaders,
 		}
@@ -806,6 +874,9 @@ func rewriteDynamicStructuredResponseAccepted(resp *http.Response, issuer *dynam
 	}
 	if err != nil {
 		session.rollback()
+		if errors.Is(err, errDynamicStructuredURLLimit) || errors.Is(err, errDynamicStructuredMemoryLimit) {
+			return recordFailure(dynamicObservationReasonCapacityLimit)
+		}
 		if source == dynamicDiscoverySourcePlaybackInfo {
 			log.Printf("[%s] PlaybackInfo rewrite rejected: diagnostic=%s fingerprint=%s profile=%s", issuer.site.Name, playbackInfoRewriteDiagnosticCode(err), playbackInfoRewriteDiagnosticFingerprint(err), issuer.policy.profile)
 		}
