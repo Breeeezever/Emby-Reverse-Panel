@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 concurrency:
   group: sync-upstream-anchored
@@ -51,13 +50,26 @@ jobs:
             echo "::error::File count dropped sharply $BEFORE -> $AFTER - upstream branch may have been wiped, aborting."; exit 1
           fi
 
-      - name: Merge upstream (merge-only, never reset)
+      - name: Merge upstream (merge-only, workflows frozen)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git merge-base --is-ancestor HEAD "upstream/$UPSTREAM_BRANCH"; then
-            git merge --ff-only "upstream/$UPSTREAM_BRANCH"
+          if git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH" 2>/tmp/merge-err; then
+            echo "Merged upstream cleanly."
           else
-            git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH"
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            NON_WF=$(echo "$CONFLICTS" | grep -v '^\.github/workflows/' || true)
+            if [ -n "$NON_WF" ]; then
+              echo "::error::Non-workflow conflicts, manual handling needed: $NON_WF"
+              exit 1
+            fi
+            git checkout --ours -- .github/workflows 2>/dev/null || true
+            git add -A .github/workflows
+            git merge --continue
+          fi
+          # GITHUB_TOKEN 无法修改 workflow 文件：将 .github/workflows 冻结在 fork 当前版本
+          if ! git diff --quiet HEAD -- .github/workflows; then
+            git checkout HEAD -- .github/workflows
+            git commit --amend --no-edit >/dev/null
           fi
           git push origin "HEAD:${{ github.ref_name }}"
