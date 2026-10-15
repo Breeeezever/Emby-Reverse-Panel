@@ -75,7 +75,9 @@ jobs:
           done
           # 2) restore all workflow file contents to fork pre-merge state
           git checkout "HEAD~1" -- .github/workflows 2>/dev/null || true
-          if ! git diff --quiet HEAD; then
+          if git diff --quiet HEAD; then
+            echo "Nothing changed after freeze (upstream had no new commits)."
+          else
             git commit --amend --no-edit >/dev/null
           fi
           git push origin "HEAD:${{ github.ref_name }}"
