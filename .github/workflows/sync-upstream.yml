@@ -54,30 +54,24 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH" 2>/tmp/merge-err; then
-            echo "Merged upstream cleanly."
-          else
-            CONFLICTS=$(git diff --name-only --diff-filter=U)
-            NON_WF=$(echo "$CONFLICTS" | grep -v '^\.github/workflows/' || true)
-            if [ -n "$NON_WF" ]; then
-              echo "::error::Non-workflow conflicts, manual handling needed: $NON_WF"
-              exit 1
-            fi
-            git checkout --ours -- .github/workflows 2>/dev/null || true
-            git add -A .github/workflows
-            git merge --continue
+          # upstream has nothing new: stop here
+          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD; then
+            echo "Already up to date with upstream."
+            exit 0
           fi
-          # GITHUB_TOKEN 无法修改 workflow 文件：将 .github/workflows 整体冻结在 fork 当前版本
-          # （包括上游新增的 workflow 文件也要剔除，否则 push 仍会被拒绝）
-          # 1) delete workflow files added upstream but absent in fork pre-merge
-          git diff-tree -r --name-only --diff-filter=A "HEAD~1" HEAD -- .github/workflows | while read -r f; do
+          git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH"
+          # freeze .github/workflows at the pre-merge fork state
+          PRE=$(git rev-parse HEAD^1)
+          git diff-tree -r --name-only --diff-filter=A "$PRE" HEAD -- .github/workflows | while read -r f; do
             [ -n "$f" ] && git rm -q -f "$f"
           done
-          # 2) restore all workflow file contents to fork pre-merge state
-          git checkout "HEAD~1" -- .github/workflows 2>/dev/null || true
+          git checkout "$PRE" -- .github/workflows
           if git diff --quiet HEAD; then
-            echo "Nothing changed after freeze (upstream had no new commits)."
+            echo "freeze: no workflow changes to revert"
           else
             git commit --amend --no-edit >/dev/null
           fi
+          git diff --stat "$PRE" HEAD -- .github/workflows | grep -q . && {
+            echo "::error::workflow freeze failed"; exit 1
+          } || true
           git push origin "HEAD:${{ github.ref_name }}"
