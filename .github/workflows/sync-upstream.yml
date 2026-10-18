@@ -68,7 +68,7 @@ jobs:
             fi
             git checkout --ours -- .github/workflows
             git add -A .github/workflows
-            git merge --continue
+            git commit --no-edit
           fi
           # freeze .github/workflows at the pre-merge fork state
           PRE=$(git rev-parse HEAD^1)
