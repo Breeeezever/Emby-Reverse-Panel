@@ -263,6 +263,8 @@ func main() {
 	mux.HandleFunc("/api/site-data/import", cors(app.authMiddleware(app.handleSiteDataImport)))
 	mux.HandleFunc("/api/site-data/parse-message", cors(app.authMiddleware(app.handleSiteMessageParse)))
 	mux.HandleFunc("/api/account-reminders", cors(app.authMiddleware(app.handleAccountReminders)))
+	mux.HandleFunc("/api/account-reminders/actions", cors(app.authMiddleware(app.handleAccountReminderAction)))
+	mux.HandleFunc("/api/account-reminders/history", cors(app.authMiddleware(app.handleAccountReminderRecords)))
 	mux.HandleFunc("/api/sites/", cors(app.authMiddleware(app.handleSiteByID)))
 	mux.HandleFunc("/api/upstream-test", cors(app.authMiddleware(app.handleUpstreamTest)))
 	mux.HandleFunc("/api/traffic/", cors(app.authMiddleware(app.handleTraffic)))

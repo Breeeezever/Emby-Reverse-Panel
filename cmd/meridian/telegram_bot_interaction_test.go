@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTelegramBotMenusAndWizardStayInSameMessage(t *testing.T) {
@@ -50,6 +51,69 @@ func TestTelegramBotMenusAndWizardStayInSameMessage(t *testing.T) {
 	tgHandle(t, b, testTelegramMessage(202, "/start"))
 	if f.messages[len(f.messages)-1]["message_id"] != nil || b.panels[101] != 77 {
 		t.Fatal("administrator panels mixed")
+	}
+}
+
+func TestTelegramReminderActionSnoozesCurrentExpiry(t *testing.T) {
+	b, fake := newTestTelegramBot(t)
+	site, err := b.app.db.CreateSiteRecord(Site{Name: "Reminder", TargetURL: "https://origin.example", ListenPort: freePort(t), IngressMode: ingressModePath, PathPrefix: "/reminder", StreamHosts: "[]", FailoverTargets: "[]"})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+	days := 0
+	account, err := b.app.db.saveSiteAccount(site.ID, 0, SiteAccountInput{Username: "demo", ExpiresAt: time.Now().Add(2 * time.Hour).Format(time.RFC3339), ReminderDays: &days})
+	if err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	if err := b.handleReminderAction(context.Background(), 101, account.ID, "snooze"); err != nil {
+		t.Fatalf("snooze reminder: %v", err)
+	}
+	status, until, err := b.app.db.accountReminderAction(account.ID, account.ExpiresAt, days)
+	if err != nil || status != "snoozed" || until == "" {
+		t.Fatalf("snooze status=%q until=%q err=%v", status, until, err)
+	}
+	if !strings.Contains(fake.lastText(), "明天") {
+		t.Fatalf("confirmation=%q", fake.lastText())
+	}
+}
+
+func TestSnoozedReminderResendsOnceAfterRestart(t *testing.T) {
+	b, fake := newTestTelegramBot(t)
+	site := accountWorkflowSite(t, b.app, "snoozed")
+	now := time.Now().UTC().Truncate(time.Second)
+	days := 0
+	account, err := b.app.db.saveSiteAccount(site.ID, 0, SiteAccountInput{Username: "snoozed-user", ExpiresAt: now.Add(-time.Hour).Format(time.RFC3339), ReminderDays: &days})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Include receipts written by an older build without an attempt ledger.
+	for _, chatID := range []int64{101, 202} {
+		if _, err := b.app.db.db.Exec(`INSERT INTO account_reminder_deliveries(account_id, expires_at, reminder_days, chat_id) VALUES(?,?,?,?)`, account.ID, account.ExpiresAt, days, chatID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	until := now.Add(24 * time.Hour)
+	if err := b.app.db.saveAccountReminderAction(account.ID, account.ExpiresAt, days, "snoozed", until, "test"); err != nil {
+		t.Fatal(err)
+	}
+	worker := &telegramBot{app: b.app, settings: b.settings, token: b.token, client: fake.client()}
+	if err := worker.deliverAccountReminders(context.Background(), until.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.messages) != 0 {
+		t.Fatal("snoozed reminder sent before its due time")
+	}
+	for _, at := range []time.Time{until, until.Add(time.Minute)} {
+		if err := worker.deliverAccountReminders(context.Background(), at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(fake.messages) != 2 {
+		t.Fatalf("got %d reminders, want one per administrator", len(fake.messages))
+	}
+	records, err := b.app.db.listAccountReminderRecords(site.ID, account.ID)
+	if err != nil || len(records) != 4 {
+		t.Fatalf("legacy and new delivery history: count=%d, err=%v", len(records), err)
 	}
 }
 

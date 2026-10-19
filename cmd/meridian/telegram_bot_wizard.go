@@ -163,6 +163,13 @@ func (b *telegramBot) handleCallback(ctx context.Context, id int64, data string)
 		}
 		return b.siteAccounts(ctx, id, siteID, page)
 	}
+	if len(parts) == 3 && parts[0] == "reminder" {
+		accountID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || accountID <= 0 {
+			return fmt.Errorf("提醒账号无效")
+		}
+		return b.handleReminderAction(ctx, id, accountID, parts[2])
+	}
 	if len(parts) == 2 && parts[0] == "sites" {
 		page, _ := strconv.Atoi(parts[1])
 		return b.listSites(ctx, id, "menu", page)
@@ -230,6 +237,8 @@ func (b *telegramBot) handleCallback(ctx context.Context, id int64, data string)
 			return b.startAccountDelete(ctx, id, siteID, accountID)
 		case "export":
 			return b.startExport(ctx, id, "client", siteID, "multi")
+		case "renew":
+			return b.startAccountRenew(ctx, id, siteID, accountID)
 		}
 	}
 	if len(parts) == 3 && parts[0] == "edit" {
@@ -402,6 +411,26 @@ func (b *telegramBot) acceptInput(ctx context.Context, id int64, s *telegramSess
 			s.Draft["note"] = text
 		}
 		return b.finishAccountDraft(ctx, id, s)
+	case "renew_days":
+		if button && text == "custom" {
+			return b.prompt(ctx, id, s, "renew_custom_days", "🔄 输入自定义续期天数（1–3650）。", telegramButtonFor("返回常用时长", "back"))
+		}
+		days, err := telegramInteger(text, 1, 3650)
+		if err != nil {
+			return err
+		}
+		s.Draft["renew_days"] = strconv.FormatInt(days, 10)
+		return b.confirm(ctx, id, s, fmt.Sprintf("🔄 将账号续期 %d 天。确认后会立即更新到期时间并保留续期记录。", days))
+	case "renew_custom_days":
+		if button && text == "back" {
+			return b.startAccountRenew(ctx, id, s.SiteID, s.AccountID)
+		}
+		days, err := telegramInteger(text, 1, 3650)
+		if err != nil {
+			return err
+		}
+		s.Draft["renew_days"] = strconv.FormatInt(days, 10)
+		return b.confirm(ctx, id, s, fmt.Sprintf("🔄 将账号续期 %d 天。确认后会立即更新到期时间并保留续期记录。", days))
 	case "account_field":
 		if s.Action != "account-update" {
 			return fmt.Errorf("账号操作已失效")
@@ -704,7 +733,7 @@ func (b *telegramBot) finishDraft(ctx context.Context, id int64, s *telegramSess
 					if account.ExpiresAt == "" {
 						return "未设置到期时间"
 					}
-					return account.ExpiresAt
+					return formatSiteAccountExpiryDate(account.ExpiresAt)
 				}() + " · " + telegramReminderLabel(account)
 			}
 			if len(s.Accounts) > 3 {
@@ -733,7 +762,7 @@ func (b *telegramBot) finishAccountDraft(ctx context.Context, id int64, s *teleg
 				reminder = "到期时提醒一次"
 			}
 		}
-		return b.confirm(ctx, id, s, fmt.Sprintf("🧾 账号信息整理好了\n\n👤 %s\n用户名：%s\n登录密码：%s\n安全密码：%s\n\n📅 到期：%s\n🔔 %s\n备注：%s", value("account_name"), value("username"), value("password"), value("security_password"), value("expires_at"), reminder, value("note")))
+		return b.confirm(ctx, id, s, fmt.Sprintf("🧾 账号信息整理好了\n\n👤 %s\n用户名：%s\n登录密码：%s\n安全密码：%s\n\n📅 到期日：%s\n🔔 %s\n备注：%s", value("account_name"), value("username"), value("password"), value("security_password"), formatSiteAccountExpiryDate(value("expires_at")), reminder, value("note")))
 	}
 	if s.Action == "account-update" {
 		field, _ := s.Draft["field"].(string)
@@ -742,6 +771,9 @@ func (b *telegramBot) finishAccountDraft(ctx context.Context, id int64, s *teleg
 		display := "保持不变"
 		if text, ok := s.Draft[key].(string); ok {
 			display = text
+		}
+		if key == "expires_at" {
+			display = formatSiteAccountExpiryDate(display)
 		}
 		for _, clear := range []string{"clear_password", "clear_security", "clear_expires", "clear_reminder"} {
 			if flag, _ := s.Draft[clear].(bool); flag {

@@ -4594,6 +4594,10 @@ html[data-theme="light"] .toast.error {
   color: var(--white-60);
   font-size: 12px;
 }
+.account-lifecycle-filter {
+  width: auto;
+  min-width: 118px;
+}
 .site-accounts-module > summary,
 .site-launch-import > summary {
   cursor: pointer;
@@ -4616,6 +4620,7 @@ html[data-theme="light"] .toast.error {
 }
 .site-account-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -4648,6 +4653,41 @@ html[data-theme="light"] .toast.error {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+.account-renewal-picker {
+  display: grid;
+  flex: 1 1 100%;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--white-12);
+}
+.account-renewal-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.account-renewal-presets .btn-ghost,
+.account-renewal-custom .btn-ghost {
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.account-renewal-custom {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.account-renewal-custom label {
+  display: grid;
+  min-width: 150px;
+  gap: 5px;
+  color: var(--white-60);
+  font-size: 12px;
+}
+.account-renewal-custom input {
+  width: 150px;
 }
 .site-account-fields {
   display: grid;
@@ -4711,6 +4751,11 @@ html[data-theme="light"] .toast.error {
   .site-account-row {
     align-items: flex-start;
     flex-direction: column;
+    flex-wrap: nowrap;
+  }
+  .account-renewal-picker {
+    flex: 0 0 auto;
+    width: 100%;
   }
   .site-account-row-meta {
     justify-content: flex-start;
@@ -4942,3 +4987,10 @@ html[data-theme="light"] .toast.error {
 .site-import-row { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--glass-border); border-radius: 10px; overflow-wrap: anywhere; }
 .site-import-error { color: var(--red, #d54949); margin: 0; }
 .site-account-row code { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+
+.account-reminder-history { display: grid; gap: 8px; margin-top: 18px; max-height: 52vh; overflow: auto; }
+.account-reminder-history-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.account-reminder-history-row span { color: var(--white-60); font-size: 12px; }
+.account-reminder-history-row.is-failed { border-color: rgba(239, 68, 68, .42); }
+.account-reminder-history-actions { display: flex; gap: 8px; margin-top: 4px; }
+.account-reminder-history-actions .btn-ghost { padding: 3px 8px; font-size: 12px; }

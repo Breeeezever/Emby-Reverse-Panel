@@ -39,7 +39,7 @@ func (b *telegramBot) siteAccounts(ctx context.Context, chatID, siteID int64, pa
 		if label == "" {
 			label = account.Username
 		}
-		keys = append(keys, []telegramButton{telegramButtonFor("✏️ 编辑 "+truncateTelegramText(label, 42), fmt.Sprintf("account:%d:%d:edit", siteID, account.ID)), telegramButtonFor("删除", fmt.Sprintf("account:%d:%d:delete", siteID, account.ID))})
+		keys = append(keys, []telegramButton{telegramButtonFor("✏️ 编辑 "+truncateTelegramText(label, 42), fmt.Sprintf("account:%d:%d:edit", siteID, account.ID)), telegramButtonFor("续期", fmt.Sprintf("account:%d:%d:renew", siteID, account.ID)), telegramButtonFor("删除", fmt.Sprintf("account:%d:%d:delete", siteID, account.ID))})
 		if account.ExpiresAt != "" {
 			if expiry, expiryErr := b.app.db.parseSiteAccountExpiry(account.ExpiresAt); expiryErr == nil {
 				days := int(math.Ceil(expiry.Sub(time.Now()).Hours() / 24))
@@ -98,6 +98,16 @@ func (b *telegramBot) startAccountDelete(ctx context.Context, id, siteID, accoun
 	s := b.newSession(id, "account-delete", nil)
 	s.SiteID, s.AccountID = siteID, accountID
 	return b.confirm(ctx, id, s, "删除账号："+account.AccountName+"\n此操作无法撤销。")
+}
+
+func (b *telegramBot) startAccountRenew(ctx context.Context, id, siteID, accountID int64) error {
+	account, err := b.app.db.getSiteAccount(siteID, accountID)
+	if err != nil {
+		return fmt.Errorf("账号不存在")
+	}
+	s := b.newSession(id, "account-renew", nil)
+	s.SiteID, s.AccountID = siteID, accountID
+	return b.prompt(ctx, id, s, "renew_days", fmt.Sprintf("🔄 当前到期日：%s\n选择常用续期时长；已到期账号从今天开始计算。", formatSiteAccountExpiryDate(account.ExpiresAt)), telegramButtonFor("一月（30天）", "30"), telegramButtonFor("一季度（90天）", "90"), telegramButtonFor("一年（365天）", "365"), telegramButtonFor("自定义天数", "custom"))
 }
 
 func (b *telegramBot) accountExportMenu(ctx context.Context, id, siteID int64) error {
@@ -248,6 +258,17 @@ func (b *telegramBot) applyImportSession(ctx context.Context, id int64, s *teleg
 }
 
 func (b *telegramBot) applyAccountSession(ctx context.Context, id int64, s *telegramSession) error {
+	if s.Action == "account-renew" {
+		days, err := strconv.Atoi(fmt.Sprint(s.Draft["renew_days"]))
+		if err != nil {
+			return fmt.Errorf("续期天数无效")
+		}
+		_, renewal, err := b.app.db.renewSiteAccount(s.SiteID, s.AccountID, days, "Telegram 一键续期")
+		if err != nil {
+			return err
+		}
+		return b.send(ctx, id, fmt.Sprintf("✅ 已续期 %d 天\n新到期日：%s", renewal.DurationDays, formatSiteAccountExpiryDate(renewal.NewExpiresAt)), telegramKeyboard{{telegramButtonFor("返回账号", fmt.Sprintf("site:%d:accounts", s.SiteID))}, {telegramButtonFor("主菜单", "home")}})
+	}
 	if s.Action == "account-delete" {
 		if _, err := b.app.db.getSiteAccount(s.SiteID, s.AccountID); err != nil {
 			return fmt.Errorf("账号不存在或已删除")

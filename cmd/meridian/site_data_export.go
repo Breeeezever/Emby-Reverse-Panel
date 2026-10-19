@@ -70,7 +70,7 @@ func (a *App) exportSiteData(format, mode string, siteID int64, opts siteExportO
 					if account.ReminderDays != nil {
 						days = strconv.Itoa(*account.ReminderDays)
 					}
-					row = append(row, account.AccountName, account.Username, account.ExpiresAt, account.Note, days)
+					row = append(row, account.AccountName, account.Username, formatSiteAccountExpiryDate(account.ExpiresAt), account.Note, days)
 					if opts.IncludePasswords {
 						row = append(row, account.Password, account.SecurityPassword)
 					}
@@ -123,9 +123,9 @@ func renderAccountMemoText(account SiteAccountInput, opts siteExportOptions) str
 			}
 		}
 		if account.ExpiresAt != "" {
-			fmt.Fprintf(&out, "到期时间：%s\n", account.ExpiresAt)
+			fmt.Fprintf(&out, "到期日：%s\n", formatSiteAccountExpiryDate(account.ExpiresAt))
 		} else {
-			out.WriteString("到期时间：未设置\n")
+			out.WriteString("到期日：未设置\n")
 		}
 		fmt.Fprintf(&out, "提醒：%s\n", telegramReminderLabel(account))
 		if account.Note != "" {
