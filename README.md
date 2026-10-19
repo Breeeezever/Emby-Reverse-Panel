@@ -69,7 +69,7 @@
 
 在面板中填入 Bot Token、管理员数字用户 ID 和面板地址，启用后私聊发送 `/start`。
 
-- **按钮操作**：查看日报、地址与流量，添加、编辑、启停和删除站点，管理多个账号和提前到期提醒。
+- **按钮操作**：查看日报、地址与流量，添加、编辑、启停和删除站点，管理多个账号；按月、季度、年或自定义天数续期，处理或延后到期提醒。
 - **消息与文件**：粘贴开号信息填入可编辑草稿；JSON/CSV 导入先预览，JSON/CSV/TXT 导出以文件发送，可选择账号、密码和线路。
 - **原消息更新**：切换菜单、返回和填写步骤不连续刷屏，修改前显示确认摘要。
 - **权限分离**：只接受管理员私聊；日报接收人不会自动获得管理权限，日报可单独开关。
@@ -96,6 +96,6 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 <div align="center">
 
-最新发布：`v1.14.0` · [下载发行版](https://github.com/snnabb/Meridian/releases/latest) · [反馈问题](https://github.com/snnabb/Meridian/issues)<br>[MIT License](LICENSE)
+最新发布：`v1.14.1` · [下载发行版](https://github.com/snnabb/Meridian/releases/latest) · [反馈问题](https://github.com/snnabb/Meridian/issues)<br>[MIT License](LICENSE)
 
 </div>

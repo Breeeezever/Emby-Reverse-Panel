@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-- Go 1.26+
+- Go 1.26.9 或更高版本
 - Node.js 22+
 - 无 CGO 依赖（SQLite 使用纯 Go 实现 `modernc.org/sqlite`）
 
