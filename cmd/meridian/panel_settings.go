@@ -117,6 +117,11 @@ func normalizeManagedPanelSettings(panelDomain, routeDomain string) (PanelSettin
 	if settings.PanelDomain == "" || settings.RouteDomain == "" {
 		return PanelSettings{}, errors.New("面板访问域名和节点基础域名不能为空")
 	}
+	// A panel at media.example.com can also serve nodes at *.media.example.com.
+	// The ACME order must include media.example.com itself as a separate SAN.
+	if settings.PanelDomain == settings.RouteDomain {
+		return settings, nil
+	}
 	suffix := "." + settings.RouteDomain
 	if !strings.HasSuffix(settings.PanelDomain, suffix) {
 		return PanelSettings{}, errors.New("面板访问域名必须属于节点基础域名")

@@ -359,6 +359,14 @@ func validatePanelCertificateRequest(email, token string) error {
 	return nil
 }
 
+func panelACMECertificateDomains(settings PanelSettings) []string {
+	domains := []string{"*." + settings.RouteDomain}
+	if settings.PanelDomain == settings.RouteDomain {
+		domains = append(domains, settings.PanelDomain)
+	}
+	return domains
+}
+
 func (m *panelCertificateManager) issueCloudflare(ctx context.Context, email, token, panelDomain, routeDomain string, staging bool) (*issuedPanelCertificate, error) {
 	settings, err := normalizeManagedPanelSettings(panelDomain, routeDomain)
 	if err != nil {
@@ -402,8 +410,8 @@ func (m *panelCertificateManager) issueCloudflare(ctx context.Context, email, to
 		return nil, fmt.Errorf("register ACME account: %w", err)
 	}
 
-	wildcard := "*." + settings.RouteDomain
-	order, err := client.AuthorizeOrder(ctx, acme.DomainIDs(wildcard))
+	domains := panelACMECertificateDomains(settings)
+	order, err := client.AuthorizeOrder(ctx, acme.DomainIDs(domains...))
 	if err != nil {
 		return nil, fmt.Errorf("create ACME order: %w", err)
 	}
@@ -421,7 +429,7 @@ func (m *panelCertificateManager) issueCloudflare(ctx context.Context, email, to
 	if err != nil {
 		return nil, fmt.Errorf("generate certificate key: %w", err)
 	}
-	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{DNSNames: []string{wildcard}}, certificateKey)
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{DNSNames: domains}, certificateKey)
 	if err != nil {
 		return nil, fmt.Errorf("create certificate request: %w", err)
 	}

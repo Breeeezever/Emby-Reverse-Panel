@@ -11,6 +11,7 @@
 | `PANEL_BIND_ADDR` | `127.0.0.1` | 面板监听地址；远程绑定需要明确配置。 |
 | `PANEL_DOMAIN` | `panel.example.com` | 环境管理的面板允许域名；每次启动同步，移除或置空解除限制。面板手动保存或启用原生证书后，以数据库为准。 |
 | `PANEL_ROUTE_DOMAIN` | `example.com` | 初始站点基础域名，可规范化通配前缀。 |
+| `PANEL_ROUTE_DIRECT` | `false` | 原生 HTTPS 节点直接使用 Meridian 的实际监听端口。安装器申请泛域名证书时自动启用；经网关或不同公网映射端口访问节点时应关闭。 |
 | `PANEL_TLS_ENABLED` | `false` | 初始原生 TLS 开关，需有有效证书。 |
 | `TRUSTED_PROXY_CIDRS` | 逗号分隔的实际代理 CIDR | 可信代理来源，用于转发头与相关入口校验。 |
 | `ALLOW_INSECURE_HTTP` | `false` | 显式允许非回环的明文管理监听；正式公网不推荐。 |

@@ -27,6 +27,14 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 
 `TRUSTED_PROXY_CIDRS` 必须匹配 Meridian 实际看到的代理来源。Docker、远程网关和 IPv6 连接不能直接照搬同机地址，也不要填 `0.0.0.0/0`。
 
+### Nginx stream 与真实 IP {#stream-client-ip}
+
+直接通过 HTTP 层反代时，Nginx 覆盖设置 `X-Real-IP $remote_addr`，Meridian 仅信任 `TRUSTED_PROXY_CIDRS` 中的代理来源；登录限流和请求日志即可使用客户端 IP。无端口的 `443` 反代本身不会必然让所有用户共用一个 IP。
+
+如果前面还有 stream 层，HTTP 层的连接来源可能已经变成 `127.0.0.1`。需要从仍能看到客户端来源的 stream 层传递 PROXY protocol，在后面的 **Nginx TLS 终结监听器**启用 `listen ... ssl proxy_protocol`，仅信任该 stream 来源（`set_real_ip_from`），并设置 `real_ip_header proxy_protocol`；再用恢复后的 `$remote_addr` 覆盖 `X-Real-IP`，转给 Meridian。HTTP realip 模块必须可用。
+
+Meridian 原生监听器不直接解析 PROXY protocol，不能把带 PROXY 头的 TLS 流直接发给 Meridian。stream 的 `proxy_protocol on` 会影响该 server 下所有分流目标，包括 Xray；必须先确认所有目标支持，或将相应入口隔离。若前面的某层已经丢失真实 IP，后层仅增加 HTTP 头无法还原。安装器不会自动改写这些自定义分流规则。
+
 ## 使用两个公开域名 {#separate-public-domains}
 
 需要从安装开始配置 `panel.example.com → Nginx → Meridian 面板` 与 `media.example.net → Nginx → Meridian 站点代理 → Emby`，请按 [面板与站点分域名部署](nginx-separate-domains.md) 操作。该指南包含 DNS、两张证书、完整 Nginx 配置、当前界面限制、站点 API 及维护注意事项。
@@ -38,7 +46,7 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 | 项目 | 示例 | 配置位置 |
 | --- | --- | --- |
 | 面板域名 | `panel.example.com` | 环境管理时使用 `PANEL_DOMAIN`；面板手动保存后使用“TLS 设置”中的域名 |
-| 站点域名 | `media.example.com` | 外部 HTTPS 模式通过站点 API 的 `public_host` 配置；当前新增表单的“域名前缀”仍要求原生 TLS |
+| 站点域名 | `media.example.com` | 保存节点基础域名后可在表单填写前缀；也可通过站点 API 的 `public_host` 配置完整域名 |
 | 节点基础域名 | `example.com` | 用于生成域名前缀；API 直接填写完整 `public_host` 时不要求配置 |
 | Meridian 内部地址 | `127.0.0.1:9090` | `PORT` / 面板监听设置 |
 | 对外 HTTPS 端口 | `443` | Nginx 的 `listen` 和 DNS/CDN 入口 |
@@ -90,7 +98,7 @@ PANEL_DOMAIN=panel.example.com
 PANEL_ROUTE_DOMAIN=example.net
 ```
 
-`PANEL_ROUTE_DOMAIN` 用于把 `media` 这样的前缀生成完整站点域名，不能使外部 HTTPS 模式下的新增表单自动获得原生 TLS 能力。当前这类部署通过下方 API 步骤填写完整 `public_host`，可以省略 `PANEL_ROUTE_DOMAIN`。
+`PANEL_ROUTE_DOMAIN` 用于把 `media` 这样的前缀生成完整站点域名。配置了可信代理和节点基础域名后，外部 HTTPS 部署也可在表单选择域名前缀；网关仍须配置泛域名证书和节点转发。通过下方 API 填写完整 `public_host` 时，可以省略 `PANEL_ROUTE_DOMAIN`。
 
 需要管理节点基础域名的已有部署，可在“TLS 设置”填写完整面板域名 `panel.example.com` 和节点泛域名 `*.example.net`，检查、保存后按提示重启；只改环境中的 `PANEL_ROUTE_DOMAIN` 不会改动已保存的基础域名。改变基础域名会迁移使用旧基础域名的站点入口，应先准备新站点域名的 DNS、证书与网关配置。
 
@@ -109,7 +117,7 @@ Meridian 当前的原生 HTTPS 共用一套证书，内置 Cloudflare 申请流�
 
 ### 外部 HTTPS 模式创建域名站点 {#external-https-host-site}
 
-当前新增站点表单的“域名前缀”要求原生 TLS 已启用；仅由 Nginx 提供 HTTPS 时，该选项仍被禁用。后端支持外部网关的 Host 路由，可以通过 API 创建，不需要为此在 Meridian 中启用原生证书。
+配置节点基础域名和可信代理后，可直接在新增站点表单选择“域名前缀”，无需在 Meridian 中启用原生证书。下面的 API 方式也适用于完整域名不属于已配置节点基础域名的情况。
 
 在已登录的面板页面打开浏览器开发者工具的控制台，替换域名与 Emby 回源地址后执行一次：
 

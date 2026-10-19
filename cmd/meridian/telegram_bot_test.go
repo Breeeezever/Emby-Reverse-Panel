@@ -381,6 +381,16 @@ func TestTelegramBotSiteAddressUsesActualListenerAndPublicPort(t *testing.T) {
 	if got != "https://panel.example.test:9443" {
 		t.Fatal(got)
 	}
+	b.app.routeDirect, b.app.panelTLSEnabled, b.app.panelBindLoopback = true, true, false
+	b.app.panelListenPort = 9443
+	got, _ = b.app.telegramSiteAddress(Site{IngressMode: ingressModeHost, PublicHost: "cinema.media.example.test"}, "https://panel.example.test")
+	if got != "https://cinema.media.example.test:9443" {
+		t.Fatal(got)
+	}
+	got, _ = b.app.telegramSiteAddress(Site{IngressMode: ingressModePath, PathPrefix: "/cinema"}, "https://panel.example.test")
+	if got != "https://panel.example.test/cinema/" {
+		t.Fatal(got)
+	}
 }
 func TestTelegramAPIErrorRedactsCredentialsAndDisallowsRedirects(t *testing.T) {
 	token := "123456:private-token"

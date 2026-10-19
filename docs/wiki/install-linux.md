@@ -75,7 +75,17 @@ bash install.sh tls --domain panel.example.com --wildcard '*.example.com' \
 
 Token 文件只能由管理员读取。授予目标 Zone 的 Zone Read 与 DNS Edit 权限，不要把 Token 作为命令行参数。
 
-成功后切换为 Meridian 原生 HTTPS，并移除安装器管理的旧面板 Nginx 配置。其他 Nginx 站点保留；失败时安装器恢复数据库、环境和证书。访问地址包含实际原生监听端口，例如 `https://panel.example.com:9090`。
+成功后启用 Meridian 原生 HTTPS。已有安装器管理的 Nginx 面板入口会保留，只将回源改为本机 HTTPS；原来的 `https://panel.example.com` 仍可使用，其证书继续由 Certbot 维护。节点使用实际原生监听端口，例如 `https://cinema.example.com:9090`。失败时恢复数据库、环境、证书和原 Nginx 配置；不修改其他 Nginx 站点。非安装器管理或结构不明确的代理配置会在停服务前拒绝修改。
+
+签发前检查所选 TCP 端口的监听进程，避免占用 Nginx、Xray 等其他服务的端口；缺少 `ss` 时会明确提示未能预检查。配置后分别报告本机健康与域名入口探测结果：入口探测按服务器的 DNS 解析访问 `/api/auth/check`，验证证书链、域名与面板响应，不跳过证书校验，也不自动跟随跳转。首次配置 Nginx 域名 HTTPS 时同样执行该探测。证书已安装但入口检查失败时，会显示待处理原因，不能视为公网部署完成；外部网络故障不会触发本机证书回滚。
+
+使用原生 `9090` 等端口时，还需在本机防火墙、云安全组和端口映射中放行对应 TCP。检测到 UFW 启用时会提示检查规则，安装器不会自动修改防火墙。服务器侧探测通过仍需从浏览器或另一网络复测。没有受管理 Nginx 入口时，`https://panel.example.com` 与 `https://panel.example.com:9090` 是不同入口；前者可能仍被已有 stream/SNI 规则转到其他程序，后者的证书不会自动替换前者。
+
+安装器设置 `PANEL_ROUTE_DIRECT=true`，网页与 Telegram 据此生成节点的原生端口地址。若后续将节点统一放到网关后，或使用不同的 Docker 公网映射端口，应去掉这个设置，使用对应的公开入口。
+
+保留网关后需要更换原生监听端口时，使用上面的 `tls --port 新端口` 命令，让数据库与代理回源同步；只改环境变量或网页端口会被阻止，以免原面板入口断开。
+
+面板也可直接使用节点基础域名，例如 `--domain media.example.com --wildcard '*.media.example.com'`；证书会同时包含 `media.example.com` 和 `*.media.example.com`。
 
 配置完成后检查防火墙和 CDN 是否支持该端口。完整说明见 [TLS 证书](tls-certificates.md)。
 

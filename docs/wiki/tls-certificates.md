@@ -2,6 +2,8 @@
 
 Meridian 支持原生 HTTPS，也可以放在已有 HTTPS 网关后面。此页介绍“全局设置 → TLS 设置”中的原生证书管理；外部网关见 [反向代理](reverse-proxy.md)。
 
+只想加 `/cinema/` 这样的路径前缀时，在站点选择“路径前缀”即可，复用当前地址和证书。`cinema.example.com` 这样的域名前缀才需要相应 DNS 和域名证书。一键安装时填写面板域名，使用的是 Nginx + Certbot 的 HTTPS，网页原生证书功能不会接管它；先检查正在使用的协议和端口，以及安装器的签发结果。
+
 ![TLS 设置](https://raw.githubusercontent.com/snnabb/Meridian/v1.13.0/docs/images/tls.webp)
 
 ## 先确定域名与端口
@@ -30,6 +32,8 @@ Meridian 支持原生 HTTPS，也可以放在已有 HTTPS 网关后面。此页�
 
 检查能确认服务器看到的 DNS、标准代理端口和本机配置，不能证明所有客户端网络、云防火墙、容器端口映射或外部代理回源均可用。页面中的“配置检查通过”不代表这些外部设置已自动完成。特殊的 Cloudflare Spectrum 转发不在面板的标准代理校验范围内。
 
+证书签发成功也不代表浏览器正在访问这张证书。例如 Meridian 在 `9090` 提供原生 HTTPS，而 `443` 由 Nginx stream 转给 Xray，访问不带端口的域名会收到 Xray 的证书。请对照浏览器实际地址和本页的原生监听地址；服务器侧证书检查不能代替公开入口的证书检查。安装器会探测实际域名入口并报告证书错误、无法连接或非面板响应，排查步骤见[故障排查](troubleshooting.md#https-entry)。
+
 ### Cloudflare 代理与泛域名记录
 
 普通 Cloudflare 代理支持的 HTTPS 端口为 `443`、`2053`、`2083`、`2087`、`2096`、`8443`。使用其他 HTTPS 端口时，把面板域名对应的记录设为“仅 DNS”，并指向服务器。
@@ -56,7 +60,7 @@ Meridian 支持原生 HTTPS，也可以放在已有 HTTPS 网关后面。此页�
 4. 填写 Token，申请证书。
 5. 查看签发结果，并按提示重启启用 HTTPS。
 
-此流程使用 DNS-01，不依赖公网 `80` 端口。它签发节点的通配证书，面板应是该基础域下一层子域，例如 `panel.example.com` 对应 `*.example.com`。
+此流程使用 DNS-01，不依赖公网 `80` 端口。它签发节点的通配证书，面板可为基础域下一层子域，例如 `panel.example.com` 对应 `*.example.com`；也可直接使用基础域名，例如 `media.example.com` 对应 `*.media.example.com`，此时额外签发基础域名，确保面板本身也受覆盖。
 
 申请证书只会创建临时验证 TXT 记录，不会自动创建面板或节点的 A / AAAA 记录。访问前需将这些域名解析到服务器；使用 Cloudflare 不支持的 HTTPS 端口时，代理状态应设为“仅 DNS”。
 

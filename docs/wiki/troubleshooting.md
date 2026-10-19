@@ -40,7 +40,7 @@ docker compose logs --tail 100 meridian
 | --- | --- |
 | 路径 | 地址是否包含完整前缀，网关是否保留路径，站点是否启用。 |
 | 独立端口 | 实际监听协议、端口占用、权限、防火墙、Docker 映射和 CDN 支持。 |
-| 域名前缀 | DNS、证书覆盖、原生 TLS 能力、网关 Host 与公开端口。 |
+| 域名前缀 | DNS、证书覆盖、原生 HTTPS 或受信网关、Host 转发与公开端口；共享模式不另开站点端口。 |
 
 可从客户端网络测试无需登录的服务器发现接口：
 
@@ -52,6 +52,17 @@ curl -i --max-time 15 \
 确认返回的是预期的 Emby 服务器信息，而不是 Meridian 登录页、网关错误页或另一个站点。
 
 这个接口成功只证明对应发现请求可达，不证明账户或视频播放成功。
+
+## 证书已申请，但浏览器不安全或无法连接 {#https-entry}
+
+先核对完整访问地址：`https://panel.example.com` 使用 `443`，`https://panel.example.com:9090` 使用 `9090`。本机证书签发与健康检查成功，不能证明这两个入口均可访问。
+
+1. 在服务器执行 `ss -ltnp 'sport = :9090'`，确认实际监听进程与端口。路径、域名前缀共享入口，只需检查公开入口端口；独立端口模式才另开监听。
+2. 检查本机防火墙、云安全组与 Docker 映射。例如使用 UFW 时先运行 `sudo ufw status`，确认要公开原生端口后再按需执行 `sudo ufw allow 9090/tcp`。同时核对 A/AAAA 记录和 Cloudflare 代理支持的端口。
+3. 从客户端执行 `curl --connect-timeout 5 --max-time 15 https://panel.example.com:9090/api/auth/check`，正常应返回包含 `mode: single_admin` 的 JSON。不要用 `-k` 跳过证书错误；不要把其他程序的 `200` 页面当作面板健康。
+4. 若不带端口时收到另一张或自签证书，检查 `443` 的 Nginx stream `ssl_preread` / SNI 映射与默认后端。应将面板域名送到正确 TLS 服务；重新签发 Meridian 的证书不会修复错误分流。若返回跳转，继续核对跳转地址的端口和证书。
+
+安装器只维护带 Meridian 管理标记且结构明确的面板配置。自定义 stream、Xray 和其他站点的规则需由管理员配置。多层代理的真实 IP 传递见[反向代理](reverse-proxy.md#stream-client-ip)。
 
 ## 可以登录但不能播放
 

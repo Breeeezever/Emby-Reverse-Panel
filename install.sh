@@ -885,6 +885,83 @@ wait_for_health() {
     return 1
 }
 
+# Inspect both address families before stopping the working service or issuing
+# a certificate. Only the current systemd main process may reuse its own port.
+check_native_tls_port() {
+    local port="$1" listeners pid="" line
+    if ! command -v ss >/dev/null 2>&1 \
+        || ! listeners=$(as_root ss -H -ltnp "sport = :${port}" 2>/dev/null); then
+        warn "无法预检查 TCP ${port} 占用；启动后仍会检查本机 HTTPS，失败则恢复原配置"
+        return 0
+    fi
+    [ -n "$listeners" ] || return 0
+    if [ "$port" = "$(read_config_port)" ] && service_is_active; then
+        pid=$(as_root systemctl show "$SERVICE_NAME" --property=MainPID --value 2>/dev/null || true)
+    fi
+    while IFS= read -r line; do
+        if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || [[ "$line" != *"pid=${pid},"* ]]; then
+            warn "TCP ${port} 已被其他进程占用或无法确认归属；请选择空闲端口，原服务未停止"
+            return 1
+        fi
+    done <<< "$listeners"
+}
+
+# This uses normal DNS and CA/hostname verification, without following redirects
+# or reading curlrc/proxy settings. A working loopback probe is not sufficient:
+# 443 may route to an unrelated TLS service, and native ports may be filtered.
+check_panel_https_entry() (
+    local domain="$1" port="$2" url probe_dir code status=0
+    url="https://${domain}$( [ "$port" = 443 ] || printf ':%s' "$port" )"
+    probe_dir=$(mktemp -d) || return 1
+    trap 'rm -rf -- "$probe_dir"' EXIT
+    if code=$(curl -q --noproxy '*' --proto '=https' --tlsv1.2 \
+        --connect-timeout 3 --max-time 8 --max-filesize 65536 -sS \
+        -o "${probe_dir}/body" -w '%{http_code}' "${url}/api/auth/check" 2>"${probe_dir}/error"); then
+        if [ "$code" = 200 ] \
+            && grep -Eq '"mode"[[:space:]]*:[[:space:]]*"single_admin"' "${probe_dir}/body" \
+            && grep -Eq '"authenticated"[[:space:]]*:[[:space:]]*false' "${probe_dir}/body"; then
+            ok "本服务器按 DNS 访问 ${url}：证书校验与面板接口检查通过"
+            return 0
+        fi
+        warn "${url} 返回 HTTP ${code}，未确认面板接口；请检查重定向、Nginx stream/SNI 分流和回源"
+    else
+        status=$?
+        case "$status" in
+            60|51|83|90|91)
+                warn "${url} 证书校验失败：可能收到其他服务的证书，或证书链、域名、有效期不正确；请核对 Nginx stream/SNI 分流"
+                ;;
+            6) warn "${url} DNS 解析失败；请检查域名 A/AAAA 记录" ;;
+            7|28)
+                warn "${url} 无法连接或超时；请检查 TCP ${port} 的本机防火墙、云安全组、端口映射及 DNS/CDN"
+                ;;
+            *) warn "${url} HTTPS 入口检查失败（curl ${status}）；请检查 TLS 与代理回源" ;;
+        esac
+    fi
+    return 1
+)
+
+report_native_tls_access() {
+    local domain="$1" port="$2" managed_proxy="$3" verified=1
+    info "原生入口需要放行 TCP ${port}（包括云安全组）；本机健康检查不代表公网可达"
+    if command -v ufw >/dev/null 2>&1 \
+        && as_root env LC_ALL=C ufw status 2>/dev/null | grep -E '^Status: active' >/dev/null; then
+        warn "UFW 已启用，请核对 TCP ${port} 规则；需要公开该端口时可执行 sudo ufw allow ${port}/tcp"
+    fi
+    check_panel_https_entry "$domain" "$port" || verified=0
+    if [ "$port" != 443 ]; then
+        if [ "$managed_proxy" = 1 ]; then
+            check_panel_https_entry "$domain" 443 || verified=0
+        else
+            info "不带端口的 https://${domain} 会访问 443；本次原生证书配置不会接管该端口的其他服务或 SNI 分流"
+        fi
+    fi
+    if [ "$verified" = 0 ]; then
+        warn "证书与本机 HTTPS 已配置，但域名入口验证未全部通过；请处理上述问题后从外部网络复测"
+    else
+        info "以上为服务器侧检查；请再从浏览器或另一网络验证实际地址，确认公网放行"
+    fi
+}
+
 # Refuse an update when the persisted panel endpoint and the installation
 # configuration disagree.  Meridian keeps the configured endpoint in SQLite
 # after first bootstrap, while the installer keeps PORT in .env; a stale
@@ -1527,8 +1604,9 @@ NGINXEOF
 }
 
 update_managed_panel_proxy_port() {
-    local port="$1" output="$2"
+    local port="$1" output="$2" scheme="${3:-http}"
     port=$(normalize_port "$port") || return 1
+    case "$scheme" in http|https) ;; *) return 1 ;; esac
     as_root test -f "$NGINX_CONFIG" || return 1
     as_root test -L "$NGINX_CONFIG" && return 1
     as_root grep -Fqx "$NGINX_MARKER" "$NGINX_CONFIG" || return 1
@@ -1541,12 +1619,12 @@ update_managed_panel_proxy_port() {
     # directive. Only a single numeric loopback proxy target from the managed
     # panel template is eligible for replacement.
     # shellcheck disable=SC2016
-    if ! LC_ALL=C as_root awk -v port="$port" '
+    if ! LC_ALL=C as_root awk -v port="$port" -v scheme="$scheme" '
         {
             line=$0
-            if (line ~ /^[[:space:]]*proxy_pass[[:space:]]+http:\/\/127\.0\.0\.1:[0-9]+;([[:space:]]*#.*)?[[:space:]]*$/) {
+            if (line ~ /^[[:space:]]*proxy_pass[[:space:]]+https?:\/\/127\.0\.0\.1:[0-9]+;([[:space:]]*#.*)?[[:space:]]*$/) {
                 proxy_count++
-                sub(/http:\/\/127\.0\.0\.1:[0-9]+;/, "http://127.0.0.1:" port ";", line)
+                sub(/https?:\/\/127\.0\.0\.1:[0-9]+;/, scheme "://127.0.0.1:" port ";", line)
             }
             print line
         }
@@ -1802,6 +1880,10 @@ configure_panel_port() {
         info "面板端口保持不变: $current_port"
         return 0
     fi
+    if [ "$(read_env_value PANEL_TLS_ENABLED)" = true ]; then
+        warn "原生 HTTPS 的监听端口以数据库为准；请使用 tls 命令的 --port 参数同步配置，拒绝只修改环境和代理端口"
+        return 1
+    fi
 
     bind_addr=$(read_env_value PANEL_BIND_ADDR)
     domain=$(read_env_value PANEL_DOMAIN)
@@ -1925,6 +2007,8 @@ configure_panel_domain() {
 
     commit_panel_transaction
     ok "面板 HTTPS 已配置: https://${domain}"
+    check_panel_https_entry "$domain" 443 \
+        || warn "本机服务已正常启动，但域名 HTTPS 入口尚未验证通过；请检查上方原因并从外部网络复测"
     info "反代目标固定为 127.0.0.1:${port}；未读取或修改任何播放地址和站点端口"
     return 0
 }
@@ -2112,7 +2196,13 @@ print_panel_address() {
     local domain port
     domain=$(read_env_value PANEL_DOMAIN)
     port=$(read_config_port)
-    if [ "$(read_env_value PANEL_TLS_ENABLED)" = true ]; then
+    if [ -n "$domain" ] && as_root test -f "$NGINX_CONFIG" \
+        && as_root grep -Fqx "$NGINX_MARKER" "$NGINX_CONFIG"; then
+        printf '  面板地址: https://%s（Nginx 入口）\n' "$domain"
+        if [ "$(read_env_value PANEL_TLS_ENABLED)" = true ]; then
+            printf '  原生 HTTPS: https://%s%s\n' "$domain" "$( [ "$port" = 443 ] || printf ':%s' "$port" )"
+        fi
+    elif [ "$(read_env_value PANEL_TLS_ENABLED)" = true ]; then
         printf '  面板地址: https://%s%s\n' "$domain" "$( [ "$port" = 443 ] || printf ':%s' "$port" )"
     elif [ -n "$domain" ] && as_root test -f "$NGINX_CONFIG"; then
         printf '  面板地址: https://%s\n' "$domain"
@@ -2122,7 +2212,7 @@ print_panel_address() {
 }
 
 do_tls() (
-    local domain wildcard email token port tmp_dir snapshot active=0 transaction=0 snapshot_ready=0
+    local domain wildcard email token port tmp_dir snapshot active=0 transaction=0 snapshot_ready=0 managed_proxy=0
     init_privilege
     ensure_cli_dependencies update
     validate_install_dir; validate_data_dir; validate_backup_dir
@@ -2139,11 +2229,15 @@ do_tls() (
     valid_domain "$domain" || fail "请填写有效的面板完整域名"
     wildcard="${wildcard#\*.}"
     valid_domain "$wildcard" || fail "请填写有效泛域名"
-    [[ "$domain" == *".${wildcard}" ]] || fail "面板域名必须属于节点泛域名"
+    [[ "$domain" == "$wildcard" || "$domain" == *".${wildcard}" ]] || fail "面板域名必须是节点基础域名或其下一层子域名"
+    if [ "$domain" != "$wildcard" ] && [[ "${domain%."${wildcard}"}" == *.* ]]; then
+        fail "面板域名必须是节点基础域名或其下一层子域名；泛域名证书不覆盖多层前缀"
+    fi
     if [ -z "$email" ] || ! valid_certbot_email "$email"; then fail "请填写有效邮箱"; fi
     port="${REQUESTED_PORT:-$(read_config_port)}"
     port=$(normalize_port "$port") || fail "端口必须为 1–65535"
     [ "$port" != 443 ] || ! as_root test -f "$NGINX_CONFIG" || fail "443 正由安装器配置的 Nginx 使用，请选择其他端口（例如 9090）"
+    check_native_tls_port "$port" || fail "原生 HTTPS 端口不可用，证书和服务配置未修改"
     if [ -n "$DNS_TOKEN_FILE" ]; then
         if [ ! -f "$DNS_TOKEN_FILE" ] || [ "$(wc -c < "$DNS_TOKEN_FILE")" -gt 513 ]; then fail "DNS Token 文件无效或过大"; fi
         token=$(cat -- "$DNS_TOKEN_FILE")
@@ -2163,6 +2257,11 @@ do_tls() (
         if [ "$transaction" = 1 ]; then
             as_root systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
             if [ "$snapshot_ready" = 1 ]; then restore_data_snapshot "$snapshot" || warn "恢复失败，请保留并检查快照: $snapshot"; fi
+            if [ "$managed_proxy" = 1 ]; then
+                if ! as_root cp -p -- "${tmp_dir}/nginx.before" "$NGINX_CONFIG" || ! nginx_test_and_reload; then
+                    warn "Nginx 恢复失败，请检查: $NGINX_CONFIG"
+                fi
+            fi
             if [ "$active" = 1 ]; then as_root systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true; fi
         fi
         if [ "$transaction" = 0 ]; then as_root rm -rf -- "$tmp_dir"; fi
@@ -2170,6 +2269,19 @@ do_tls() (
     }
     trap cleanup_tls EXIT
     trap 'exit 130' INT TERM
+    # Keep the existing public panel URL and Certbot certificate. Only the
+    # loopback upstream changes to HTTPS; node hosts use the native listener.
+    if as_root test -e "$NGINX_CONFIG"; then
+        validate_nginx_config_path
+        "${INSTALL_DIR}/${BIN_NAME}" --version --features 2>/dev/null | grep -Fxq shared-ingress-v2 \
+            || fail "请先更新 Meridian，再申请证书，以支持保留原面板入口并生成正确节点地址"
+        [ "$(read_env_value PANEL_DOMAIN)" = "$domain" ] \
+            || fail "请先使用当前面板域名申请证书，以保留已有 Nginx 入口；更换域名需同步调整代理"
+        update_managed_panel_proxy_port "$port" "${tmp_dir}/nginx.native" https \
+            || fail "无法安全更新现有 Nginx 面板入口；原配置未修改，请先检查代理配置"
+        as_root cp -p -- "$NGINX_CONFIG" "${tmp_dir}/nginx.before" || exit 1
+        managed_proxy=1
+    fi
     service_is_active && active=1
     transaction=1
     as_root systemctl stop "$SERVICE_NAME" || exit 1
@@ -2191,13 +2303,24 @@ do_tls() (
     set_panel_env 0.0.0.0 "$domain" "$(read_env_value TRUSTED_PROXY_CIDRS)" false "$tmp_dir" "$port" || exit 1
     replace_tls_env PANEL_TLS_ENABLED true "$tmp_dir" || exit 1
     replace_tls_env PANEL_ROUTE_DOMAIN "$wildcard" "$tmp_dir" || exit 1
+    replace_tls_env PANEL_ROUTE_DIRECT true "$tmp_dir" || exit 1
     as_root systemctl start "$SERVICE_NAME" || exit 1
     wait_for_health 20 || fail "HTTPS 健康检查失败，正在恢复原配置"
+    if [ "$managed_proxy" = 1 ]; then
+        if ! as_root install -o root -g "$ROOT_GROUP" -m 0644 "${tmp_dir}/nginx.native" "$NGINX_CONFIG" || ! nginx_test_and_reload; then
+            fail "Nginx 入口更新失败，正在恢复原配置"
+        fi
+    fi
     transaction=0
-    # Native HTTPS now owns the panel endpoint; remove only our managed proxy.
-    remove_managed_nginx_config || warn "请手动移除旧的 Meridian Nginx 面板配置"
     print_panel_address
-    ok "泛域名证书已启用并配置自动续期，请放行 TCP ${port}"
+    [ "$managed_proxy" = 0 ] || info "原 Nginx 面板入口已保留，仍可使用原来的 HTTPS 地址；其证书继续由 Certbot 维护"
+    info "域名前缀地址: https://前缀.${wildcard}$( [ "$port" = 443 ] || printf ':%s' "$port" )；需将 *.${wildcard} 解析到本机"
+    case "$port" in
+        443|2053|2083|2087|2096|8443) ;;
+        *) info "普通 Cloudflare 代理不支持 HTTPS ${port}；使用此端口的节点记录需设为仅 DNS，并检查单独记录是否覆盖泛域名记录" ;;
+    esac
+    ok "泛域名证书已安装，本机 HTTPS 健康检查通过，自动续期已配置"
+    report_native_tls_access "$domain" "$port" "$managed_proxy"
 )
 
 replace_tls_env() {

@@ -25,7 +25,7 @@ test('ingress form exposes the secure host-only mode without a listener', () => 
   assert.equal(host.showPublicHost, true);
   assert.equal(host.requirePublicHost, true);
 	assert.equal(host.requireListenPort, false);
-	assert.match(host.portLabel, /可选/);
+	assert.match(host.portLabel, /共享/);
 	assert.match(host.warning, /不会绑定/);
 	assert.match(host.warning, /TLS .*\u8bc1\u4e66/);
 	assert.equal(ingressFormState('port').requireListenPort, true);
@@ -58,6 +58,27 @@ test('ingress payload clears stale host for port mode and preserves it otherwise
 test('new sites default to path ingress across deployment types', () => {
   const { defaultIngressMode } = loadHelpers();
   for (const caps of [undefined, {}, {panel_tls_enabled:true,domain_prefix_available:true}, {panel_tls_enabled:false}]) assert.equal(defaultIngressMode(caps), 'path');
+});
+
+test('domain prefixes work behind a trusted HTTPS gateway without native TLS', () => {
+  const {canUseDomainPrefix, normalizeSiteCapabilities} = loadHelpers();
+  const caps = {host_only_available:true, domain_prefix_available:true, external_proxy:true, panel_tls_enabled:false};
+  assert.equal(canUseDomainPrefix(normalizeSiteCapabilities(caps)), true);
+  assert.equal(canUseDomainPrefix(normalizeSiteCapabilities({...caps, external_proxy:false})), false);
+  assert.equal(canUseDomainPrefix(normalizeSiteCapabilities({...caps, host_only_available:false})), false);
+  assert.equal(canUseDomainPrefix(normalizeSiteCapabilities({...caps, domain_prefix_available:false})), false);
+});
+
+test('domain prefix previews use the public port or an explicit direct native port', () => {
+  const sandbox = loadHelpers();
+  sandbox.window.location = {protocol:'https:', hostname:'panel.example.com', host:'panel.example.com', port:''};
+  const site = {ingress_mode:'host', public_host:'cinema.media.example.com', listen_port:51000};
+  assert.equal(sandbox.siteAccessAddress(site, sandbox.normalizeSiteCapabilities({external_proxy:true})), 'https://cinema.media.example.com:443');
+  const native = sandbox.normalizeSiteCapabilities({panel_tls_enabled:true, domain_prefix_port:9443});
+  assert.equal(sandbox.siteAccessAddress(site, native), 'https://cinema.media.example.com:9443');
+  assert.equal(sandbox.siteAccessAddress({ingress_mode:'path',path_prefix:'/cinema'}, native), 'https://panel.example.com/cinema/');
+  sandbox.window.location = {protocol:'https:', hostname:'panel.example.com', host:'panel.example.com:8443', port:'8443'};
+  assert.equal(sandbox.siteAccessAddress(site, sandbox.normalizeSiteCapabilities({panel_tls_enabled:true})), 'https://cinema.media.example.com:8443');
 });
 
 test('ingress mode labels remain concise for the site card', () => {
@@ -131,9 +152,8 @@ test('site modal always loads deployment capabilities for create and edit flows'
   assert.doesNotMatch(modalSource, /if \(!isEdit\)[\s\S]{0,200}ingressCapabilities/);
 	assert.doesNotMatch(modalSource, /id="m-port"[^>]*\srequired(?:\s|>)/);
 	assert.match(modalSource, /portInput\.required = state\.requireListenPort/);
-	assert.match(modalSource, /panelTLSReady = siteCapabilities\.panel_tls_enabled === true/);
-	assert.match(modalSource, /canUseHostIngress = hostOnlyAvailable && domainPrefixAvailable/);
-	assert.match(modalSource, /需配置 TLS 和域名/);
+	assert.match(modalSource, /canUseHostIngress = canUseDomainPrefix\(siteCapabilities, site\)/);
+	assert.match(modalSource, /需配置 HTTPS 入口和节点基础域名/);
 });
 
 test('stream host normalization accepts the array API and legacy JSON strings', () => {

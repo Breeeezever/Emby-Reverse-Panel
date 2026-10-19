@@ -31,6 +31,9 @@ export MERIDIAN_ASSUME_YES=1
 # The path is computed so this test works from an arbitrary checkout.
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/install.sh"
+# Domain workflow fixtures do not contact public DNS; the entry probe and its
+# failure modes are exercised by install_tls_test.sh.
+check_panel_https_entry() { return 0; }
 
 # The documented curl | sudo bash form runs the script from stdin, where Bash
 # leaves BASH_SOURCE as an empty array. Nounset must not abort before run_cli.

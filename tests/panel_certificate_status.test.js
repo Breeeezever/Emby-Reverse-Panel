@@ -10,6 +10,13 @@ const sandbox = {Date, esc: value => String(value).replaceAll('&', '&amp;').repl
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/static/js/pages/panel-settings.js'), 'utf8'), sandbox);
 
+test('gateway certificates are not reported as missing native certificates', () => {
+  const html = sandbox.renderPanelCertificateStatus({available:true, external_proxy:true, configured:false});
+  assert.match(html, /外部代理/);
+  assert.match(html, /路径前缀无需额外证书/);
+  assert.doesNotMatch(html, /尚未配置|未启用，请检查/);
+});
+
 test('TLS status distinguishes the served certificate and saved certificate, and escapes maintenance failures', () => {
   const html = sandbox.renderPanelCertificateStatus({
     available: true, configured: true, restart_required: true, tls_enabled: true,
