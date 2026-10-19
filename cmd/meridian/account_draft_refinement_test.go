@@ -47,6 +47,9 @@ func TestTelegramRecognizedAccountIsEditableUntilExplicitSave(t *testing.T) {
 	tgText(t, b, "renewal memo")
 	assertNoDraftSaved(t, b)
 	tgChoose(t, b, "done")
+	if !strings.Contains(fake.lastText(), "2031-12-20") || strings.Contains(fake.lastText(), "342128") {
+		t.Fatal("account draft confirmation exposed fractional expiry seconds")
+	}
 	if !strings.Contains(fake.lastText(), "提前 7 天") || !strings.Contains(fake.lastText(), "自动发现") {
 		t.Fatalf("confirmation lost settings: %s", fake.lastText())
 	}

@@ -2,6 +2,18 @@
 let siteSortingCleanup = null;
 let sitesLoadGeneration = 0;
 let siteToolMenuCleanup = null;
+function normalizeAccountRenewalDays(value) {
+  const text = String(value ?? '').trim();
+  if (!/^\d+$/.test(text)) return 0;
+  const days = Number(text);
+  return Number.isSafeInteger(days) && days >= 1 && days <= 3650 ? days : 0;
+}
+function formatAccountExpiryDate(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : text;
+}
 function renderSites() {
   const page = document.getElementById('page-sites');
   if (!page) return;
@@ -32,7 +44,16 @@ function renderSites() {
         </details>
         <input id="site-import-file" type="file" accept=".json,.csv,text/csv,application/json" hidden>
         <label class="sites-search"><span class="sr-only">搜索站点</span><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16" y1="16" x2="21" y2="21"/></svg><input id="sites-search" type="search" placeholder="搜索站点名称或回源地址"></label>
+        <select class="form-select account-lifecycle-filter" id="account-lifecycle-filter" aria-label="账号生命周期筛选">
+          <option value="">账号：全部</option>
+          <option value="expiring">即将到期</option>
+          <option value="expired">已到期</option>
+          <option value="disabled">站点已停用</option>
+          <option value="no-reminder">未设置提醒</option>
+          <option value="active">正常</option>
+        </select>
         <button class="btn-ghost btn-test-all" id="btn-test-all-sites"><span aria-hidden="true">⌁</span> 全部测速</button>
+        <button class="btn-ghost" id="btn-account-reminder-history">提醒记录</button>
         <div class="toolbar-info" id="sites-count"></div>
       </div>
       <div class="site-account-reminders" id="site-account-reminders" hidden></div>
@@ -42,7 +63,9 @@ function renderSites() {
     bindSiteToolMenus(page);
     document.getElementById('btn-add-site').onclick = () => showSiteModal();
     document.getElementById('btn-test-all-sites').onclick = testAllSitesLatency;
+    document.getElementById('btn-account-reminder-history').onclick = showAccountReminderRecords;
     document.getElementById('sites-search').addEventListener('input', event => filterSiteCards(event.target.value));
+    document.getElementById('account-lifecycle-filter').addEventListener('change', () => loadSiteAccountReminders());
     document.querySelectorAll('[data-site-import-format]').forEach(button => {
       button.onclick = () => {
         const input = document.getElementById('site-import-file');
@@ -318,16 +341,46 @@ async function loadSiteAccountReminders() {
   const target = document.getElementById('site-account-reminders');
   if (!target || !API.getAccountReminders) return;
   try {
-    const rows = await API.getAccountReminders();
+    const filter = document.getElementById('account-lifecycle-filter')?.value || '';
+    const rows = API.getAccountRemindersFiltered ? await API.getAccountRemindersFiltered(filter) : await API.getAccountReminders();
     if (!rows.length) {
       target.hidden = true;
       target.innerHTML = '';
       return;
     }
     target.hidden = false;
-    target.innerHTML = `<span class="site-account-reminder-label">账号到期</span>${rows.sort((a, b) => a.days_left - b.days_left).slice(0, 8).map(row => `<span class="reminder-pill ${row.status}">${esc(row.site_name)} · ${esc(row.account.account_name)} · ${row.status === 'expired' ? '已到期' : `剩余 ${row.days_left} 天`}</span>`).join('')}`;
+    target.innerHTML = `<span class="site-account-reminder-label">账号 ${filter === 'expired' ? '已到期' : filter === 'expiring' ? '即将到期' : filter === 'disabled' ? '所在站点已停用' : filter === 'no-reminder' ? '未设置提醒' : '状态'}</span>${rows.sort((a, b) => a.days_left - b.days_left).slice(0, 12).map(row => `<span class="reminder-pill ${row.status}">${esc(row.site_name)} · ${esc(row.account.account_name)} · ${row.status === 'expired' ? '已到期' : row.status === 'disabled' ? '站点停用' : !row.reminder_enabled ? '未设置提醒' : `剩余 ${row.days_left} 天`}</span>`).join('')}`;
   } catch (_) {
     target.hidden = true;
+  }
+}
+
+async function showAccountReminderRecords() {
+  if (!API.getAccountReminderRecords) return;
+  try {
+    const records = await API.getAccountReminderRecords();
+    document.getElementById('modal-body').innerHTML = `
+      <h2>提醒发送记录</h2>
+      <p class="form-help">这里保留每次发送尝试和失败原因；账号密码不会出现在记录中。处理或忽略后，该到期批次不会再次发送。</p>
+      <div class="account-reminder-history">${records.length ? records.map((record, index) => `<div class="account-reminder-history-row ${record.status === 'failed' ? 'is-failed' : ''}"><strong>${esc(record.site_name)} · ${esc(record.account_name)}</strong><span>${record.status === 'failed' ? '发送失败' : '发送成功'} · 到期日 ${esc(formatAccountExpiryDate(record.expires_at))} · 提前 ${record.reminder_days} 天 · ${esc(record.attempted_at || record.sent_at || '')}${record.error ? ` · ${esc(record.error)}` : ''}${record.action ? ` · 已${record.action === 'handled' ? '处理' : record.action === 'ignored' ? '忽略' : '延后'}` : ''}</span>${record.status === 'sent' && !record.action ? `<div class="account-reminder-history-actions"><button type="button" class="btn-ghost" data-reminder-action="handled" data-reminder-index="${index}">已处理</button><button type="button" class="btn-ghost" data-reminder-action="ignored" data-reminder-index="${index}">忽略本次</button><button type="button" class="btn-ghost" data-reminder-action="snoozed" data-reminder-index="${index}">明天再提醒</button></div>` : ''}</div>`).join('') : '<div class="form-help">暂无提醒发送记录。</div>'}</div>`;
+    document.getElementById('modal-footer').innerHTML = '<button class="btn-modal secondary" id="account-reminder-history-close">关闭</button>';
+    document.getElementById('account-reminder-history-close').onclick = closeModal;
+    document.querySelectorAll('[data-reminder-action]').forEach(button => {
+      button.onclick = async () => {
+        const record = records[Number(button.dataset.reminderIndex)];
+        if (!record) return;
+        button.disabled = true;
+        try {
+          await API.saveAccountReminderAction({ account_id: record.account_id, expires_at: record.expires_at, reminder_days: record.reminder_days, action: button.dataset.reminderAction });
+          Toast.success(button.dataset.reminderAction === 'handled' ? '已标记处理' : button.dataset.reminderAction === 'snoozed' ? '明天再提醒' : '已忽略本次提醒');
+          await showAccountReminderRecords();
+          loadSiteAccountReminders();
+        } catch (error) { button.disabled = false; Toast.error(error.message || '提醒动作保存失败'); }
+      };
+    });
+    openModal({ closeOnBackdrop: true });
+  } catch (error) {
+    Toast.error(error.message || '提醒记录读取失败');
   }
 }
 
@@ -1642,6 +1695,15 @@ async function showSiteModal(site) {
   }));
   let accountBaseline = accountFingerprint();
   const accountFormDirty = () => accountFingerprint() !== accountBaseline;
+  function hasPendingAccountChanges() {
+    return accountFormDirty() || (!isEdit && accountFormOriginal && !accountFormOriginal.id);
+  }
+  function guardAccountRenewal() {
+    if (!hasPendingAccountChanges()) return true;
+    Toast.error('当前账号有未保存的修改，请先保存账号或放弃修改');
+    reviewPendingAccount();
+    return false;
+  }
   function reviewPendingAccount() {
     document.getElementById('site-tab-basic')?.click();
     document.getElementById('m-account-options').open = true;
@@ -1665,7 +1727,7 @@ async function showSiteModal(site) {
   document.getElementById('m-account-review').onclick = reviewPendingAccount;
   function fillModalAccountForm(account) {
     accountFormOriginal = { ...account };
-    const values = [account.id || '', account.account_name || '', account.username || '', account.password || '', account.security_password || '', String(account.expires_at || '').slice(0, 10), account.reminder_days ?? '', account.note || ''];
+    const values = [account.id || '', account.account_name || '', account.username || '', account.password || '', account.security_password || '', formatAccountExpiryDate(account.expires_at), account.reminder_days ?? '', account.note || ''];
     accountFormIDs.forEach((id, index) => { document.getElementById(id).value = values[index]; });
     document.getElementById('m-account-save').textContent = isEdit ? '保存账号' : '确认账号信息';
     accountBaseline = accountFingerprint();
@@ -1688,7 +1750,7 @@ async function showSiteModal(site) {
     }
     accountList.innerHTML = modalAccounts.map(account => `<div class="site-account-row">
       <div><strong>${esc(account.account_name || account.username || '未命名账号')}${!isEdit ? ' · 待保存' : ''}</strong><span>${esc(account.username || account.account_name || '')}</span></div>
-      <div class="site-account-row-meta"><span>登录密码：<code>${esc(account.password || '未填写')}</code> · 安全密码：<code>${esc(account.security_password || '未填写')}</code>${account.expires_at ? ` · 到期：${esc(account.expires_at)}` : ''}${account.reminder_days != null ? ` · 提前 ${esc(String(account.reminder_days))} 天提醒` : ''}</span><div class="site-account-row-actions"><button type="button" class="icon-button" data-modal-account-edit="${account.id || ''}" title="编辑账号">编辑</button><button type="button" class="icon-button danger" data-modal-account-delete="${account.id || ''}" title="删除账号">删除</button></div></div>
+      <div class="site-account-row-meta"><span>登录密码：<code>${esc(account.password || '未填写')}</code> · 安全密码：<code>${esc(account.security_password || '未填写')}</code>${account.expires_at ? ` · 到期日：${esc(formatAccountExpiryDate(account.expires_at))}` : ''}${account.reminder_days != null ? ` · 提前 ${esc(String(account.reminder_days))} 天提醒` : ''}${account.lifecycle ? ` · ${esc({active:'正常', expiring:'即将到期', expired:'已到期', unknown:'日期无效'}[account.lifecycle] || account.lifecycle)}` : ''}</span><div class="site-account-row-actions"><button type="button" class="icon-button" data-modal-account-edit="${account.id || ''}" title="编辑账号">编辑</button>${isEdit && Number(account.id) > 0 ? `<button type="button" class="icon-button" data-modal-account-renew="${account.id}" title="选择续期时长">续期</button>` : ''}<button type="button" class="icon-button danger" data-modal-account-delete="${account.id || ''}" title="删除账号">删除</button></div></div>${isEdit && Number(account.id) > 0 ? `<div class="account-renewal-picker" data-renewal-picker="${account.id}" hidden><span class="form-help">选择续期时长</span><div class="account-renewal-presets"><button type="button" class="btn-ghost" data-renewal-account="${account.id}" data-renewal-days="30">一月</button><button type="button" class="btn-ghost" data-renewal-account="${account.id}" data-renewal-days="90">一季度</button><button type="button" class="btn-ghost" data-renewal-account="${account.id}" data-renewal-days="365">一年</button><button type="button" class="btn-ghost" data-renewal-account="${account.id}" data-renewal-custom-toggle>自定义</button></div><div class="account-renewal-custom" data-renewal-custom hidden><label>自定义天数<input class="form-input" type="number" min="1" max="3650" step="1" inputmode="numeric" data-renewal-custom-input placeholder="1–3650"></label><button type="button" class="btn-ghost" data-renewal-account="${account.id}" data-renewal-custom-submit>确认续期</button></div></div>` : ''}
     </div>`).join('');
     accountList.querySelectorAll('[data-modal-account-edit]').forEach(button => {
       button.onclick = () => {
@@ -1715,6 +1777,73 @@ async function showSiteModal(site) {
           Toast.success('账号已删除');
         } catch (error) { Toast.error(error.message || '删除账号失败'); }
       };
+    });
+    const findRenewalPicker = accountID => [...accountList.querySelectorAll('[data-renewal-picker]')]
+      .find(picker => String(picker.dataset.renewalPicker) === String(accountID));
+    const setRenewalPickerBusy = (picker, busy) => {
+      if (!picker) return;
+      picker.querySelectorAll('button, input').forEach(control => { control.disabled = busy; });
+    };
+    const renewModalAccount = async (accountID, days, trigger) => {
+      if (!guardAccountRenewal()) return;
+      const normalizedDays = normalizeAccountRenewalDays(days);
+      if (!normalizedDays) { Toast.error('续期天数应为 1–3650 的整数'); return; }
+      const picker = findRenewalPicker(accountID);
+      setRenewalPickerBusy(picker, true);
+      if (trigger) trigger.disabled = true;
+      try {
+        const result = await API.renewSiteAccount(site.id, accountID, normalizedDays);
+        const index = modalAccounts.findIndex(row => Number(row.id) === accountID);
+        if (index >= 0 && result.account) modalAccounts[index] = { ...modalAccounts[index], ...result.account };
+        const editingID = Number(document.getElementById('m-account-id')?.value || 0);
+        if (editingID === accountID && index >= 0) fillModalAccountForm(modalAccounts[index]);
+        renderModalAccounts();
+        loadSiteAccountReminders();
+        Toast.success(`已续期 ${normalizedDays} 天，到期日 ${formatAccountExpiryDate(result.renewal?.new_expires_at)}`);
+      } catch (error) {
+        setRenewalPickerBusy(picker, false);
+        if (trigger) trigger.disabled = false;
+        Toast.error(error.message || '续期失败');
+      }
+    };
+    accountList.querySelectorAll('[data-modal-account-renew]').forEach(button => {
+      button.onclick = () => {
+        if (!guardAccountRenewal()) return;
+        const picker = findRenewalPicker(button.dataset.modalAccountRenew);
+        if (!picker) return;
+        accountList.querySelectorAll('[data-renewal-picker]').forEach(other => {
+          if (other !== picker) other.hidden = true;
+        });
+        picker.hidden = !picker.hidden;
+        if (!picker.hidden) picker.querySelector('[data-renewal-days]')?.focus();
+      };
+    });
+    accountList.querySelectorAll('[data-renewal-days]').forEach(button => {
+      button.onclick = () => renewModalAccount(Number(button.dataset.renewalAccount), button.dataset.renewalDays, button);
+    });
+    accountList.querySelectorAll('[data-renewal-custom-toggle]').forEach(button => {
+      button.onclick = () => {
+        if (!guardAccountRenewal()) return;
+        const picker = findRenewalPicker(button.dataset.renewalAccount);
+        const custom = picker?.querySelector('[data-renewal-custom]');
+        if (!custom) return;
+        custom.hidden = !custom.hidden;
+        if (!custom.hidden) custom.querySelector('input')?.focus();
+      };
+    });
+    accountList.querySelectorAll('[data-renewal-custom-submit]').forEach(button => {
+      button.onclick = () => {
+        const picker = findRenewalPicker(button.dataset.renewalAccount);
+        const input = picker?.querySelector('[data-renewal-custom-input]');
+        renewModalAccount(Number(button.dataset.renewalAccount), input?.value || '', button);
+      };
+    });
+    accountList.querySelectorAll('[data-renewal-custom-input]').forEach(input => {
+      input.addEventListener('keydown', event => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        input.closest('[data-renewal-picker]')?.querySelector('[data-renewal-custom-submit]')?.click();
+      });
     });
   }
   async function saveModalAccount(showNotice = true) {

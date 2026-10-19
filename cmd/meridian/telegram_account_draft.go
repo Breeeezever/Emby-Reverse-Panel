@@ -26,7 +26,7 @@ func telegramAccountMemo(account SiteAccountInput) string {
 		}
 		return s
 	}
-	return fmt.Sprintf("👤 %s\n用户名：%s\n登录密码：%s\n安全密码：%s\n\n📅 到期：%s\n🔔 %s\n备注：%s", value(account.AccountName), value(account.Username), value(account.Password), value(account.SecurityPassword), value(account.ExpiresAt), telegramReminderLabel(account), value(account.Note))
+	return fmt.Sprintf("👤 %s\n用户名：%s\n登录密码：%s\n安全密码：%s\n\n📅 到期日：%s\n🔔 %s\n备注：%s", value(account.AccountName), value(account.Username), value(account.Password), value(account.SecurityPassword), value(formatSiteAccountExpiryDate(account.ExpiresAt)), telegramReminderLabel(account), value(account.Note))
 }
 
 func (b *telegramBot) draftAccountPrompt(ctx context.Context, id int64, s *telegramSession) error {
@@ -84,7 +84,7 @@ func (b *telegramBot) acceptDraftAccount(ctx context.Context, id int64, s *teleg
 			message = "🔔 想提前几天收到提醒？\n\n发送 0–3650 之间的整数，0 表示到期当天。\n同一次到期只提醒一次，不会每天重复推送。"
 			choices = append([]telegramButton{telegramButtonFor("提前 3 天", "3"), telegramButtonFor("提前 7 天", "7"), telegramButtonFor("到期当天", "0"), telegramButtonFor("关闭提醒", "clear")}, choices...)
 		} else if text == "expires" {
-			message = "📅 把到期日期发给我吧。\n例如：2030-11-09，或 2030-11-09 22:08:59。"
+			message = "📅 把到期日期发给我吧。\n只需填写 2030-11-09；已有完整时间也可以继续使用。"
 			choices = append([]telegramButton{telegramButtonFor("没有到期时间", "clear")}, choices...)
 		} else if text == "password" || text == "security" || text == "note" {
 			choices = append([]telegramButton{telegramButtonFor("清空这一项", "clear")}, choices...)

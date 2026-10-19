@@ -64,7 +64,11 @@ func (b *telegramBot) listSites(ctx context.Context, id int64, action string, pa
 		if b.app.pm.IsRunning(site.ID) {
 			status = "▶"
 		}
-		keys = append(keys, []telegramButton{telegramButtonFor(status+" "+truncateTelegramText(site.Name, 60), fmt.Sprintf("site:%d:%s", site.ID, action))})
+		accountMark := ""
+		if site.AccountCount > 0 {
+			accountMark = fmt.Sprintf(" 👤%d", site.AccountCount)
+		}
+		keys = append(keys, []telegramButton{telegramButtonFor(status+accountMark+" "+truncateTelegramText(site.Name, 60), fmt.Sprintf("site:%d:%s", site.ID, action))})
 	}
 	nav := []telegramButton{}
 	if page > 0 {
@@ -78,7 +82,7 @@ func (b *telegramBot) listSites(ctx context.Context, id int64, action string, pa
 	}
 	keys = append(keys, []telegramButton{telegramButtonFor("添加站点", "add"), telegramButtonFor("主菜单", "home")})
 	label := map[string]string{"menu": "管理站点", "address": "发送站点地址", "traffic": "查看站点流量", "accounts": "管理站点账号"}[action]
-	return b.send(ctx, id, fmt.Sprintf("🌐 %s · 第 %d/%d 页\n\n想查看哪个站点？点下面的名字就好。", label, page+1, (len(sites)+7)/8), keys)
+	return b.send(ctx, id, fmt.Sprintf("🌐 %s · 第 %d/%d 页\n\n想查看哪个站点？点下面的名字就好。\n👤数字表示该站点已保存的账号数量。", label, page+1, (len(sites)+7)/8), keys)
 }
 
 func (a *App) telegramSiteAddress(site Site, origin string) (string, error) {
@@ -176,7 +180,11 @@ func (b *telegramBot) siteView(ctx context.Context, chatID, siteID int64, action
 			status = "运行中"
 		}
 		address, _ := b.app.telegramSiteAddress(*site, b.settings.PublicURL)
-		return b.send(ctx, chatID, fmt.Sprintf("🌐 %s\n\n状态：%s\n🎬 播放：%s\n\n🔗 访问地址\n%s", site.Name, status, telegramPlaybackLabel(*site), address), telegramSiteKeys(site.ID))
+		accountSummary := "没有保存账号"
+		if site.AccountCount > 0 {
+			accountSummary = fmt.Sprintf("已保存 %d 个账号", site.AccountCount)
+		}
+		return b.send(ctx, chatID, fmt.Sprintf("🌐 %s\n\n状态：%s\n🎬 播放：%s\n👤 账号：%s\n\n🔗 访问地址\n%s", site.Name, status, telegramPlaybackLabel(*site), accountSummary, address), telegramSiteKeys(site.ID))
 	}
 }
 func telegramSpeedLabel(speed int) string {

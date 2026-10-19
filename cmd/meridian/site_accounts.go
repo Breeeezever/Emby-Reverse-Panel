@@ -26,18 +26,44 @@ import (
 const siteAccountCipherPrefix = "v1:"
 
 type SiteAccount struct {
-	ID           int64  `json:"id"`
-	SiteID       int64  `json:"site_id"`
-	SiteName     string `json:"site_name,omitempty"`
-	AccountName  string `json:"account_name"`
-	Username     string `json:"username"`
-	ExpiresAt    string `json:"expires_at"`
-	Note         string `json:"note"`
-	ReminderDays *int   `json:"reminder_days"`
-	PasswordSet  bool   `json:"password_configured"`
-	SecuritySet  bool   `json:"security_password_configured"`
-	CreatedAt    string `json:"created_at,omitempty"`
-	UpdatedAt    string `json:"updated_at,omitempty"`
+	ID            int64  `json:"id"`
+	SiteID        int64  `json:"site_id"`
+	SiteName      string `json:"site_name,omitempty"`
+	AccountName   string `json:"account_name"`
+	Username      string `json:"username"`
+	ExpiresAt     string `json:"expires_at"`
+	Note          string `json:"note"`
+	ReminderDays  *int   `json:"reminder_days"`
+	PasswordSet   bool   `json:"password_configured"`
+	SecuritySet   bool   `json:"security_password_configured"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+	Lifecycle     string `json:"lifecycle"`
+	Status        string `json:"status"`
+	DaysLeft      int    `json:"days_left,omitempty"`
+	RenewalCount  int    `json:"renewal_count,omitempty"`
+	LastRenewedAt string `json:"last_renewed_at,omitempty"`
+}
+
+// accountLifecycleState is derived from the expiry value so old databases and
+// imported records do not need a destructive status migration.
+func accountLifecycleState(expiresAt string, reminderDays *int, now time.Time, location *time.Location) (string, int) {
+	if strings.TrimSpace(expiresAt) == "" {
+		return "active", 0
+	}
+	expires, err := parseSiteAccountExpiryInLocation(expiresAt, location)
+	if err != nil {
+		return "unknown", 0
+	}
+	days := int(math.Ceil(expires.Sub(now).Hours() / 24))
+	if expires.Before(now) {
+		days = int(math.Floor(expires.Sub(now).Hours() / 24))
+		return "expired", days
+	}
+	if reminderDays != nil && now.After(expires.AddDate(0, 0, -*reminderDays)) {
+		return "expiring", days
+	}
+	return "active", days
 }
 
 type storedSiteAccount struct {
@@ -197,6 +223,27 @@ func parseSiteAccountExpiry(value string) (time.Time, error) {
 	return parseSiteAccountExpiryInLocation(value, time.UTC)
 }
 
+// formatSiteAccountExpiryDate keeps account expiry values readable anywhere a
+// user sees them. The stored value may include a time and fractional seconds
+// for reminder/renewal calculations, but the account UI only needs the date.
+func formatSiteAccountExpiryDate(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if len(value) >= len("2006-01-02") {
+		date := value[:len("2006-01-02")]
+		if _, err := time.Parse("2006-01-02", date); err == nil {
+			return date
+		}
+	}
+	if parsed, err := parseSiteAccountExpiry(value); err == nil {
+		return parsed.Format("2006-01-02")
+	}
+	// Keep malformed legacy values visible so an administrator can correct them.
+	return value
+}
+
 func (d *DB) parseSiteAccountExpiry(value string) (time.Time, error) {
 	settings := d.currentSystemSettings()
 	return parseSiteAccountExpiryInLocation(value, timezoneLocationByName(settings.ScheduleTimezoneName, settings.ScheduleTimezone))
@@ -249,7 +296,19 @@ func publicSiteAccount(item storedSiteAccount, siteName string) SiteAccount {
 	item.SiteAccount.SiteName = siteName
 	item.SiteAccount.PasswordSet = item.PasswordCiphertext != ""
 	item.SiteAccount.SecuritySet = item.SecurityPasswordCiphertext != ""
+	item.SiteAccount.Lifecycle, item.SiteAccount.DaysLeft = accountLifecycleState(item.ExpiresAt, item.ReminderDays, time.Now(), time.Local)
+	item.SiteAccount.Status = item.SiteAccount.Lifecycle
 	return item.SiteAccount
+}
+
+func (d *DB) decorateSiteAccount(item storedSiteAccount, siteName string) SiteAccount {
+	result := publicSiteAccount(item, siteName)
+	settings := d.currentSystemSettings()
+	location := timezoneLocationByName(settings.ScheduleTimezoneName, settings.ScheduleTimezone)
+	result.Lifecycle, result.DaysLeft = accountLifecycleState(item.ExpiresAt, item.ReminderDays, time.Now().In(location), location)
+	result.Status = result.Lifecycle
+	_ = d.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(renewed_at), '') FROM account_renewals WHERE account_id=?`, item.ID).Scan(&result.RenewalCount, &result.LastRenewedAt)
+	return result
 }
 
 type siteAccountStore interface {
@@ -259,6 +318,17 @@ type siteAccountStore interface {
 
 func (d *DB) getSiteAccount(siteID, accountID int64) (*storedSiteAccount, error) {
 	return getSiteAccountFrom(d.db, siteID, accountID)
+}
+
+func (d *DB) getSiteAccountByID(accountID int64) (*storedSiteAccount, error) {
+	var item storedSiteAccount
+	err := d.db.QueryRow(`SELECT id, site_id, account_name, username, password_ciphertext, security_password_ciphertext, expires_at, note, reminder_days, created_at, updated_at FROM site_accounts WHERE id=?`, accountID).Scan(&item.ID, &item.SiteID, &item.AccountName, &item.Username, &item.PasswordCiphertext, &item.SecurityPasswordCiphertext, &item.ExpiresAt, &item.Note, &item.ReminderDays, &item.CreatedAt, &item.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	item.PasswordSet = item.PasswordCiphertext != ""
+	item.SecuritySet = item.SecurityPasswordCiphertext != ""
+	return &item, nil
 }
 
 func getSiteAccountFrom(store siteAccountStore, siteID, accountID int64) (*storedSiteAccount, error) {
@@ -358,12 +428,213 @@ type siteAccountMemo struct {
 	SecurityPassword string `json:"security_password"` // #nosec G117 -- authorized memo response.
 }
 
+type accountRenewal struct {
+	ID                int64  `json:"id"`
+	AccountID         int64  `json:"account_id"`
+	PreviousExpiresAt string `json:"previous_expires_at"`
+	NewExpiresAt      string `json:"new_expires_at"`
+	DurationDays      int    `json:"duration_days"`
+	RenewedAt         string `json:"renewed_at"`
+	Note              string `json:"note,omitempty"`
+}
+
+type accountReminderRecord struct {
+	AccountID    int64  `json:"account_id"`
+	SiteID       int64  `json:"site_id"`
+	SiteName     string `json:"site_name"`
+	AccountName  string `json:"account_name"`
+	ExpiresAt    string `json:"expires_at"`
+	ReminderDays int    `json:"reminder_days"`
+	ChatID       int64  `json:"chat_id"`
+	SentAt       string `json:"sent_at"`
+	Status       string `json:"status"`
+	Error        string `json:"error,omitempty"`
+	AttemptedAt  string `json:"attempted_at"`
+	Action       string `json:"action,omitempty"`
+	SnoozedUntil string `json:"snoozed_until,omitempty"`
+}
+
+func (d *DB) accountReminderAction(accountID int64, expiresAt string, reminderDays int) (status, snoozedUntil string, err error) {
+	err = d.db.QueryRow(`SELECT status, snoozed_until FROM account_reminder_actions WHERE account_id=? AND expires_at=? AND reminder_days=?`, accountID, expiresAt, reminderDays).Scan(&status, &snoozedUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	return status, snoozedUntil, err
+}
+
+func (d *DB) saveAccountReminderAction(accountID int64, expiresAt string, reminderDays int, status string, snoozedUntil time.Time, note string) error {
+	if status != "handled" && status != "ignored" && status != "snoozed" {
+		return errors.New("invalid reminder action")
+	}
+	if accountID <= 0 || strings.TrimSpace(expiresAt) == "" || reminderDays < 0 || reminderDays > 3650 {
+		return errors.New("invalid reminder action target")
+	}
+	if status != "snoozed" {
+		snoozedUntil = time.Time{}
+	} else if snoozedUntil.IsZero() {
+		snoozedUntil = time.Now().Add(24 * time.Hour)
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`INSERT INTO account_reminder_actions(account_id, expires_at, reminder_days, status, snoozed_until, note, acted_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(account_id, expires_at, reminder_days) DO UPDATE SET status=excluded.status, snoozed_until=excluded.snoozed_until, note=excluded.note, acted_at=CURRENT_TIMESTAMP`, accountID, expiresAt, reminderDays, status, func() string {
+		if snoozedUntil.IsZero() {
+			return ""
+		}
+		return snoozedUntil.UTC().Format(time.RFC3339)
+	}(), strings.TrimSpace(note))
+	if err != nil {
+		return err
+	}
+	if status == "snoozed" {
+		// Preserve legacy receipts in the history before rearming delivery.
+		if _, err := tx.Exec(`INSERT INTO account_reminder_attempts(account_id, expires_at, reminder_days, chat_id, status, attempted_at) SELECT d.account_id, d.expires_at, d.reminder_days, d.chat_id, 'sent', d.sent_at FROM account_reminder_deliveries d WHERE d.account_id=? AND d.expires_at=? AND d.reminder_days=? AND NOT EXISTS (SELECT 1 FROM account_reminder_attempts t WHERE t.account_id=d.account_id AND t.expires_at=d.expires_at AND t.reminder_days=d.reminder_days AND t.chat_id=d.chat_id AND t.status='sent')`, accountID, expiresAt, reminderDays); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM account_reminder_deliveries WHERE account_id=? AND expires_at=? AND reminder_days=?`, accountID, expiresAt, reminderDays); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (d *DB) recordAccountReminderAttempt(accountID int64, expiresAt string, reminderDays int, chatID int64, status, deliveryError string) error {
+	if status != "sent" && status != "failed" {
+		return errors.New("invalid reminder delivery status")
+	}
+	if len(deliveryError) > 512 {
+		deliveryError = deliveryError[:512]
+	}
+	_, err := d.db.Exec(`INSERT INTO account_reminder_attempts(account_id, expires_at, reminder_days, chat_id, status, error) VALUES(?,?,?,?,?,?)`, accountID, expiresAt, reminderDays, chatID, status, deliveryError)
+	return err
+}
+
+func (d *DB) recordAccountReminderSent(accountID int64, expiresAt string, reminderDays int, chatID int64) error {
+	if err := d.recordAccountReminderAttempt(accountID, expiresAt, reminderDays, chatID, "sent", ""); err != nil {
+		return err
+	}
+	_, err := d.db.Exec(`INSERT OR IGNORE INTO account_reminder_deliveries(account_id, expires_at, reminder_days, chat_id) VALUES(?,?,?,?)`, accountID, expiresAt, reminderDays, chatID)
+	return err
+}
+
+func (d *DB) renewSiteAccount(siteID, accountID int64, days int, note string) (*storedSiteAccount, accountRenewal, error) {
+	if days < 1 || days > 3650 {
+		return nil, accountRenewal{}, errors.New("续期天数应为 1–3650")
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, accountRenewal{}, err
+	}
+	defer tx.Rollback()
+	item, err := getSiteAccountFrom(tx, siteID, accountID)
+	if err != nil {
+		return nil, accountRenewal{}, err
+	}
+	settings := d.currentSystemSettings()
+	location := timezoneLocationByName(settings.ScheduleTimezoneName, settings.ScheduleTimezone)
+	now := time.Now().In(location)
+	base := now
+	if item.ExpiresAt != "" {
+		if parsed, parseErr := parseSiteAccountExpiryInLocation(item.ExpiresAt, location); parseErr == nil && parsed.After(base) {
+			base = parsed
+		}
+	}
+	newExpiry := base.AddDate(0, 0, days)
+	formatted := newExpiry.Format(time.RFC3339)
+	if len(strings.TrimSpace(item.ExpiresAt)) == len("2006-01-02") {
+		formatted = newExpiry.Format("2006-01-02")
+	}
+	if _, err := tx.Exec(`UPDATE site_accounts SET expires_at=?, updated_at=CURRENT_TIMESTAMP WHERE site_id=? AND id=?`, formatted, siteID, accountID); err != nil {
+		return nil, accountRenewal{}, err
+	}
+	result, err := tx.Exec(`INSERT INTO account_renewals(account_id, previous_expires_at, new_expires_at, duration_days, note) VALUES(?,?,?,?,?)`, accountID, item.ExpiresAt, formatted, days, strings.TrimSpace(note))
+	if err != nil {
+		return nil, accountRenewal{}, err
+	}
+	renewalID, err := result.LastInsertId()
+	if err != nil {
+		return nil, accountRenewal{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, accountRenewal{}, err
+	}
+	updated, err := d.getSiteAccount(siteID, accountID)
+	if err != nil {
+		return nil, accountRenewal{}, err
+	}
+	return updated, accountRenewal{ID: renewalID, AccountID: accountID, PreviousExpiresAt: item.ExpiresAt, NewExpiresAt: formatted, DurationDays: days, RenewedAt: time.Now().UTC().Format(time.RFC3339), Note: strings.TrimSpace(note)}, nil
+}
+
+func (d *DB) listAccountRenewals(siteID, accountID int64) ([]accountRenewal, error) {
+	rows, err := d.db.Query(`SELECT r.id, r.account_id, r.previous_expires_at, r.new_expires_at, r.duration_days, r.renewed_at, r.note FROM account_renewals r JOIN site_accounts a ON a.id=r.account_id WHERE a.site_id=? AND r.account_id=? ORDER BY r.id DESC`, siteID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]accountRenewal, 0)
+	for rows.Next() {
+		var item accountRenewal
+		if err := rows.Scan(&item.ID, &item.AccountID, &item.PreviousExpiresAt, &item.NewExpiresAt, &item.DurationDays, &item.RenewedAt, &item.Note); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (d *DB) listAccountReminderRecords(siteID, accountID int64) ([]accountReminderRecord, error) {
+	query := `SELECT * FROM (SELECT t.account_id, a.site_id, s.name, a.account_name, t.expires_at, t.reminder_days, t.chat_id, CASE WHEN t.status='sent' THEN t.attempted_at ELSE '' END, t.status, t.error, t.attempted_at, COALESCE(x.status, ''), COALESCE(x.snoozed_until, '') FROM account_reminder_attempts t JOIN site_accounts a ON a.id=t.account_id JOIN sites s ON s.id=a.site_id LEFT JOIN account_reminder_actions x ON x.account_id=t.account_id AND x.expires_at=t.expires_at AND x.reminder_days=t.reminder_days WHERE 1=1`
+	args := make([]any, 0, 2)
+	if siteID > 0 {
+		query += " AND a.site_id=?"
+		args = append(args, siteID)
+	}
+	if accountID > 0 {
+		query += " AND t.account_id=?"
+		args = append(args, accountID)
+	}
+	query += ` UNION ALL SELECT d.account_id, a.site_id, s.name, a.account_name, d.expires_at, d.reminder_days, d.chat_id, d.sent_at, 'sent', '', d.sent_at, COALESCE(x.status, ''), COALESCE(x.snoozed_until, '') FROM account_reminder_deliveries d JOIN site_accounts a ON a.id=d.account_id JOIN sites s ON s.id=a.site_id LEFT JOIN account_reminder_actions x ON x.account_id=d.account_id AND x.expires_at=d.expires_at AND x.reminder_days=d.reminder_days WHERE NOT EXISTS (SELECT 1 FROM account_reminder_attempts t WHERE t.account_id=d.account_id AND t.expires_at=d.expires_at AND t.reminder_days=d.reminder_days AND t.chat_id=d.chat_id AND t.status='sent')`
+	if siteID > 0 {
+		query += " AND a.site_id=?"
+		args = append(args, siteID)
+	}
+	if accountID > 0 {
+		query += " AND d.account_id=?"
+		args = append(args, accountID)
+	}
+	query += ") ORDER BY attempted_at DESC, account_id DESC"
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]accountReminderRecord, 0)
+	for rows.Next() {
+		var item accountReminderRecord
+		if err := rows.Scan(&item.AccountID, &item.SiteID, &item.SiteName, &item.AccountName, &item.ExpiresAt, &item.ReminderDays, &item.ChatID, &item.SentAt, &item.Status, &item.Error, &item.AttemptedAt, &item.Action, &item.SnoozedUntil); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func accountMemo(item storedSiteAccount, name string) (siteAccountMemo, error) {
 	plain, err := accountPlaintext(item)
 	if err != nil {
 		return siteAccountMemo{}, err
 	}
 	return siteAccountMemo{publicSiteAccount(item, name), plain.Password, plain.SecurityPassword}, nil
+}
+
+func (d *DB) accountMemo(item storedSiteAccount, name string) (siteAccountMemo, error) {
+	plain, err := accountPlaintext(item)
+	if err != nil {
+		return siteAccountMemo{}, err
+	}
+	return siteAccountMemo{d.decorateSiteAccount(item, name), plain.Password, plain.SecurityPassword}, nil
 }
 
 func (a *App) handleSiteAccounts(w http.ResponseWriter, r *http.Request, siteID int64, tail string) {
@@ -383,7 +654,7 @@ func (a *App) handleSiteAccounts(w http.ResponseWriter, r *http.Request, siteID 
 			}
 			result := make([]siteAccountMemo, 0, len(items))
 			for _, item := range items {
-				memo, err := accountMemo(item, site.Name)
+				memo, err := a.db.accountMemo(item, site.Name)
 				if err != nil {
 					a.jsonErr(w, 500, "账号信息读取失败")
 					return
@@ -402,7 +673,7 @@ func (a *App) handleSiteAccounts(w http.ResponseWriter, r *http.Request, siteID 
 				a.jsonErr(w, 400, err.Error())
 				return
 			}
-			memo, err := accountMemo(*item, site.Name)
+			memo, err := a.db.accountMemo(*item, site.Name)
 			if err != nil {
 				a.jsonErr(w, 500, "账号信息读取失败")
 				return
@@ -413,9 +684,70 @@ func (a *App) handleSiteAccounts(w http.ResponseWriter, r *http.Request, siteID 
 		}
 		return
 	}
-	accountID, err := strconv.ParseInt(strings.Trim(tail, "/"), 10, 64)
+	pathParts := strings.Split(strings.Trim(tail, "/"), "/")
+	accountID, err := strconv.ParseInt(pathParts[0], 10, 64)
 	if err != nil || accountID <= 0 {
 		a.jsonErr(w, 400, "invalid account id")
+		return
+	}
+	action := ""
+	if len(pathParts) > 1 {
+		action = pathParts[1]
+	}
+	if action == "renew" {
+		if r.Method != http.MethodPost {
+			a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			Days int    `json:"days"`
+			Note string `json:"note"`
+		}
+		if err := decodeJSONBody(w, r, &req); err != nil {
+			a.jsonErr(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		item, renewal, err := a.db.renewSiteAccount(siteID, accountID, req.Days, req.Note)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				a.jsonErr(w, http.StatusNotFound, "account not found")
+			} else {
+				a.jsonErr(w, http.StatusBadRequest, err.Error())
+			}
+			return
+		}
+		memo, err := a.db.accountMemo(*item, site.Name)
+		if err != nil {
+			a.jsonErr(w, http.StatusInternalServerError, "账号信息读取失败")
+			return
+		}
+		a.jsonOK(w, map[string]any{"account": memo, "renewal": renewal})
+		return
+	}
+	if action == "reminders" || action == "renewals" {
+		if r.Method != http.MethodGet {
+			a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, err := a.db.getSiteAccount(siteID, accountID); err != nil {
+			a.jsonErr(w, http.StatusNotFound, "account not found")
+			return
+		}
+		if action == "reminders" {
+			records, err := a.db.listAccountReminderRecords(siteID, accountID)
+			if err != nil {
+				a.jsonErr(w, http.StatusInternalServerError, "提醒记录读取失败")
+				return
+			}
+			a.jsonOK(w, records)
+		} else {
+			records, err := a.db.listAccountRenewals(siteID, accountID)
+			if err != nil {
+				a.jsonErr(w, http.StatusInternalServerError, "续期记录读取失败")
+				return
+			}
+			a.jsonOK(w, records)
+		}
 		return
 	}
 	switch r.Method {
@@ -434,7 +766,7 @@ func (a *App) handleSiteAccounts(w http.ResponseWriter, r *http.Request, siteID 
 			}
 			return
 		}
-		memo, err := accountMemo(*item, site.Name)
+		memo, err := a.db.accountMemo(*item, site.Name)
 		if err != nil {
 			a.jsonErr(w, 500, "账号信息读取失败")
 			return
@@ -730,7 +1062,7 @@ func parseSiteMessageRecord(text string) (siteImportRecord, error) {
 		Username:         launchField(text, "用户名称", "用户名", "账号", "帐号", "账户", "username", "user"),
 		Password:         launchField(text, "用户密码", "登录密码", "密码", "password", "pass"),
 		SecurityPassword: launchField(text, "安全密码", "二次密码"),
-		ExpiresAt:        launchField(text, "到期时间", "到期日期", "有效期至", "expires"),
+		ExpiresAt:        launchField(text, "到期时间", "到期日期", "到期日", "有效期至", "expires"),
 		Note:             launchField(text, "备注"),
 	}
 	if account.AccountName == "" {
@@ -845,7 +1177,11 @@ func (a *App) handleAccountReminders(w http.ResponseWriter, r *http.Request) {
 		a.jsonErr(w, 500, "读取到期提醒失败")
 		return
 	}
-	now := time.Now()
+	settings := a.db.currentSystemSettings()
+	location := timezoneLocationByName(settings.ScheduleTimezoneName, settings.ScheduleTimezone)
+	now := time.Now().In(location)
+	filter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	result := make([]map[string]interface{}, 0)
 	for _, site := range sites {
 		items, err := a.db.listSiteAccounts(site.ID)
@@ -866,8 +1202,127 @@ func (a *App) handleAccountReminders(w http.ResponseWriter, r *http.Request) {
 			if duration < 0 {
 				days = int(math.Floor(duration.Hours() / 24))
 			}
-			result = append(result, map[string]interface{}{"site_id": site.ID, "site_name": site.Name, "account": publicSiteAccount(item, site.Name), "days_left": days, "status": map[bool]string{true: "expired", false: "upcoming"}[parsed.Before(now)]})
+			lifecycle, _ := accountLifecycleState(item.ExpiresAt, item.ReminderDays, now, location)
+			status := lifecycle
+			if !site.Enabled {
+				status = "disabled"
+			} else if item.ReminderDays == nil {
+				status = "no-reminder"
+			}
+			if search != "" && !strings.Contains(strings.ToLower(strings.Join([]string{site.Name, item.AccountName, item.Username, item.Note}, " ")), search) {
+				continue
+			}
+			switch filter {
+			case "expired", "expiring", "active", "disabled":
+				if status != filter {
+					continue
+				}
+			case "no-reminder":
+				if status != "no-reminder" {
+					continue
+				}
+			case "upcoming":
+				if parsed.Before(now) {
+					continue
+				}
+			}
+			result = append(result, map[string]interface{}{"site_id": site.ID, "site_name": site.Name, "account": a.db.decorateSiteAccount(item, site.Name), "days_left": days, "status": status, "legacy_status": map[bool]string{true: "expired", false: "upcoming"}[parsed.Before(now)], "lifecycle": lifecycle, "reminder_enabled": item.ReminderDays != nil})
 		}
 	}
 	a.jsonOK(w, result)
+}
+
+// handleAccountReminderAction records an administrator's decision for the
+// current expiry/reminder pair. Decisions are global for the account so a
+// multi-admin Bot does not send the same notification after one admin handles it.
+func (a *App) handleAccountReminderAction(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodPost {
+		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		AccountID    int64  `json:"account_id"`
+		ExpiresAt    string `json:"expires_at"`
+		ReminderDays int    `json:"reminder_days"`
+		Action       string `json:"action"`
+		SnoozeDays   int    `json:"snooze_days"`
+		Note         string `json:"note"`
+	}
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		a.jsonErr(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if req.AccountID <= 0 || strings.TrimSpace(req.ExpiresAt) == "" || req.ReminderDays < 0 || req.ReminderDays > 3650 {
+		a.jsonErr(w, http.StatusBadRequest, "提醒目标无效")
+		return
+	}
+	account, err := a.db.getSiteAccountByID(req.AccountID)
+	if err != nil || account.ExpiresAt != req.ExpiresAt || account.ReminderDays == nil || *account.ReminderDays != req.ReminderDays {
+		a.jsonErr(w, http.StatusNotFound, "提醒目标不存在或已更新")
+		return
+	}
+	if req.Action != "handled" && req.Action != "ignored" && req.Action != "snoozed" {
+		a.jsonErr(w, http.StatusBadRequest, "提醒动作无效")
+		return
+	}
+	if req.SnoozeDays <= 0 {
+		req.SnoozeDays = 1
+	}
+	if req.SnoozeDays > 30 {
+		a.jsonErr(w, http.StatusBadRequest, "延后天数应为 1–30")
+		return
+	}
+	until := time.Time{}
+	if req.Action == "snoozed" {
+		until = time.Now().Add(time.Duration(req.SnoozeDays) * 24 * time.Hour)
+	}
+	if err := a.db.saveAccountReminderAction(req.AccountID, req.ExpiresAt, req.ReminderDays, req.Action, until, req.Note); err != nil {
+		a.jsonErr(w, http.StatusInternalServerError, "提醒动作保存失败")
+		return
+	}
+	a.jsonOK(w, map[string]interface{}{"account_id": req.AccountID, "expires_at": req.ExpiresAt, "reminder_days": req.ReminderDays, "action": req.Action, "snoozed_until": func() string {
+		if until.IsZero() {
+			return ""
+		}
+		return until.UTC().Format(time.RFC3339)
+	}()})
+}
+
+// handleAccountReminderRecords exposes the persisted delivery ledger used for
+// deduplication. It intentionally contains no account credentials.
+func (a *App) handleAccountReminderRecords(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet {
+		a.jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var siteID, accountID int64
+	if value := strings.TrimSpace(r.URL.Query().Get("site_id")); value != "" {
+		siteID, _ = strconv.ParseInt(value, 10, 64)
+	}
+	if value := strings.TrimSpace(r.URL.Query().Get("account_id")); value != "" {
+		accountID, _ = strconv.ParseInt(value, 10, 64)
+	}
+	records, err := a.db.listAccountReminderRecords(siteID, accountID)
+	if err != nil {
+		a.jsonErr(w, http.StatusInternalServerError, "提醒记录读取失败")
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	action := strings.TrimSpace(r.URL.Query().Get("action"))
+	if status != "" || action != "" {
+		filtered := records[:0]
+		for _, record := range records {
+			if status != "" && record.Status != status {
+				continue
+			}
+			if action != "" && record.Action != action {
+				continue
+			}
+			filtered = append(filtered, record)
+		}
+		records = filtered
+	}
+	a.jsonOK(w, records)
 }

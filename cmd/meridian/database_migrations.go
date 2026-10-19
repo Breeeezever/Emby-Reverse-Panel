@@ -144,6 +144,38 @@ func (d *DB) migrateOnce() error {
 		sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY(account_id, expires_at, reminder_days, chat_id)
 	);
+	CREATE TABLE IF NOT EXISTS account_reminder_attempts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL REFERENCES site_accounts(id) ON DELETE CASCADE,
+		expires_at TEXT NOT NULL,
+		reminder_days INTEGER NOT NULL,
+		chat_id INTEGER NOT NULL,
+		status TEXT NOT NULL,
+		error TEXT NOT NULL DEFAULT '',
+		attempted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_account_reminder_attempts_account ON account_reminder_attempts(account_id, attempted_at DESC, id DESC);
+	CREATE TABLE IF NOT EXISTS account_reminder_actions (
+		account_id INTEGER NOT NULL REFERENCES site_accounts(id) ON DELETE CASCADE,
+		expires_at TEXT NOT NULL,
+		reminder_days INTEGER NOT NULL,
+		status TEXT NOT NULL,
+		snoozed_until DATETIME NOT NULL DEFAULT '',
+		note TEXT NOT NULL DEFAULT '',
+		acted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(account_id, expires_at, reminder_days)
+	);
+	CREATE INDEX IF NOT EXISTS idx_account_reminder_actions_status ON account_reminder_actions(status, snoozed_until);
+	CREATE TABLE IF NOT EXISTS account_renewals (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL REFERENCES site_accounts(id) ON DELETE CASCADE,
+		previous_expires_at TEXT NOT NULL DEFAULT '',
+		new_expires_at TEXT NOT NULL,
+		duration_days INTEGER NOT NULL,
+		note TEXT NOT NULL DEFAULT '',
+		renewed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_account_renewals_account ON account_renewals(account_id, id DESC);
 	CREATE TABLE IF NOT EXISTS traffic_logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,

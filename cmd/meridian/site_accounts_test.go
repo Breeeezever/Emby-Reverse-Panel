@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeSiteAccountInputMirrorsNames(t *testing.T) {
@@ -26,6 +27,119 @@ func TestNormalizeSiteAccountInputMirrorsNames(t *testing.T) {
 	}
 	if got.AccountName != "user" || got.Username != "user" {
 		t.Fatalf("mirrored username=%+v", got)
+	}
+}
+
+func TestSiteAccountRenewalLifecycleAndHistory(t *testing.T) {
+	app := newTestApp(t)
+	site, err := app.db.CreateSiteRecord(Site{Name: "Renewal", TargetURL: "https://origin.example", ListenPort: freePort(t), IngressMode: ingressModePath, PathPrefix: "/renewal", StreamHosts: "[]", FailoverTargets: "[]"})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+	account, err := app.db.saveSiteAccount(site.ID, 0, SiteAccountInput{Username: "demo", ExpiresAt: time.Now().AddDate(0, 0, 3).Format("2006-01-02"), ReminderDays: func() *int { v := 2; return &v }()})
+	if err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	updated, renewal, err := app.db.renewSiteAccount(site.ID, account.ID, 30, "customer paid")
+	if err != nil {
+		t.Fatalf("renew account: %v", err)
+	}
+	if renewal.DurationDays != 30 || renewal.PreviousExpiresAt == renewal.NewExpiresAt || updated.ExpiresAt != renewal.NewExpiresAt {
+		t.Fatalf("renewal=%+v account=%+v", renewal, updated)
+	}
+	history, err := app.db.listAccountRenewals(site.ID, account.ID)
+	if err != nil || len(history) != 1 || history[0].Note != "customer paid" {
+		t.Fatalf("renewal history=%+v err=%v", history, err)
+	}
+	public := app.db.decorateSiteAccount(*updated, site.Name)
+	if public.RenewalCount != 1 || public.LastRenewedAt == "" || public.Lifecycle == "expired" {
+		t.Fatalf("lifecycle=%+v", public)
+	}
+	body := strings.NewReader(`{"days":7}`)
+	rr := httptest.NewRecorder()
+	app.handleSiteByID(rr, httptest.NewRequest(http.MethodPost, "/api/sites/"+strconv.FormatInt(site.ID, 10)+"/accounts/"+strconv.FormatInt(account.ID, 10)+"/renew", body))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"renewal"`) {
+		t.Fatalf("renew route status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAccountReminderHistoryEndpointDoesNotExposeSecrets(t *testing.T) {
+	app := newTestApp(t)
+	site, err := app.db.CreateSiteRecord(Site{Name: "History", TargetURL: "https://origin.example", ListenPort: freePort(t), IngressMode: ingressModePath, PathPrefix: "/history", StreamHosts: "[]", FailoverTargets: "[]"})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+	account, err := app.db.saveSiteAccount(site.ID, 0, SiteAccountInput{Username: "demo", Password: "secret-password", ExpiresAt: "2030-01-01"})
+	if err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	if _, err := app.db.db.Exec(`INSERT INTO account_reminder_deliveries(account_id, expires_at, reminder_days, chat_id) VALUES(?,?,?,?)`, account.ID, "2030-01-01", 7, 123); err != nil {
+		t.Fatalf("insert reminder: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	app.handleAccountReminderRecords(rr, httptest.NewRequest(http.MethodGet, "/api/account-reminders/history", nil))
+	if rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), "secret-password") || !strings.Contains(rr.Body.String(), "History") {
+		t.Fatalf("history status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAccountReminderAttemptsAndActionsArePersisted(t *testing.T) {
+	app := newTestApp(t)
+	site, err := app.db.CreateSiteRecord(Site{Name: "Attempts", TargetURL: "https://origin.example", ListenPort: freePort(t), IngressMode: ingressModePath, PathPrefix: "/attempts", StreamHosts: "[]", FailoverTargets: "[]"})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+	days := 2
+	account, err := app.db.saveSiteAccount(site.ID, 0, SiteAccountInput{Username: "demo", ExpiresAt: "2030-01-01", ReminderDays: &days})
+	if err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	if err := app.db.recordAccountReminderAttempt(account.ID, account.ExpiresAt, days, 123, "failed", "network unavailable"); err != nil {
+		t.Fatalf("record failed attempt: %v", err)
+	}
+	if err := app.db.recordAccountReminderSent(account.ID, account.ExpiresAt, days, 123); err != nil {
+		t.Fatalf("record sent attempt: %v", err)
+	}
+	if err := app.db.saveAccountReminderAction(account.ID, account.ExpiresAt, days, "handled", time.Time{}, "test"); err != nil {
+		t.Fatalf("save action: %v", err)
+	}
+	records, err := app.db.listAccountReminderRecords(site.ID, account.ID)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("records=%+v err=%v", records, err)
+	}
+	if records[0].Status != "sent" || records[0].Action != "handled" || records[1].Status != "failed" || records[1].Error != "network unavailable" {
+		t.Fatalf("unexpected records=%+v", records)
+	}
+}
+
+func TestAccountReminderActionEndpointAndLifecycleFilter(t *testing.T) {
+	app := newTestApp(t)
+	site, err := app.db.CreateSiteRecord(Site{Name: "Filters", TargetURL: "https://origin.example", ListenPort: freePort(t), IngressMode: ingressModePath, PathPrefix: "/filters", StreamHosts: "[]", FailoverTargets: "[]"})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+	account, err := app.db.saveSiteAccount(site.ID, 0, SiteAccountInput{Username: "demo", ExpiresAt: "2030-01-01"})
+	if err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	filtered := httptest.NewRecorder()
+	app.handleAccountReminders(filtered, httptest.NewRequest(http.MethodGet, "/api/account-reminders?status=no-reminder", nil))
+	if filtered.Code != http.StatusOK || !strings.Contains(filtered.Body.String(), `"status":"no-reminder"`) {
+		t.Fatalf("no-reminder filter status=%d body=%s", filtered.Code, filtered.Body.String())
+	}
+	days := 7
+	if _, err := app.db.saveSiteAccount(site.ID, account.ID, SiteAccountInput{ReminderDays: &days}); err != nil {
+		t.Fatalf("enable reminder: %v", err)
+	}
+	body := strings.NewReader(`{"account_id":` + strconv.FormatInt(account.ID, 10) + `,"expires_at":"2030-01-01","reminder_days":7,"action":"snoozed","snooze_days":2}`)
+	action := httptest.NewRecorder()
+	app.handleAccountReminderAction(action, httptest.NewRequest(http.MethodPost, "/api/account-reminders/actions", body))
+	if action.Code != http.StatusOK || !strings.Contains(action.Body.String(), `"action":"snoozed"`) {
+		t.Fatalf("action status=%d body=%s", action.Code, action.Body.String())
+	}
+	status, until, err := app.db.accountReminderAction(account.ID, "2030-01-01", 7)
+	if err != nil || status != "snoozed" || until == "" {
+		t.Fatalf("saved action status=%q until=%q err=%v", status, until, err)
 	}
 }
 
