@@ -68,6 +68,20 @@ curl() {
     return "${ENTRY_CURL_STATUS:-0}"
 }
 as_root() {
+    # The fixture runs without sudo on CI. Ownership changes are covered by
+    # the real installer; retain install's paths/modes while using this UID.
+    if [ "$1" = install ] && [ "$EUID" -ne 0 ]; then
+        local arg skip=0
+        local install_args=()
+        shift
+        for arg in "$@"; do
+            if [ "$skip" = 1 ]; then skip=0; continue; fi
+            if [ "$arg" = -o ] || [ "$arg" = -g ]; then skip=1; continue; fi
+            install_args+=("$arg")
+        done
+        command install "${install_args[@]}"
+        return
+    fi
     if [ "$1" = env ] && [ "${2:-}" = LC_ALL=C ] && [ "${3:-}" = ufw ]; then
         printf 'Status: %s\n' "${UFW_TEST_STATUS:-inactive}"; return 0
     fi
