@@ -2068,11 +2068,44 @@ disable_panel_domain() {
     ok "已取消安装器管理的面板域名；已显式启用明文兼容模式，可通过服务器IP:$(read_config_port)访问（建议尽快重新配置 HTTPS）"
 }
 
+normalize_wildcard() {
+    local base
+    base="${1#\*.}"
+    base=$(normalize_domain "$base")
+    valid_domain "$base" || fail "泛域名格式无效，请填写 *.example.com 或 example.com"
+    printf '*.%s\n' "$base"
+}
+
+native_tls_panel_domain() {
+    local base="${1#\*.}" domain="$2"
+    # Re-running the installer must not replace an existing panel hostname
+    # merely because the operator omitted --domain. Fresh installs use panel.
+    if [ -z "$domain" ] && [ -x "${INSTALL_DIR}/${BIN_NAME}" ]; then
+        domain=$(read_env_value PANEL_DOMAIN)
+    fi
+    domain=$(normalize_domain "${domain:-panel.${base}}")
+    valid_domain "$domain" || fail "请填写有效的面板完整域名"
+    [[ "$domain" == "$base" || "$domain" == *".${base}" ]] \
+        || fail "面板域名必须是节点基础域名或其下一层子域名；已有安装如需更换，请显式指定 --domain"
+    if [ "$domain" != "$base" ] && [[ "${domain%."${base}"}" == *.* ]]; then
+        fail "面板域名必须是节点基础域名或其下一层子域名；泛域名证书不覆盖多层前缀"
+    fi
+    printf '%s\n' "$domain"
+}
+
+prepare_native_tls_domains() {
+    REQUESTED_WILDCARD=$(normalize_wildcard "$REQUESTED_WILDCARD") || exit 1
+    REQUESTED_DOMAIN=$(native_tls_panel_domain "$REQUESTED_WILDCARD" "$REQUESTED_DOMAIN") || exit 1
+}
+
 prompt_domain_choice() {
     local existing_install="$1" answer
-    if [ "$DOMAIN_MODE" = "configure" ] || [ "$DOMAIN_MODE" = "disable" ]; then
+    if [ -n "$REQUESTED_WILDCARD" ]; then
+        prepare_native_tls_domains
+        DOMAIN_MODE="native"
         return 0
     fi
+    case "$DOMAIN_MODE" in configure|disable|preserve) return 0 ;; esac
     if [ "$ASSUME_YES" = "1" ]; then
         if [ "$existing_install" = "1" ]; then
             DOMAIN_MODE="preserve"
@@ -2081,17 +2114,47 @@ prompt_domain_choice() {
         fi
         return 0
     fi
-    if ask_yes_no "是否为管理面板配置域名和 HTTPS？" 0; then
-        read -r -p "请输入面板域名（不含 http://、端口或路径）: " answer
-        answer=$(normalize_domain "$answer")
-        valid_domain "$answer" || fail "域名格式无效"
-        REQUESTED_DOMAIN="$answer"
-        read -r -p "证书邮箱（可留空）: " CERTBOT_EMAIL
-        valid_certbot_email "$CERTBOT_EMAIL" || fail "证书邮箱格式无效"
-        DOMAIN_MODE="configure"
+    printf '\n请选择面板 HTTPS 方式：\n'
+    printf '  1) 泛域名 + Meridian 原生 HTTPS（推荐，首次默认 panel.基础域名）\n'
+    printf '     一次申请证书，安装后即可使用域名前缀；需要 Cloudflare DNS Token。\n'
+    printf '  2) 单独面板域名 + Nginx HTTPS\n'
+    printf '  3) 暂不配置域名和证书（仅本机访问）\n'
+    if [ "$existing_install" = 1 ]; then
+        printf '  4) 保留现有配置（默认）\n'
+        read -r -p "请选择 [1-4，默认 4]: " answer
+        answer="${answer:-4}"
     else
-        DOMAIN_MODE="disable"
+        read -r -p "请选择 [1-3，默认 1]: " answer
+        answer="${answer:-1}"
     fi
+    case "$answer" in
+        1)
+            is_systemd || fail "原生泛域名自动配置需要带 systemd 的 Linux"
+            read -r -p "节点泛域名（例如 *.example.com，也可只填 example.com）: " REQUESTED_WILDCARD
+            prepare_native_tls_domains
+            DOMAIN_MODE="native"
+            info "面板域名: ${REQUESTED_DOMAIN}；直接申请泛域名证书并启用 Meridian 原生 HTTPS"
+            info "请将 ${REQUESTED_DOMAIN} 和 ${REQUESTED_WILDCARD} 解析到本机，并放行所选 TCP 端口"
+            ;;
+        2)
+            read -r -p "请输入面板域名（不含 http://、端口或路径）: " answer
+            REQUESTED_DOMAIN=$(normalize_domain "$answer")
+            valid_domain "$REQUESTED_DOMAIN" || fail "域名格式无效"
+            read -r -p "证书邮箱（可留空）: " CERTBOT_EMAIL
+            valid_certbot_email "$CERTBOT_EMAIL" || fail "证书邮箱格式无效"
+            DOMAIN_MODE="configure"
+            ;;
+        3)
+            if [ "$existing_install" = 1 ]; then
+                warn "已有安装需要取消域名时请显式使用 install --no-domain；本次保留现有配置"
+                DOMAIN_MODE="preserve"
+            else
+                DOMAIN_MODE="disable"
+            fi
+            ;;
+        4) [ "$existing_install" = 1 ] || fail "无效选项"; DOMAIN_MODE="preserve" ;;
+        *) fail "无效选项" ;;
+    esac
 }
 
 apply_domain_choice() {
@@ -2237,17 +2300,15 @@ do_tls() (
     [ -x "${INSTALL_DIR}/${BIN_NAME}" ] || fail "请先安装 Meridian"
     "${INSTALL_DIR}/${BIN_NAME}" --version --features 2>/dev/null | grep -x managed-tls-v1 >/dev/null || fail "请先更新到支持泛域名证书命令的 Meridian 版本"
     domain="$REQUESTED_DOMAIN"; wildcard="$REQUESTED_WILDCARD"; email="$CERTBOT_EMAIL"
-    if [ "$ASSUME_YES" != 1 ]; then
-        [ -n "$domain" ] || read -r -p "面板完整域名（例如 panel.example.com）: " domain
-        [ -n "$wildcard" ] || read -r -p "节点泛域名（例如 *.example.com）: " wildcard
-        [ -n "$email" ] || read -r -p "ACME 邮箱: " email
+    if [ -z "$wildcard" ] && [ "$ASSUME_YES" != 1 ]; then
+        read -r -p "节点泛域名（例如 *.example.com，也可只填 example.com）: " wildcard
     fi
-    valid_domain "$domain" || fail "请填写有效的面板完整域名"
+    wildcard=$(normalize_wildcard "$wildcard") || exit 1
+    domain=$(native_tls_panel_domain "$wildcard" "$domain") || exit 1
     wildcard="${wildcard#\*.}"
-    valid_domain "$wildcard" || fail "请填写有效泛域名"
-    [[ "$domain" == "$wildcard" || "$domain" == *".${wildcard}" ]] || fail "面板域名必须是节点基础域名或其下一层子域名"
-    if [ "$domain" != "$wildcard" ] && [[ "${domain%."${wildcard}"}" == *.* ]]; then
-        fail "面板域名必须是节点基础域名或其下一层子域名；泛域名证书不覆盖多层前缀"
+    info "面板域名: ${domain}；节点泛域名: *.${wildcard}；使用 Meridian 原生 HTTPS"
+    if [ "$ASSUME_YES" != 1 ]; then
+        [ -n "$email" ] || read -r -p "ACME 邮箱: " email
     fi
     if [ -z "$email" ] || ! valid_certbot_email "$email"; then fail "请填写有效邮箱"; fi
     port="${REQUESTED_PORT:-$(read_config_port)}"
@@ -2349,7 +2410,7 @@ replace_tls_env() {
 }
 
 do_install() {
-    local current_binary="${INSTALL_DIR}/${BIN_NAME}" tmp_dir version
+    local current_binary="${INSTALL_DIR}/${BIN_NAME}" tmp_dir version existing_install=0
     INITIAL_SETUP_TOKEN=""
     SETUP_TOKEN_ORIGIN=""
     init_privilege
@@ -2357,6 +2418,12 @@ do_install() {
     validate_install_dir
     validate_data_dir
     validate_backup_dir
+
+    [ ! -x "$current_binary" ] || existing_install=1
+    prompt_domain_choice "$existing_install"
+    if [ -n "$REQUESTED_WILDCARD" ]; then
+        is_systemd || fail "原生泛域名自动配置需要带 systemd 的 Linux"
+    fi
 
     if [ -x "$current_binary" ]; then
         info "检测到已安装的 Meridian $(get_current_version)；install 不会执行更新"
@@ -2366,7 +2433,7 @@ do_install() {
             return 1
         fi
         rm -rf -- "$tmp_dir"
-        if [ -n "$REQUESTED_PORT" ]; then
+        if [ -n "$REQUESTED_PORT" ] && [ -z "$REQUESTED_WILDCARD" ]; then
             configure_panel_port "$REQUESTED_PORT" \
                 || fail "面板端口修改失败；原配置已恢复"
         fi
@@ -2767,6 +2834,8 @@ Meridian 一键安装工具
 用法:
   install.sh install [--port PORT] [--domain example.com] [--email EMAIL] [--no-domain] [-y]
       首次安装最新版本；已安装时只补充或重新配置管理面板域名。
+  install.sh install --wildcard '*.example.com' [--domain panel.example.com] [--email EMAIL] [--port PORT] [--dns-token-file PATH] [-y]
+      安装时直接申请泛域名并启用原生 HTTPS；新安装默认面板域名 panel.example.com。
   install.sh update [-y]
       更新到最新 Release，自动备份、健康检查并在失败时回滚。
   install.sh tls [--domain panel.example.com] [--wildcard '*.example.com'] [--email EMAIL] [--port PORT] [--dns-token-file PATH] [-y]
@@ -2780,9 +2849,9 @@ Meridian 一键安装工具
 
 选项:
   --port PORT      管理面板监听端口，范围 1-65535；首次安装默认 9090，已有安装可安全切换
-  --domain DOMAIN  仅为管理面板配置 HTTPS 域名，代理到 127.0.0.1:PORT
-  --email EMAIL    Certbot 证书邮箱，可留空
-  --wildcard NAME  使用泛域名证书和原生 HTTPS；可用于 install 或 tls
+  --domain DOMAIN  面板完整域名；单独使用时配置 Nginx，与 --wildcard 同用时配置原生 HTTPS
+  --email EMAIL    证书邮箱；原生泛域名签发必须填写，Nginx 模式可留空
+  --wildcard NAME  泛域名或基础域名；直接使用原生 HTTPS，可用于 install 或 tls
   --dns-token-file PATH  从文件读取 Cloudflare DNS Token，不在命令参数中传入密钥
   --no-domain      不配置或取消安装器管理的面板域名
   -y, --yes        非交互确认；安装未指定域名时保留现有配置，首次安装则使用 IP
@@ -2790,6 +2859,9 @@ Meridian 一键安装工具
 
 不带参数运行时进入菜单。标准 systemd 安装会同时启用面板内更新。
 选择“安装”后可交互输入管理面板端口；直接回车时，首次安装使用 9090，已有安装保留当前端口。
+随后可选择泛域名原生 HTTPS，一次申请面板与节点证书，无需先申请单独面板证书。
+首次省略 --domain 时，--wildcard '*.example.com' 自动使用 panel.example.com；已有安装保留原面板域名。
+原生端口须放行；使用 9090 时面板和节点 DNS 记录应设为仅 DNS，地址带 :9090。
 USAGE
 }
 
@@ -2872,7 +2944,9 @@ run_cli() {
             --wildcard)
                 [[ "$action" = install || "$action" = tls ]] || fail "--wildcard 仅用于 install 或 tls"
                 [ "$#" -ge 2 ] || fail "--wildcard 需要域名"
-                REQUESTED_WILDCARD="$2"; shift
+                [ -z "$REQUESTED_WILDCARD" ] || fail "泛域名选项不能重复"
+                REQUESTED_WILDCARD=$(normalize_wildcard "$2") || exit 1
+                shift
                 ;;
             --dns-token-file)
                 [[ "$action" = install || "$action" = tls ]] || fail "--dns-token-file 仅用于 install 或 tls"
@@ -2890,8 +2964,13 @@ run_cli() {
         shift
     done
 
-    [ -z "$CERTBOT_EMAIL" ] || [ "$DOMAIN_MODE" = "configure" ] \
-        || fail "--email 必须与 --domain 一起使用"
+    if [ -n "$REQUESTED_WILDCARD" ]; then
+        [ "$DOMAIN_MODE" != disable ] || fail "--wildcard 不能与 --no-domain 同用"
+    elif [ -n "$DNS_TOKEN_FILE" ] && [ "$action" = install ]; then
+        fail "--dns-token-file 必须与 --wildcard 一起用于安装"
+    fi
+    [ -z "$CERTBOT_EMAIL" ] || [ "$DOMAIN_MODE" = "configure" ] || [ -n "$REQUESTED_WILDCARD" ] || [ "$action" = tls ] \
+        || fail "--email 必须与 --domain 或 --wildcard 一起使用"
     case "$action" in
         install) do_install ;;
         tls) do_tls ;;

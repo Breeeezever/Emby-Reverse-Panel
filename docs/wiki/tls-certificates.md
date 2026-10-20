@@ -2,7 +2,11 @@
 
 Meridian 支持原生 HTTPS，也可以放在已有 HTTPS 网关后面。此页介绍“全局设置 → TLS 设置”中的原生证书管理；外部网关见 [反向代理](reverse-proxy.md)。
 
-只想加 `/cinema/` 这样的路径前缀时，在站点选择“路径前缀”即可，复用当前地址和证书。`cinema.example.com` 这样的域名前缀才需要相应 DNS 和域名证书。一键安装时填写面板域名，使用的是 Nginx + Certbot 的 HTTPS，网页原生证书功能不会接管它；先检查正在使用的协议和端口，以及安装器的签发结果。
+只想加 `/cinema/` 这样的路径前缀时，在站点选择“路径前缀”即可，复用当前地址和证书。`cinema.example.com` 这样的域名前缀才需要相应 DNS 和域名证书。
+
+一键安装选择“泛域名 + Meridian 原生 HTTPS”，或使用 `install --wildcard '*.example.com' --email admin@example.com`，可直接申请泛域名，新安装自动使用 `panel.example.com`。面板与前缀站点共用证书，由 Meridian 管理和续期，无需先申请单独面板证书，也无需再到网页切换。准备 Cloudflare DNS Token、域名解析和端口放行，完整命令见 [Linux 安装](install-linux.md)。
+
+只填写 `--domain panel.example.com` 时使用 Nginx + Certbot 的 HTTPS，网页原生证书功能仍显示外部代理管理。已有安装可通过安装器的 `tls` 命令启用原生泛域名证书并保留受管理的 Nginx 面板入口；先检查正在使用的协议和端口，以及安装器的签发结果。
 
 ![TLS 设置](https://raw.githubusercontent.com/snnabb/Meridian/v1.13.0/docs/images/tls.webp)
 

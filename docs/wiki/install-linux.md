@@ -10,14 +10,39 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 交互菜单提供安装、更新、修改管理员密码、卸载和泛域名证书配置。安装过程会检查平台、依赖与端口，并下载对应正式版本。
 
-有域名时可直接指定：
+安装时可直接选择“泛域名 + Meridian 原生 HTTPS”（推荐）。输入 `example.com` 或 `*.example.com`，新安装默认使用 `panel.example.com` 作为面板域名，再填写 ACME 邮箱与 Cloudflare DNS Token。一次申请泛域名证书，面板与域名前缀站点共用，无需先给面板单独申请证书，也无需安装后再去网页配置泛域名。
+
+也可直接执行，Token 会在提示时隐藏输入：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh) install \
+  --wildcard '*.example.com' --email admin@example.com --port 9090
+```
+
+提前将 `panel.example.com` 和 `*.example.com` 的 A / AAAA 记录指向服务器；DNS-01 仅写入临时验证 TXT，不会代建访问记录。放行本机防火墙和云安全组的 TCP `9090`，使用该端口时将面板及节点记录设为“仅 DNS”。成功后访问 `https://panel.example.com:9090`，添加前缀 `cinema` 的站点即可使用 `https://cinema.example.com:9090`，共用原生监听端口。
+
+需要无端口地址时，可在 `443` 空闲并已放行的情况下指定 `--port 443`；端口被 Nginx、Xray 等服务占用时安装器会拒绝切换。需要其他面板名时加 `--domain console.example.com`，它必须受同一泛域名证书覆盖。
+
+非交互安装可从受保护的文件读取 Token：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh) install \
+  --wildcard '*.example.com' --email admin@example.com --port 9090 \
+  --dns-token-file /root/cloudflare-token -y
+```
+
+Token 文件只供管理员读取，例如权限设为 `600`；Token 需有目标 Zone 的 Zone Read 与 DNS Edit 权限。泛域名原生 HTTPS 需要 systemd 和有效的证书邮箱，签发后由 Meridian 自动续期。`--wildcard` 不能与 `--no-domain` 同用。
+
+已有安装不指定域名操作时保留配置；使用 `--wildcard` 重新配置时沿用安装器保存的面板域名。若需更换，显式传入 `--domain`；原域名不在新泛域名覆盖范围内时会拒绝配置。已有 Nginx 入口的处理见下方[泛域名与原生 HTTPS](#泛域名与原生-https)。
+
+只需要单独面板域名、由 Nginx 管理 HTTPS 时：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh) install \
   --port 9090 --domain panel.example.com --email admin@example.com -y
 ```
 
-域名应解析到当前服务器，申请证书所需的端口须可达。这个流程配置安装器管理的 Nginx 面板代理，不改写你的上游 Emby 配置。
+域名应解析到当前服务器，申请证书所需的端口须可达。单独使用 `--domain` 配置安装器管理的 Nginx 面板代理，证书由 Certbot 维护；与 `--wildcard` 同用才是 Meridian 原生 HTTPS。
 
 面板和站点需要使用不同基础域名时，可继续按 [面板与站点分域名部署](nginx-separate-domains.md) 增加媒体域名的 Nginx HTTPS 入口；当前外部 HTTPS 模式通过 API 注册完整站点域名。
 
@@ -65,7 +90,7 @@ sudo journalctl -u meridian -n 100 --no-pager
 
 ## 泛域名与原生 HTTPS
 
-安装菜单的泛域名证书配置使用 Cloudflare DNS-01，也可执行：
+首次安装可按上方步骤直接申请。已有 Meridian 时，菜单的“配置泛域名证书”或 `tls` 命令同样使用 Cloudflare DNS-01：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh -o install.sh
@@ -74,6 +99,8 @@ bash install.sh tls --domain panel.example.com --wildcard '*.example.com' \
 ```
 
 Token 文件只能由管理员读取。授予目标 Zone 的 Zone Read 与 DNS Edit 权限，不要把 Token 作为命令行参数。
+
+`tls` 省略 `--domain` 时沿用安装器保存的面板域名；未设置过面板域名时默认使用 `panel.基础域名`。
 
 成功后启用 Meridian 原生 HTTPS。已有安装器管理的 Nginx 面板入口会保留，将回源改为本机 HTTPS 并发送与 Host 一致的 TLS SNI；原来的 `https://panel.example.com` 仍可使用，其证书继续由 Certbot 维护。节点使用实际原生监听端口，例如 `https://cinema.example.com:9090`。失败时恢复数据库、环境、证书和原 Nginx 配置；不修改其他 Nginx 站点。非安装器管理或结构不明确的代理配置会在停服务前拒绝修改。
 

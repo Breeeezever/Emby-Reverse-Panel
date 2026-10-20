@@ -103,8 +103,93 @@ reset_fixture() {
     printf 'original certificate\n' > "${DATA_DIR}/certificate"
     cp "${DATA_DIR}/.env" "${TEST_ROOT}/original.env"
     : > "${TEST_ROOT}/actions"
-    rm -f "$NGINX_CONFIG"
+    rm -f "$NGINX_CONFIG" "${TEST_ROOT}/tls-command" "${TEST_ROOT}/received-token"
 }
+reset_fixture
+# A first install must go straight from loopback HTTP to native wildcard TLS,
+# without obtaining a separate panel certificate or configuring Nginx. Exercise
+# both the documented CLI and the interactive default through the real flow.
+for install_mode in cli menu; do
+    (
+        INSTALL_DIR="${TEST_ROOT}/native-${install_mode}/bin"
+        DATA_DIR="${TEST_ROOT}/native-${install_mode}/data"
+        BACKUP_DIR="${TEST_ROOT}/native-${install_mode}/backups"
+        SERVICE_FILE="${TEST_ROOT}/native-${install_mode}/meridian.service"
+        NGINX_CONFIG="${TEST_ROOT}/native-${install_mode}/nginx.conf"
+        mkdir -p "$INSTALL_DIR" "$DATA_DIR"
+        REQUESTED_DOMAIN=""; REQUESTED_WILDCARD=""; DOMAIN_MODE=ask
+        REQUESTED_PORT=9443
+        resolve_latest_version() { printf 'v1.14.1\n'; }
+        download_release_binary() {
+            cp "${MERIDIAN_INSTALL_DIR}/meridian" "$2/meridian"
+            DOWNLOADED_BINARY="$2/meridian"
+        }
+        prepare_data_and_config() { reset_fixture; }
+        write_systemd_service() { :; }
+        setup_panel_updater() { :; }
+        configure_panel_domain() { echo 'native install tried to configure Nginx' >&2; exit 1; }
+        configure_panel_port() { echo 'native install changed port before TLS transaction' >&2; exit 1; }
+        if [ "$install_mode" = cli ]; then
+            native_base=example.com
+            ASSUME_YES=1
+            run_cli install --wildcard '*.Example.COM' --email admin@example.com \
+                --dns-token-file "${TEST_ROOT}/token"
+        else
+            native_base=media.example.com
+            ASSUME_YES=0; CERTBOT_EMAIL=""
+            # Accept the recommended HTTPS mode and the implicit panel hostname.
+            printf '\n%s\nadmin@example.com\n' "$native_base" > "${TEST_ROOT}/native-input"
+            do_install < "${TEST_ROOT}/native-input"
+        fi
+        grep -Fqx "PANEL_DOMAIN=panel.${native_base}" "${DATA_DIR}/.env"
+        grep -Fqx 'PANEL_TLS_ENABLED=true' "${DATA_DIR}/.env"
+        grep -Fqx 'PANEL_BIND_ADDR=0.0.0.0' "${DATA_DIR}/.env"
+        grep -Fqx "PANEL_ROUTE_DOMAIN=${native_base}" "${DATA_DIR}/.env"
+        grep -Fqx 'PORT=9443' "${DATA_DIR}/.env"
+        grep -Fq -- "--domain panel.${native_base} --wildcard *.${native_base}" "${TEST_ROOT}/tls-command"
+        [ ! -e "$NGINX_CONFIG" ] || { echo 'native install created a proxy' >&2; exit 1; }
+        # Re-running install must preserve an existing custom panel hostname,
+        # and change the port only inside do_tls's backup/rollback transaction.
+        sed -i "s/^PANEL_DOMAIN=.*/PANEL_DOMAIN=console.${native_base}/" "${DATA_DIR}/.env"
+        REQUESTED_DOMAIN=""; REQUESTED_WILDCARD=""; DOMAIN_MODE=ask; REQUESTED_PORT=""
+        ASSUME_YES=1
+        prepare_data_and_config() { :; }
+        run_cli install --wildcard "$native_base" --port 19443 --email admin@example.com \
+            --dns-token-file "${TEST_ROOT}/token" -y
+        grep -Fqx "PANEL_DOMAIN=console.${native_base}" "${DATA_DIR}/.env"
+        grep -Fqx 'PORT=19443' "${DATA_DIR}/.env"
+        grep -Fq -- "--domain console.${native_base} --wildcard *.${native_base}" "${TEST_ROOT}/tls-command"
+    ) > "${TEST_ROOT}/native-${install_mode}.log" 2>&1
+done
+# Normalize before installation, rejecting incompatible options and wildcard
+# coverage errors without invoking an install, stopping services or ordering TLS.
+for bad_options in conflict duplicate invalid nested outside; do
+    (
+        REQUESTED_DOMAIN=""; REQUESTED_WILDCARD=""; DOMAIN_MODE=ask
+        do_install() { prompt_domain_choice 0; echo 'invalid request reached installation'; }
+        case "$bad_options" in
+            conflict) run_cli install --wildcard example.com --no-domain ;;
+            duplicate) run_cli install --wildcard example.com --wildcard other.com ;;
+            invalid) run_cli install --wildcard 'https://example.com' ;;
+            nested) run_cli install --wildcard example.com --domain panel.media.example.com ;;
+            outside) run_cli install --wildcard example.com --domain panel.other.com ;;
+        esac
+    ) > "${TEST_ROOT}/bad-${bad_options}.log" 2>&1 && { echo "invalid native options accepted: $bad_options" >&2; exit 1; }
+    if grep -Fq 'reached installation' "${TEST_ROOT}/bad-${bad_options}.log"; then exit 1; fi
+done
+# Existing interactive installs default to preserving their current entry. A
+# plain-domain install remains an explicit Nginx choice.
+(
+    ASSUME_YES=0; REQUESTED_DOMAIN=""; REQUESTED_WILDCARD=""; DOMAIN_MODE=ask
+    prompt_domain_choice 1 <<< ''
+    [ "$DOMAIN_MODE" = preserve ]
+    DOMAIN_MODE=ask
+    prompt_domain_choice 0 <<< $'2\npanel.example.com\n'
+    [ "$DOMAIN_MODE" = configure ] && [ "$REQUESTED_DOMAIN" = panel.example.com ]
+    DOMAIN_MODE=ask; REQUESTED_DOMAIN=""
+    prompt_domain_choice 0 <<< '3'
+    [ "$DOMAIN_MODE" = disable ]
+) > "${TEST_ROOT}/domain-choices.log"
 reset_fixture
 # The certificate command must reject occupied IPv4/IPv6 ports before stopping
 # the old service or consuming an ACME order. Only its own systemd PID may bind.
