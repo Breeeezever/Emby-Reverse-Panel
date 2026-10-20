@@ -417,6 +417,25 @@ awk '!($0 ~ /^[[:space:]]*proxy_pass[[:space:]]+http:\/\/127\.0\.0\.1:[0-9]+;([[
 cmp -s "${TEST_ROOT}/nginx-port-before-without-proxy" "${TEST_ROOT}/nginx-port-after-without-proxy" \
     || { echo 'FAIL: Nginx port update changed directives outside proxy_pass' >&2; exit 1; }
 
+# Native Meridian checks TLS SNI against Host. Preserve the frontend while
+# configuring its HTTPS upstream, including repeated TLS/port changes.
+cp "$panel_port_before" "$NGINX_CONFIG"
+panel_tls_after="${TEST_ROOT}/nginx-native-after.conf"
+update_managed_panel_proxy_port 19443 "$panel_tls_after" https
+assert_contains "$panel_tls_after" 'proxy_pass https://127.0.0.1:19443;'
+assert_contains "$panel_tls_after" 'proxy_ssl_server_name on;'
+assert_contains "$panel_tls_after" "proxy_ssl_name \$host;"
+cp "$panel_tls_after" "$NGINX_CONFIG"
+update_managed_panel_proxy_port 19443 "${TEST_ROOT}/nginx-native-repeat.conf" https
+cmp "$panel_tls_after" "${TEST_ROOT}/nginx-native-repeat.conf"
+update_managed_panel_proxy_port 9090 "${TEST_ROOT}/nginx-native-http.conf" http
+cmp "$panel_port_before" "${TEST_ROOT}/nginx-native-http.conf"
+printf '    proxy_ssl_name other.example.com;\n' >> "$NGINX_CONFIG"
+if update_managed_panel_proxy_port 19443 "${TEST_ROOT}/nginx-native-conflict.conf" https; then
+    echo 'FAIL: custom Nginx TLS name was silently changed' >&2; exit 1
+fi
+[ ! -e "${TEST_ROOT}/nginx-native-conflict.conf" ] || { echo 'FAIL: rejected TLS config left a partial output' >&2; exit 1; }
+
 # Ambiguous managed files are rejected without leaving a partial output.
 cp "$panel_port_before" "$NGINX_CONFIG"
 printf '    proxy_pass http://127.0.0.1:19090;\n' >> "$NGINX_CONFIG"

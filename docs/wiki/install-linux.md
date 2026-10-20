@@ -75,7 +75,7 @@ bash install.sh tls --domain panel.example.com --wildcard '*.example.com' \
 
 Token 文件只能由管理员读取。授予目标 Zone 的 Zone Read 与 DNS Edit 权限，不要把 Token 作为命令行参数。
 
-成功后启用 Meridian 原生 HTTPS。已有安装器管理的 Nginx 面板入口会保留，只将回源改为本机 HTTPS；原来的 `https://panel.example.com` 仍可使用，其证书继续由 Certbot 维护。节点使用实际原生监听端口，例如 `https://cinema.example.com:9090`。失败时恢复数据库、环境、证书和原 Nginx 配置；不修改其他 Nginx 站点。非安装器管理或结构不明确的代理配置会在停服务前拒绝修改。
+成功后启用 Meridian 原生 HTTPS。已有安装器管理的 Nginx 面板入口会保留，将回源改为本机 HTTPS 并发送与 Host 一致的 TLS SNI；原来的 `https://panel.example.com` 仍可使用，其证书继续由 Certbot 维护。节点使用实际原生监听端口，例如 `https://cinema.example.com:9090`。失败时恢复数据库、环境、证书和原 Nginx 配置；不修改其他 Nginx 站点。非安装器管理或结构不明确的代理配置会在停服务前拒绝修改。
 
 签发前检查所选 TCP 端口的监听进程，避免占用 Nginx、Xray 等其他服务的端口；缺少 `ss` 时会明确提示未能预检查。配置后分别报告本机健康与域名入口探测结果：入口探测按服务器的 DNS 解析访问 `/api/auth/check`，验证证书链、域名与面板响应，不跳过证书校验，也不自动跟随跳转。首次配置 Nginx 域名 HTTPS 时同样执行该探测。证书已安装但入口检查失败时，会显示待处理原因，不能视为公网部署完成；外部网络故障不会触发本机证书回滚。
 

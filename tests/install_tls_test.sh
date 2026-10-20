@@ -187,6 +187,8 @@ done
     managed_proxy_fixture
     do_tls > "${TEST_ROOT}/proxy-success.log"
     grep -Fq 'proxy_pass https://127.0.0.1:9443;' "$NGINX_CONFIG"
+    grep -Fq 'proxy_ssl_server_name on;' "$NGINX_CONFIG"
+    grep -Fq "proxy_ssl_name \$host;" "$NGINX_CONFIG"
     grep -Fq 'keep Certbot certificate' "$NGINX_CONFIG"
     grep -Fq '原 Nginx 面板入口已保留' "${TEST_ROOT}/proxy-success.log"
     grep -Fq '面板地址: https://panel.example.com（Nginx 入口）' "${TEST_ROOT}/proxy-success.log"

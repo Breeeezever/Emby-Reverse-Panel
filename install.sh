@@ -1617,7 +1617,8 @@ update_managed_panel_proxy_port() {
 
     # Port changes must preserve Certbot's HTTPS servers and every other
     # directive. Only a single numeric loopback proxy target from the managed
-    # panel template is eligible for replacement.
+    # panel template is eligible for replacement. Native HTTPS requires SNI to
+    # match the forwarded Host; otherwise Meridian rejects the request (421).
     # shellcheck disable=SC2016
     if ! LC_ALL=C as_root awk -v port="$port" -v scheme="$scheme" '
         {
@@ -1625,13 +1626,28 @@ update_managed_panel_proxy_port() {
             if (line ~ /^[[:space:]]*proxy_pass[[:space:]]+https?:\/\/127\.0\.0\.1:[0-9]+;([[:space:]]*#.*)?[[:space:]]*$/) {
                 proxy_count++
                 sub(/https?:\/\/127\.0\.0\.1:[0-9]+;/, scheme "://127.0.0.1:" port ";", line)
+                print line
+                if (scheme == "https") {
+                    indent=line
+                    sub(/[^[:space:]].*$/, "", indent)
+                    print indent "proxy_ssl_server_name on;"
+                    print indent "proxy_ssl_name $host;"
+                }
+                skip_tls=2
+                next
             }
+            # Recognize only the adjacent directives emitted above. Reject
+            # custom TLS names instead of silently overriding other contexts.
+            if (skip_tls == 2 && line ~ /^[[:space:]]*proxy_ssl_server_name on;[[:space:]]*$/) { skip_tls=1; next }
+            if (skip_tls == 1 && line ~ /^[[:space:]]*proxy_ssl_name \$host;[[:space:]]*$/) { skip_tls=0; next }
+            skip_tls=0
+            if (line ~ /^[[:space:]]*proxy_ssl_(server_name|name)[[:space:]]/) invalid_tls=1
             print line
         }
-        END { exit (proxy_count == 1 ? 0 : 42) }
+        END { exit (proxy_count == 1 && !invalid_tls ? 0 : 42) }
     ' "$NGINX_CONFIG" > "$output"; then
         rm -f -- "$output"
-        warn "Nginx 配置中未找到唯一的 Meridian 面板回源目标，拒绝修改端口"
+        warn "Nginx 面板回源目标不唯一或存在自定义 TLS 域名配置，拒绝修改端口或协议"
         return 1
     fi
 }
