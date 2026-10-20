@@ -19,6 +19,6 @@ updates:
     schedule:
       interval: weekly
     groups:
-      codeql:
+      github-actions:
         patterns:
-          - github/codeql-action/*
+          - '*'
