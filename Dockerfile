@@ -1,12 +1,12 @@
 # Build stage
-FROM golang:1.26.9-alpine@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS builder
+FROM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-ARG VERSION=v1.14.1
+ARG VERSION=v1.14.2
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w -X main.appVersion=${VERSION}" -o meridian ./cmd/meridian
 
 # Runtime stage

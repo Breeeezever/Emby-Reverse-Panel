@@ -24,7 +24,7 @@ func runCommandLine(args []string, input io.Reader, output io.Writer) (bool, err
 	switch args[0] {
 	case "--version", "-v":
 		if len(args) == 2 && args[1] == "--features" {
-			_, err := fmt.Fprintln(output, "panel-updater-v1\nmanaged-tls-v1")
+			_, err := fmt.Fprintln(output, "panel-updater-v1\nmanaged-tls-v1\nshared-ingress-v2")
 			return true, err
 		}
 		if len(args) != 1 {

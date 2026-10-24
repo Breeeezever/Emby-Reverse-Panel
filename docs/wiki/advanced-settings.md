@@ -28,7 +28,7 @@
 
 可选择同时发送 `X-Real-IP` 与 `X-Forwarded-For`、只发送 `X-Real-IP`，或不透传。
 
-Meridian 不直接采信任意客户端提供的转发头；只有来源命中 `TRUSTED_PROXY_CIDRS` 时才采用经过校验的代理信息。经 CDN / Docker / 网关访问时，先正确配置 [反向代理](reverse-proxy.md)，再启用相应模式。
+Meridian 不直接采信任意客户端提供的转发头；只有来源命中可信代理范围时才采用经过校验的代理信息。`TRUSTED_PROXY_CIDRS` 未设置或留空默认只信任 `127.0.0.1/32,::1/128`；自定义 CIDR 替换默认范围，`none` 禁用信任。经 CDN / Docker / 网关访问时，先正确配置 [反向代理](reverse-proxy.md)，再启用相应模式。
 
 ## 固定上游 Header
 

@@ -1,6 +1,6 @@
 # Docker 部署
 
-官方镜像为 `ghcr.io/snnabb/meridian`，提供 Linux amd64 和 arm64。`latest` 跟随最新正式版本；固定版本可使用 `v1.14.1`。
+官方镜像为 `ghcr.io/snnabb/meridian`，提供 Linux amd64 和 arm64。`latest` 跟随最新正式版本；固定版本可使用 `v1.14.2`。
 
 ## 1. 准备目录与密钥
 
@@ -25,7 +25,7 @@ chmod 600 .env
 ```yaml
 services:
   meridian:
-    image: ghcr.io/snnabb/meridian:v1.14.1
+    image: ghcr.io/snnabb/meridian:v1.14.2
     user: "10001:10001"
     restart: unless-stopped
     read_only: true
@@ -71,7 +71,7 @@ docker compose logs --tail 100 meridian
 
 从受保护的 `.env` 中获取 `SETUP_TOKEN`，打开面板创建管理员。如果未显式传入密钥，官方入口脚本会将生成的密钥保存到数据卷中的 `.meridian-secrets`；新生成的初始化令牌会显示在容器日志中。
 
-设置 `PANEL_DOMAIN` 为实际面板域名。要采纳反向代理提供的客户端地址和协议，还需将 `TRUSTED_PROXY_CIDRS` 设置为**容器实际看到的代理来源地址**。宿主机 Nginx 连接 Docker 映射端口时，来源可能是桥接网关，而非容器内的 `127.0.0.1`。
+设置 `PANEL_DOMAIN` 为实际面板域名。`TRUSTED_PROXY_CIDRS` 未设置或留空仅默认信任 `127.0.0.1/32,::1/128`。要采纳跨容器反向代理提供的客户端地址和协议，仍需将它设置为**容器实际看到的代理来源地址**；自定义 CIDR 替换默认值，`none` 禁用代理信任。宿主机 Nginx 连接 Docker 映射端口时，来源可能是桥接网关，而非容器内的 `127.0.0.1`。
 
 从 `v1.13.5` 起，由环境变量设置的 `PANEL_DOMAIN` 会随容器启动同步。改成新域名即可切换；移除该变量或设置 `PANEL_DOMAIN: ""` 后，旧域名限制会解除，无需删除数据库或数据卷。若使用了 `env_file`，也要检查其中是否仍定义同名变量。在面板手动保存域名或配置原生证书后，域名改由数据库管理；完整优先级与旧版迁移规则见 [配置与环境变量](configuration.md)。
 

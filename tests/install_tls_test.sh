@@ -18,7 +18,7 @@ export MERIDIAN_INSTALL_DIR="${TEST_ROOT}/bin"
 export MERIDIAN_DATA_DIR="${TEST_ROOT}/data"
 export MERIDIAN_BACKUP_DIR="${TEST_ROOT}/backups"
 export MERIDIAN_SERVICE_FILE="${TEST_ROOT}/meridian.service"
-export MERIDIAN_NGINX_CONFIG="${TEST_ROOT}/nginx.conf"
+export MERIDIAN_NGINX_CONFIG="${TEST_ROOT}/meridian-panel.conf"
 export MERIDIAN_ASSUME_YES=1
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/install.sh"
@@ -26,7 +26,7 @@ mkdir -p "$INSTALL_DIR" "$DATA_DIR"
 cat > "${INSTALL_DIR}/meridian" <<'BINARY'
 #!/usr/bin/env bash
 if [ "$1" = --version ] && [ "${2:-}" = --features ]; then
-    printf 'managed-tls-v1\npanel-updater-v1\n'; exit 0
+    printf 'managed-tls-v1\npanel-updater-v1\nshared-ingress-v2\n'; exit 0
 fi
 if [ "$1" = --version ]; then printf 'v1.12.4\n'; exit 0; fi
 exit 1
@@ -47,7 +47,44 @@ restore_data_permissions() { :; }
 remove_managed_nginx_config() { printf 'removed\n' >> "${TEST_ROOT}/actions"; }
 install_env_file() { cp "$1" "${DATA_DIR}/.env"; }
 wait_for_health() { [ "${FAIL_HEALTH:-0}" = 0 ]; }
+ss() { :; }
+ufw() { :; }
+curl() {
+    local output="" arg
+    [ "$1" = -q ] || { echo 'entry probe loaded curlrc' >&2; return 99; }
+    for arg in "$@"; do
+        case "$arg" in -k|--insecure|-L|--location) echo 'unsafe entry probe' >&2; return 99 ;; esac
+    done
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = -o ]; then output="$2"; shift; fi
+        shift
+    done
+    if [ -n "${ENTRY_BODY:-}" ]; then
+        printf '%s\n' "$ENTRY_BODY" > "$output"
+    else
+        printf '%s\n' '{"mode":"single_admin","authenticated":false}' > "$output"
+    fi
+    printf '%s' "${ENTRY_HTTP_CODE:-200}"
+    return "${ENTRY_CURL_STATUS:-0}"
+}
 as_root() {
+    # The fixture runs without sudo on CI. Ownership changes are covered by
+    # the real installer; retain install's paths/modes while using this UID.
+    if [ "$1" = install ] && [ "$EUID" -ne 0 ]; then
+        local arg skip=0
+        local install_args=()
+        shift
+        for arg in "$@"; do
+            if [ "$skip" = 1 ]; then skip=0; continue; fi
+            if [ "$arg" = -o ] || [ "$arg" = -g ]; then skip=1; continue; fi
+            install_args+=("$arg")
+        done
+        command install "${install_args[@]}"
+        return
+    fi
+    if [ "$1" = env ] && [ "${2:-}" = LC_ALL=C ] && [ "${3:-}" = ufw ]; then
+        printf 'Status: %s\n' "${UFW_TEST_STATUS:-inactive}"; return 0
+    fi
     if [ "$1" = systemctl ]; then
         printf '%s\n' "$*" >> "${TEST_ROOT}/actions"; return 0
     fi
@@ -66,13 +103,145 @@ reset_fixture() {
     printf 'original certificate\n' > "${DATA_DIR}/certificate"
     cp "${DATA_DIR}/.env" "${TEST_ROOT}/original.env"
     : > "${TEST_ROOT}/actions"
+    rm -f "$NGINX_CONFIG" "${TEST_ROOT}/tls-command" "${TEST_ROOT}/received-token"
 }
 reset_fixture
+# A first install must go straight from loopback HTTP to native wildcard TLS,
+# without obtaining a separate panel certificate or configuring Nginx. Exercise
+# both the documented CLI and the interactive default through the real flow.
+for install_mode in cli menu; do
+    (
+        INSTALL_DIR="${TEST_ROOT}/native-${install_mode}/bin"
+        DATA_DIR="${TEST_ROOT}/native-${install_mode}/data"
+        BACKUP_DIR="${TEST_ROOT}/native-${install_mode}/backups"
+        SERVICE_FILE="${TEST_ROOT}/native-${install_mode}/meridian.service"
+        NGINX_CONFIG="${TEST_ROOT}/native-${install_mode}/nginx.conf"
+        mkdir -p "$INSTALL_DIR" "$DATA_DIR"
+        REQUESTED_DOMAIN=""; REQUESTED_WILDCARD=""; DOMAIN_MODE=ask
+        REQUESTED_PORT=9443
+        resolve_latest_version() { printf 'v1.14.1\n'; }
+        download_release_binary() {
+            cp "${MERIDIAN_INSTALL_DIR}/meridian" "$2/meridian"
+            DOWNLOADED_BINARY="$2/meridian"
+        }
+        prepare_data_and_config() { reset_fixture; }
+        write_systemd_service() { :; }
+        setup_panel_updater() { :; }
+        configure_panel_domain() { echo 'native install tried to configure Nginx' >&2; exit 1; }
+        configure_panel_port() { echo 'native install changed port before TLS transaction' >&2; exit 1; }
+        if [ "$install_mode" = cli ]; then
+            native_base=example.com
+            ASSUME_YES=1
+            run_cli install --wildcard '*.Example.COM' --email admin@example.com \
+                --dns-token-file "${TEST_ROOT}/token"
+        else
+            native_base=media.example.com
+            ASSUME_YES=0; CERTBOT_EMAIL=""
+            # Accept the recommended HTTPS mode and the implicit panel hostname.
+            printf '\n%s\nadmin@example.com\n' "$native_base" > "${TEST_ROOT}/native-input"
+            do_install < "${TEST_ROOT}/native-input"
+        fi
+        grep -Fqx "PANEL_DOMAIN=panel.${native_base}" "${DATA_DIR}/.env"
+        grep -Fqx 'PANEL_TLS_ENABLED=true' "${DATA_DIR}/.env"
+        grep -Fqx 'PANEL_BIND_ADDR=0.0.0.0' "${DATA_DIR}/.env"
+        grep -Fqx "PANEL_ROUTE_DOMAIN=${native_base}" "${DATA_DIR}/.env"
+        grep -Fqx 'PORT=9443' "${DATA_DIR}/.env"
+        grep -Fq -- "--domain panel.${native_base} --wildcard *.${native_base}" "${TEST_ROOT}/tls-command"
+        [ ! -e "$NGINX_CONFIG" ] || { echo 'native install created a proxy' >&2; exit 1; }
+        # Re-running install must preserve an existing custom panel hostname,
+        # and change the port only inside do_tls's backup/rollback transaction.
+        sed -i "s/^PANEL_DOMAIN=.*/PANEL_DOMAIN=console.${native_base}/" "${DATA_DIR}/.env"
+        REQUESTED_DOMAIN=""; REQUESTED_WILDCARD=""; DOMAIN_MODE=ask; REQUESTED_PORT=""
+        ASSUME_YES=1
+        prepare_data_and_config() { :; }
+        run_cli install --wildcard "$native_base" --port 19443 --email admin@example.com \
+            --dns-token-file "${TEST_ROOT}/token" -y
+        grep -Fqx "PANEL_DOMAIN=console.${native_base}" "${DATA_DIR}/.env"
+        grep -Fqx 'PORT=19443' "${DATA_DIR}/.env"
+        grep -Fq -- "--domain console.${native_base} --wildcard *.${native_base}" "${TEST_ROOT}/tls-command"
+    ) > "${TEST_ROOT}/native-${install_mode}.log" 2>&1
+done
+# Normalize before installation, rejecting incompatible options and wildcard
+# coverage errors without invoking an install, stopping services or ordering TLS.
+for bad_options in conflict duplicate invalid nested outside; do
+    (
+        REQUESTED_DOMAIN=""; REQUESTED_WILDCARD=""; DOMAIN_MODE=ask
+        do_install() { prompt_domain_choice 0; echo 'invalid request reached installation'; }
+        case "$bad_options" in
+            conflict) run_cli install --wildcard example.com --no-domain ;;
+            duplicate) run_cli install --wildcard example.com --wildcard other.com ;;
+            invalid) run_cli install --wildcard 'https://example.com' ;;
+            nested) run_cli install --wildcard example.com --domain panel.media.example.com ;;
+            outside) run_cli install --wildcard example.com --domain panel.other.com ;;
+        esac
+    ) > "${TEST_ROOT}/bad-${bad_options}.log" 2>&1 && { echo "invalid native options accepted: $bad_options" >&2; exit 1; }
+    if grep -Fq 'reached installation' "${TEST_ROOT}/bad-${bad_options}.log"; then exit 1; fi
+done
+# Existing interactive installs default to preserving their current entry. A
+# plain-domain install remains an explicit Nginx choice.
+(
+    ASSUME_YES=0; REQUESTED_DOMAIN=""; REQUESTED_WILDCARD=""; DOMAIN_MODE=ask
+    prompt_domain_choice 1 <<< ''
+    [ "$DOMAIN_MODE" = preserve ]
+    DOMAIN_MODE=ask
+    prompt_domain_choice 0 <<< $'2\npanel.example.com\n'
+    [ "$DOMAIN_MODE" = configure ] && [ "$REQUESTED_DOMAIN" = panel.example.com ]
+    DOMAIN_MODE=ask; REQUESTED_DOMAIN=""
+    prompt_domain_choice 0 <<< '3'
+    [ "$DOMAIN_MODE" = disable ]
+) > "${TEST_ROOT}/domain-choices.log"
+reset_fixture
+# The certificate command must reject occupied IPv4/IPv6 ports before stopping
+# the old service or consuming an ACME order. Only its own systemd PID may bind.
+(
+    ss() { printf '%s\n' 'LISTEN 0 128 [::]:9443 [::]:* users:(("xray",pid=123,fd=7))'; }
+    if (do_tls) > "${TEST_ROOT}/occupied.log" 2>&1; then echo 'occupied TLS port accepted' >&2; exit 1; fi
+    grep -Fq '端口不可用' "${TEST_ROOT}/occupied.log"
+    [ ! -s "${TEST_ROOT}/actions" ] || { echo 'port conflict touched a service' >&2; exit 1; }
+    [ ! -f "${TEST_ROOT}/tls-command" ] || { echo 'port conflict issued a certificate' >&2; exit 1; }
+    cmp "${TEST_ROOT}/original.env" "${DATA_DIR}/.env"
+    as_root() {
+        if [ "$1" = systemctl ] && [ "$2" = show ]; then printf '123\n'; return 0; fi
+        "$@"
+    }
+    check_native_tls_port 9090
+    ss() { printf '%s\n' 'LISTEN 0 128 0.0.0.0:9090 0.0.0.0:* users:(("other",pid=9123,fd=7))'; }
+    if check_native_tls_port 9090; then echo 'foreign PID accepted' >&2; exit 1; fi
+    ss() { return 1; }
+    check_native_tls_port 9443 > "${TEST_ROOT}/no-ss.log"
+    grep -Fq '无法预检查' "${TEST_ROOT}/no-ss.log"
+)
+# A 200 response alone is insufficient, and a self-signed certificate must not
+# be bypassed. All diagnostics are read-only and keep a valid local deployment.
+check_panel_https_entry panel.example.com 9443 > "${TEST_ROOT}/entry-ok.log"
+grep -Fq '证书校验与面板接口检查通过' "${TEST_ROOT}/entry-ok.log"
+for entry_case in cert timeout dns unrelated redirect; do
+    (
+        case "$entry_case" in
+            cert) ENTRY_CURL_STATUS=60; expected='证书校验失败' ;;
+            timeout) ENTRY_CURL_STATUS=28; expected='无法连接或超时' ;;
+            dns) ENTRY_CURL_STATUS=6; expected='DNS 解析失败' ;;
+            unrelated) ENTRY_BODY='<html>another service</html>'; expected='未确认面板接口' ;;
+            redirect) ENTRY_HTTP_CODE=301; expected='HTTP 301' ;;
+        esac
+        if check_panel_https_entry panel.example.com 443 > "${TEST_ROOT}/entry-${entry_case}.log"; then
+            echo "invalid entry accepted: $entry_case" >&2; exit 1
+        fi
+        grep -Fq "$expected" "${TEST_ROOT}/entry-${entry_case}.log"
+    )
+done
+(
+    ENTRY_CURL_STATUS=28 UFW_TEST_STATUS=active report_native_tls_access panel.example.com 9443 0 > "${TEST_ROOT}/entry-report.log"
+    grep -Fq 'sudo ufw allow 9443/tcp' "${TEST_ROOT}/entry-report.log"
+    grep -Fq '域名入口验证未全部通过' "${TEST_ROOT}/entry-report.log"
+    grep -Fq '不会接管该端口的其他服务' "${TEST_ROOT}/entry-report.log"
+)
 do_tls > "${TEST_ROOT}/success.log"
 grep -Fq 'https://panel.example.com:9443' "${TEST_ROOT}/success.log"
 grep -Fqx 'PANEL_TLS_ENABLED=true' "${DATA_DIR}/.env"
 grep -Fqx 'PANEL_TLS_CERT_FILE=' "${DATA_DIR}/.env"
 grep -Fqx 'PANEL_ROUTE_DOMAIN=example.com' "${DATA_DIR}/.env"
+grep -Fqx 'PANEL_ROUTE_DIRECT=true' "${DATA_DIR}/.env"
 grep -Fq -- '--token-stdin' "${TEST_ROOT}/tls-command"
 cmp "${TEST_ROOT}/token" "${TEST_ROOT}/received-token"
 if grep -Fq 'simulated DNS token' "${TEST_ROOT}/tls-command" "${TEST_ROOT}/success.log"; then echo 'token was exposed' >&2; exit 1; fi
@@ -84,6 +253,59 @@ for failure in FAIL_ISSUE FAIL_HEALTH; do
     grep -Fqx 'original certificate' "${DATA_DIR}/certificate"
     grep -Fq 'systemctl start meridian' "${TEST_ROOT}/actions"
 done
+# Native wildcard setup must keep an existing public panel gateway, including
+# its certificate and redirect. Failures after issuance restore both layers.
+(
+    nginx_test_and_reload() {
+        printf 'nginx reload\n' >> "${TEST_ROOT}/actions"
+        if [ "${FAIL_PROXY:-0}" = 1 ] && grep -Fq 'proxy_pass https://' "$NGINX_CONFIG"; then return 1; fi
+    }
+    managed_proxy_fixture() {
+        reset_fixture
+        sed -i 's/^PANEL_DOMAIN=.*/PANEL_DOMAIN=panel.example.com/' "${DATA_DIR}/.env"
+        cp "${DATA_DIR}/.env" "${TEST_ROOT}/original.env"
+        write_panel_nginx_config panel.example.com 9090 "$NGINX_CONFIG"
+        # Simulate the additional directives maintained by Certbot.
+        printf '\n# keep Certbot certificate /etc/letsencrypt/live/panel.example.com/fullchain.pem\n' >> "$NGINX_CONFIG"
+        cp "$NGINX_CONFIG" "${TEST_ROOT}/original.nginx"
+    }
+    managed_proxy_fixture
+    do_tls > "${TEST_ROOT}/proxy-success.log"
+    grep -Fq 'proxy_pass https://127.0.0.1:9443;' "$NGINX_CONFIG"
+    grep -Fq 'proxy_ssl_server_name on;' "$NGINX_CONFIG"
+    grep -Fq "proxy_ssl_name \$host;" "$NGINX_CONFIG"
+    grep -Fq 'keep Certbot certificate' "$NGINX_CONFIG"
+    grep -Fq '原 Nginx 面板入口已保留' "${TEST_ROOT}/proxy-success.log"
+    grep -Fq '面板地址: https://panel.example.com（Nginx 入口）' "${TEST_ROOT}/proxy-success.log"
+    grep -Fq '原生 HTTPS: https://panel.example.com:9443' "${TEST_ROOT}/proxy-success.log"
+    # An unreachable public entry is diagnosed without rolling back a healthy
+    # native listener: cloud firewalls/DNS cannot be repaired by restoring TLS.
+    managed_proxy_fixture
+    ENTRY_CURL_STATUS=60 do_tls > "${TEST_ROOT}/proxy-public-cert.log"
+    grep -Fq '证书校验失败' "${TEST_ROOT}/proxy-public-cert.log"
+    grep -Fq '域名入口验证未全部通过' "${TEST_ROOT}/proxy-public-cert.log"
+    grep -Fq 'proxy_pass https://127.0.0.1:9443;' "$NGINX_CONFIG"
+    if grep -Fqx removed "${TEST_ROOT}/actions"; then echo 'TLS setup deleted the public gateway' >&2; exit 1; fi
+    cp "${DATA_DIR}/.env" "${TEST_ROOT}/native.env"
+    : > "${TEST_ROOT}/actions"
+    if configure_panel_port 19443 > "${TEST_ROOT}/native-port.log" 2>&1; then echo 'native port changed without updating the database' >&2; exit 1; fi
+    cmp "${TEST_ROOT}/native.env" "${DATA_DIR}/.env"
+    [ ! -s "${TEST_ROOT}/actions" ] || { echo 'native port guard touched a service' >&2; exit 1; }
+    for failure in FAIL_ISSUE FAIL_HEALTH FAIL_PROXY; do
+        managed_proxy_fixture
+        if (export "${failure}=1"; do_tls > "${TEST_ROOT}/proxy-${failure}.log" 2>&1); then echo 'gateway failure was accepted' >&2; exit 1; fi
+        cmp "${TEST_ROOT}/original.env" "${DATA_DIR}/.env"
+        cmp "${TEST_ROOT}/original.nginx" "$NGINX_CONFIG"
+        grep -Fqx 'original database' "${DATA_DIR}/meridian.db"
+        grep -Fqx 'original certificate' "${DATA_DIR}/certificate"
+    done
+    managed_proxy_fixture
+    printf '    proxy_pass http://127.0.0.1:19090;\n' >> "$NGINX_CONFIG"
+    if (do_tls) > "${TEST_ROOT}/proxy-ambiguous.log" 2>&1; then echo 'ambiguous proxy was accepted' >&2; exit 1; fi
+    if grep -Fq 'systemctl stop' "${TEST_ROOT}/actions"; then echo 'invalid proxy stopped the service' >&2; exit 1; fi
+    cmp "${TEST_ROOT}/original.env" "${DATA_DIR}/.env"
+)
+reset_fixture
 # Provision the real updater into an isolated filesystem, including upgrades
 # from an older installer and repair when the binary is already current.
 (

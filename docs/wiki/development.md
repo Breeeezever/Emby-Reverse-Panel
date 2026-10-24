@@ -4,7 +4,7 @@ Meridian 使用 Go 后端、SQLite 和内嵌的原生 JavaScript / CSS 前端。
 
 ## 环境与构建
 
-- Go 1.26.9 或更高版本。
+- Go 1.26.10 或更高版本。
 - Node.js 用于前端测试与语法检查，运行应用不需要 Node。
 - Bash、ShellCheck 用于安装器验证。
 - Docker 用于容器入口测试。

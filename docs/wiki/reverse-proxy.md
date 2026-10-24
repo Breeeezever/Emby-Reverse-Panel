@@ -20,12 +20,55 @@ PORT=9090
 PANEL_BIND_ADDR=127.0.0.1
 PANEL_DOMAIN=panel.example.com
 PANEL_ROUTE_DOMAIN=example.com
-TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+TRUSTED_PROXY_CIDRS=
 ```
 
 这些内容添加到已有环境配置，保留所有原密钥。环境管理的 `PANEL_DOMAIN` 在每次启动同步，移除或置空解除旧域名限制。在面板手动保存域名或配置原生证书后，改由数据库维护。`PANEL_ROUTE_DOMAIN`、原生 TLS 和监听端口仍以已保存的面板设置为准；需要修改时在“TLS 设置”保存并按提示重启。
 
-`TRUSTED_PROXY_CIDRS` 必须匹配 Meridian 实际看到的代理来源。Docker、远程网关和 IPv6 连接不能直接照搬同机地址，也不要填 `0.0.0.0/0`。
+`TRUSTED_PROXY_CIDRS` 未设置或留空时默认信任 `127.0.0.1/32,::1/128`，同机回环反代无需再填写。自定义 CIDR **替换**默认值，必须匹配 Meridian 实际看到的代理来源；如同时需要本机代理，须把上述两个地址一起列入。设置 `none` 可禁用全部代理信任。Docker、远程网关不能直接照搬同机地址，也不要填 `0.0.0.0/0`。
+
+### 手动 Nginx、宝塔与 1Panel：日志只显示 127.0.0.1 {#manual-proxy-client-ip}
+
+**同机原生安装默认可用，无需额外命令。** Nginx 与 Meridian 在同一网络命名空间，回源为 `127.0.0.1` 或 `::1`，且按下方配置覆盖传递 `X-Real-IP` 时，新请求日志自动显示真实客户端 IP。`TRUSTED_PROXY_CIDRS=` 可以保持为空；已有空配置升级到包含此改动的版本后也会自动生效，无需修改环境文件。此默认值同时用于登录限流、转发协议、入口校验和发往上游的客户端 IP。
+
+如果仍使用尚未包含此默认行为的旧版程序，或已有自定义 CIDR 未包含本机地址，可在安装器菜单选择“配置本机反向代理”，或执行兼容命令：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh) proxy --local
+```
+
+命令会在现有 `TRUSTED_PROXY_CIDRS` 中补充 `127.0.0.1/32,::1/128`，保留其他代理范围（原值为 `none` 时改为这两个地址），备份 `.env` 后重启并检查 Meridian，失败则恢复原配置。域名、监听端口、证书、数据库和自定义 Nginx 配置不由此命令改写。重启会短暂中断现有连接。
+
+旧版也可备份并编辑实际生效的环境文件（标准安装为 `/opt/meridian/.env`），修改已有的这一项，避免重复定义，随后运行 `sudo systemctl restart meridian`。已有其他可信代理时保留它们。
+
+```dotenv
+TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+```
+
+Nginx 的反代 `location` 同时需要覆盖设置以下请求头；不要把浏览器提供的 `$http_x_real_ip` 直接传给 Meridian：
+
+```nginx
+proxy_set_header Host $http_host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+在宝塔/1Panel 保存配置后检查并重载其实际使用的 Nginx/OpenResty，再从另一台设备访问一个站点，检查**新产生**的请求日志；历史日志不会被改写。可额外发送伪造 `X-Real-IP` 的请求，确认日志仍记录真实连接地址。
+
+**跨容器的 1Panel/Docker 或远程代理**不适用默认回环信任，也不能直接使用 `proxy --local`：容器内的回环地址只代表该容器。应根据实际回源连接来源，填写代理的精确 IP CIDR（IPv4 `/32`、IPv6 `/128`，或专用代理网络的必要范围），在 Compose 的 `environment` / `env_file` 中修改后重新创建容器；仅 `docker restart` 不会加载新的容器环境。不会自动信任所有私网或 Docker 网段。另见 [Docker 安装](install-docker.md)。
+
+默认信任意味着上述回环地址上的本机进程都被视为代理；Nginx 必须覆盖客户端提供的 `X-Real-IP`。共享服务器若不能信任其他本机进程，可设置 `TRUSTED_PROXY_CIDRS=none`，或隔离代理网络后配置精确来源。旧部署若依赖“空值不信任任何代理”的行为，升级时应改为 `none`。公网直连客户端的伪造转发头仍会被忽略。
+
+如果已信任正确的代理，仍记录回环地址，应继续检查 Nginx 的 `$remote_addr` 是否早已被前置 stream/CDN 变成了代理地址，按下一节处理。
+
+### Nginx stream 与真实 IP {#stream-client-ip}
+
+直接通过 HTTP 层反代时，Nginx 覆盖设置 `X-Real-IP $remote_addr`，Meridian 仅信任默认回环地址或显式配置的代理来源；登录限流和请求日志即可使用客户端 IP。无端口的 `443` 反代本身不会必然让所有用户共用一个 IP。
+
+如果前面还有 stream 层，HTTP 层的连接来源可能已经变成 `127.0.0.1`。需要从仍能看到客户端来源的 stream 层传递 PROXY protocol，在后面的 **Nginx TLS 终结监听器**启用 `listen ... ssl proxy_protocol`，仅信任该 stream 来源（`set_real_ip_from`），并设置 `real_ip_header proxy_protocol`；再用恢复后的 `$remote_addr` 覆盖 `X-Real-IP`，转给 Meridian。HTTP realip 模块必须可用。
+
+Meridian 原生监听器不直接解析 PROXY protocol，不能把带 PROXY 头的 TLS 流直接发给 Meridian。stream 的 `proxy_protocol on` 会影响该 server 下所有分流目标，包括 Xray；必须先确认所有目标支持，或将相应入口隔离。若前面的某层已经丢失真实 IP，后层仅增加 HTTP 头无法还原。安装器不会自动改写这些自定义分流规则。
 
 ## 使用两个公开域名 {#separate-public-domains}
 
@@ -38,7 +81,7 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 | 项目 | 示例 | 配置位置 |
 | --- | --- | --- |
 | 面板域名 | `panel.example.com` | 环境管理时使用 `PANEL_DOMAIN`；面板手动保存后使用“TLS 设置”中的域名 |
-| 站点域名 | `media.example.com` | 外部 HTTPS 模式通过站点 API 的 `public_host` 配置；当前新增表单的“域名前缀”仍要求原生 TLS |
+| 站点域名 | `media.example.com` | 保存节点基础域名后可在表单填写前缀；也可通过站点 API 的 `public_host` 配置完整域名 |
 | 节点基础域名 | `example.com` | 用于生成域名前缀；API 直接填写完整 `public_host` 时不要求配置 |
 | Meridian 内部地址 | `127.0.0.1:9090` | `PORT` / 面板监听设置 |
 | 对外 HTTPS 端口 | `443` | Nginx 的 `listen` 和 DNS/CDN 入口 |
@@ -90,7 +133,7 @@ PANEL_DOMAIN=panel.example.com
 PANEL_ROUTE_DOMAIN=example.net
 ```
 
-`PANEL_ROUTE_DOMAIN` 用于把 `media` 这样的前缀生成完整站点域名，不能使外部 HTTPS 模式下的新增表单自动获得原生 TLS 能力。当前这类部署通过下方 API 步骤填写完整 `public_host`，可以省略 `PANEL_ROUTE_DOMAIN`。
+`PANEL_ROUTE_DOMAIN` 用于把 `media` 这样的前缀生成完整站点域名。配置了可信代理和节点基础域名后，外部 HTTPS 部署也可在表单选择域名前缀；网关仍须配置泛域名证书和节点转发。通过下方 API 填写完整 `public_host` 时，可以省略 `PANEL_ROUTE_DOMAIN`。
 
 需要管理节点基础域名的已有部署，可在“TLS 设置”填写完整面板域名 `panel.example.com` 和节点泛域名 `*.example.net`，检查、保存后按提示重启；只改环境中的 `PANEL_ROUTE_DOMAIN` 不会改动已保存的基础域名。改变基础域名会迁移使用旧基础域名的站点入口，应先准备新站点域名的 DNS、证书与网关配置。
 
@@ -109,7 +152,7 @@ Meridian 当前的原生 HTTPS 共用一套证书，内置 Cloudflare 申请流�
 
 ### 外部 HTTPS 模式创建域名站点 {#external-https-host-site}
 
-当前新增站点表单的“域名前缀”要求原生 TLS 已启用；仅由 Nginx 提供 HTTPS 时，该选项仍被禁用。后端支持外部网关的 Host 路由，可以通过 API 创建，不需要为此在 Meridian 中启用原生证书。
+配置节点基础域名和可信代理后，可直接在新增站点表单选择“域名前缀”，无需在 Meridian 中启用原生证书。下面的 API 方式也适用于完整域名不属于已配置节点基础域名的情况。
 
 在已登录的面板页面打开浏览器开发者工具的控制台，替换域名与 Emby 回源地址后执行一次：
 
@@ -225,6 +268,7 @@ sudo systemctl reload nginx
 | 现象 | 原因与处理 |
 | --- | --- |
 | 站点请求落到管理面板 | 路径前缀被网关剥离，检查 `proxy_pass` 的 URI 规则。 |
+| 日志 IP 全是 127.0.0.1 或容器网关地址 | 按[手动反代真实 IP 配置](#manual-proxy-client-ip)核对生效的可信代理 CIDR、X-Real-IP 覆盖和前置转发层。 |
 | 保存提示同源校验失败 | 检查 Host、外部协议、可信代理和浏览器实际访问地址。 |
 | 备份上传返回 413 | 调整网关请求体上限，再检查备份文件大小。 |
 | 面板能打开但实时状态不更新 | 检查 SSE 缓冲、连接超时与 CDN 行为。 |

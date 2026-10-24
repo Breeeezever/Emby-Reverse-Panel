@@ -32,14 +32,15 @@ async function renderTLSSettings() {
     const status = await API.panelCertificate();
     if (Router.current !== 'settings-tls') return;
     const savedTLS = status.saved_tls_enabled === true;
-    const activeURL = status.external_proxy ? window.location.origin : status.active_access_url || window.location.origin;
+    const activeURL = window.location.origin;
     const portHelp = status.external_proxy
       ? '这是反向代理的内部回源端口，不能只在面板修改。需要切换时请使用安装器或同步调整部署配置。'
       : '保存后需应用并重启。新端口还需在云防火墙或容器映射中放行。';
     page.innerHTML = `<div class="settings-layout fade-up">${globalSettingsNav('tls')}<main class="settings-content">
       <section class="settings-panel" id="p-endpoint-settings">
         <header><h2>面板访问地址</h2></header>
-        <div class="panel-endpoint-current"><span>当前生效地址</span><strong class="mono">${esc(activeURL)}</strong><small>${status.external_proxy ? '外部反向代理管理入口' : status.tls_enabled ? 'Meridian 原生 HTTPS' : 'Meridian HTTP'}</small></div>
+        <div class="panel-endpoint-current"><span>当前访问地址</span><strong class="mono">${esc(activeURL)}</strong><small>${status.external_proxy ? '外部反向代理管理入口' : status.tls_enabled ? 'Meridian 原生 HTTPS 已启用' : 'Meridian HTTP'}</small></div>
+        ${status.external_proxy || !status.active_access_url ? '' : `<p class="form-help">Meridian 监听地址：<span class="mono">${esc(status.active_access_url)}</span>。经由代理访问时，浏览器地址和证书可能不同；原生端口需单独放行。</p>`}
         <p class="form-help" id="p-endpoint-state"></p>
         <div class="global-settings-status panel-certificate-status">${renderPanelCertificateStatus(status)}</div>
         <div class="settings-grid" style="margin-top:20px">
@@ -54,7 +55,11 @@ async function renderTLSSettings() {
         <div class="settings-save-bar" ${status.restart_required ? '' : 'hidden'}><button class="telegram-btn primary" id="p-cert-restart" type="button" disabled>应用设置并重启</button></div>
       </section>
       <section class="settings-panel">
-        <header><h2>配置证书</h2></header>
+        <header><h2>${status.external_proxy ? '当前证书由外部代理管理' : '配置原生 HTTPS 证书'}</h2></header>
+        <p class="settings-panel-help">${status.external_proxy
+          ? '当前 HTTPS 由 Nginx、Caddy 或其他网关提供，证书需在该代理中管理。只添加路径前缀（例如 /cinema/）可直接复用现有地址和证书，无需申请泛域名证书。使用域名前缀时，代理还需配置对应的泛域名证书、DNS 和转发规则。'
+          : '路径前缀复用现有面板证书，无需额外申请。只有使用不同子域名的域名前缀入口，才需要覆盖这些域名的证书。'}</p>
+        <div ${status.external_proxy ? 'hidden' : ''}>
         <label class="settings-field"><span>证书来源</span><select class="form-select" id="p-cert-source"><option value="acme">自动申请（Cloudflare DNS）</option><option value="path">服务器文件路径</option><option value="upload">上传证书与私钥</option></select></label>
         <div id="p-source-acme" class="tls-source-fields">
           <p class="settings-panel-help">通过 DNS 验证申请泛域名证书，签发后自动续期，无需开放 80 端口。请先保存节点泛域名。</p>
@@ -76,6 +81,7 @@ async function renderTLSSettings() {
           <button class="telegram-btn primary" id="p-cert-apply" type="button" ${status.issuing ? 'disabled' : ''}>应用证书</button>
         </div>
         <p class="form-help" id="p-cert-result" role="status"></p>
+        </div>
       </section>
     </main></div>`;
     bindGlobalSettingsNav(page);
@@ -213,6 +219,7 @@ function renderPanelCertificateStatus(status) {
   if (!status || status.available === false) {
     return '<div class="form-help" style="color:var(--orange)">TLS 数据目录不可用，请检查存储配置。</div>';
   }
+  if (status.external_proxy) return '<div class="form-help">此页只管理 Meridian 原生监听证书；当前入口的证书有效期与信任状态请在外部代理中查看。路径前缀无需额外证书。</div>';
   const row = (label, value, state = '') => `<div class="diag-row"><span class="diag-key">${esc(label)}</span><span class="diag-val ${state}">${esc(value)}</span></div>`;
   const active = status.active_certificate;
   const renewal = status.renewal || {};
@@ -240,6 +247,7 @@ function renderPanelCertificateStatus(status) {
   if (source === 'path' || source === 'acme') result += row(renewal.last_error ? '下次重试' : '下次检查', panelCertificateTime(renewal.next_attempt_at));
   if (status.acme_staging) result += row('旧测试环境配置', '请取消测试签发并申请正式证书，正式申请成功后才启用自动续签', 'warn');
   if (active && !active.valid) result += row('证书已失效', '服务保留 HTTPS。自动续签会继续尝试；路径或上传证书请及时更新。', 'warn');
+  result += row('证书检查范围', 'Meridian 本机证书；浏览器入口的证书与公网连通性需另行确认');
   result += row('当前监听端口', String(status.active_listen_port || '—'));
   result += row('设置监听端口', String(status.listen_port || '—'), status.listen_port !== status.active_listen_port ? 'warn' : '');
   result += row('面板 HTTPS', status.restart_required ? '等待重启应用' : status.tls_enabled ? '已启用' : '未启用', status.restart_required ? 'warn' : 'good');

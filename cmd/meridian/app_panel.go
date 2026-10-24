@@ -60,12 +60,24 @@ func (a *App) handleIngressCapabilities(w http.ResponseWriter, r *http.Request) 
 		"panel_access_url":           a.panelAccessURL(),
 		"route_domain":               a.routeDomain,
 		"domain_prefix_available":    a.routeDomain != "",
+		"domain_prefix_port":         a.domainPrefixPort(),
+		"external_proxy":             a.managedExternalTLSProxy(),
 		"panel_tls_enabled":          a.panelTLSEnabled,
 		"panel_bind_loopback":        a.panelBindLoopback,
 		"trusted_proxy_configured":   len(a.trustedProxies) > 0,
 		"upstream_headers_available": a.pm.UpstreamHeadersAvailable(),
 		"max_playback_addresses":     maxPlaybackAddresses,
 	})
+}
+
+// Installations that keep their original panel gateway can send node hosts
+// straight to native HTTPS. Other deployments retain their public gateway or
+// container mapping's port, supplied by the browser or Telegram public URL.
+func (a *App) domainPrefixPort() int {
+	if a.routeDirect && a.panelTLSEnabled && !a.panelBindLoopback {
+		return a.panelListenPort
+	}
+	return 0
 }
 
 func (a *App) handlePanelCertificate(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +125,9 @@ func (a *App) validatePanelPortChange(port int) error {
 	}
 	if a.managedExternalTLSProxy() {
 		return errors.New("当前面板由外部 HTTPS 反向代理管理，不能只在面板内修改监听端口；请使用安装器执行端口切换")
+	}
+	if a.routeDirect && a.panelTLSEnabled && len(a.trustedProxies) > 0 {
+		return errors.New("当前原生 HTTPS 与受信代理入口并用，修改监听端口需同步更新代理；请使用安装器 tls 命令的 --port 参数配置")
 	}
 	if err := checkPanelListenPort(a.panelBindHost, port); err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {

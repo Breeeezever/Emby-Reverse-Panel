@@ -35,7 +35,7 @@ const (
 var startTime = time.Now()
 
 // appVersion is overridable at build time via -ldflags "-X main.appVersion=vX.Y.Z".
-var appVersion = "v1.14.1"
+var appVersion = "v1.14.2"
 
 func main() {
 	if handled, err := runCommandLine(os.Args[1:], os.Stdin, os.Stdout); handled {
@@ -220,6 +220,7 @@ func main() {
 		clientIPRegions:   clientIPRegions,
 		panelHost:         panelHost,
 		routeDomain:       routeDomain,
+		routeDirect:       envBool("PANEL_ROUTE_DIRECT"),
 		panelTLSEnabled:   panelTLSEnabled,
 		panelCertificates: panelCertificates,
 		panelBindLoopback: panelBindIP != nil && panelBindIP.IsLoopback(),

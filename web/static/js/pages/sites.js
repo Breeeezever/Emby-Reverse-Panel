@@ -678,6 +678,7 @@ function normalizeStreamHosts(value) {
 function normalizeSiteCapabilities(value) {
 	const capabilities = value && typeof value === 'object' ? value : {};
 	const requestedMax = Number(capabilities.max_playback_addresses);
+	const directPort = Number(capabilities.domain_prefix_port);
 	const normalized = {
 		host_only_available: capabilities.host_only_available !== false,
 		upstream_headers_available: capabilities.upstream_headers_available !== false,
@@ -691,6 +692,8 @@ function normalizeSiteCapabilities(value) {
 		domain_prefix_available: { value: capabilities.domain_prefix_available === undefined ? undefined : capabilities.domain_prefix_available === true, enumerable: false },
 		route_domain: { value: String(capabilities.route_domain || '').trim().toLowerCase(), enumerable: false },
 		panel_tls_enabled: { value: capabilities.panel_tls_enabled === true, enumerable: false },
+		external_proxy: { value: capabilities.external_proxy === true, enumerable: false },
+		domain_prefix_port: { value: Number.isInteger(directPort) && directPort >= 1 && directPort <= 65535 ? directPort : null, enumerable: false },
         site_listener_scheme: { value: capabilities.site_listener_scheme === 'https' ? 'https' : capabilities.site_listener_scheme === 'http' ? 'http' : capabilities.panel_tls_enabled === true ? 'https' : 'http', enumerable: false },
 		path_ingress_available: { value: capabilities.path_ingress_available !== false, enumerable: false },
 		panel_access_url: { value: String(capabilities.panel_access_url || '').replace(/\/$/, ''), enumerable: false },
@@ -1249,14 +1252,14 @@ function ingressFormState(mode) {
 		showPathPrefix: normalized === 'path',
 		requirePathPrefix: normalized === 'path',
 		requireListenPort: normalized === 'port' || normalized === 'both',
-		portLabel: normalized === 'host' || normalized === 'path' ? '独立端口（可选，自动分配）' : '监听端口',
+		portLabel: normalized === 'host' || normalized === 'path' ? '共享面板端口' : '监听端口',
 		warning: normalized === 'port'
 			? '独立端口需要单独放行；若域名经过 CDN，请确认 CDN 支持该端口。'
 			: normalized === 'path'
 				? '复用面板域名和端口，客户端地址需保留路径。'
 			: normalized === 'both'
 				? '兼容模式会同时开放独立端口和共享域名，建议迁移到单一入口。'
-				: '域名前缀通过面板端口转发，不会绑定站点端口；需先配置 TLS 泛域名证书。',
+				: '域名前缀复用共享入口，不会绑定站点端口；入口需有匹配的 TLS 泛域名证书。',
 	};
 }
 
@@ -1277,6 +1280,11 @@ function buildIngressPayload(mode, port, publicHost, routePrefix, routeDomain, p
 }
 
 function defaultIngressMode() { return 'path'; }
+
+function canUseDomainPrefix(capabilities, site) {
+	return capabilities.host_only_available && capabilities.domain_prefix_available === true &&
+		(capabilities.panel_tls_enabled === true || capabilities.external_proxy === true || Boolean(site && String(site.public_host || '').trim()));
+}
 
 function siteAccessAddress(site, capabilities) {
 	const mode = normalizedIngressMode(site);
@@ -1302,7 +1310,7 @@ function siteAccessAddress(site, capabilities) {
 		return prefix ? `${base}/${prefix}/` : '';
 	}
 	const host = String(site.public_host || '').trim();
-	const panelPort = locationObject.port || (protocol === 'https' ? '443' : '80');
+	const panelPort = parseBoundedInteger(capabilities?.domain_prefix_port, 1, 65535) || locationObject.port || (protocol === 'https' ? '443' : '80');
 	return host ? `${protocol}://${host}:${panelPort}` : '';
 }
 
@@ -1400,11 +1408,10 @@ async function showSiteModal(site) {
 		return;
 	}
 	dynamicCapabilities = normalizeDynamicProfiles(dynamicCapabilities);
-	const hostOnlyAvailable = siteCapabilities.host_only_available;
 	const upstreamHeadersAvailable = siteCapabilities.upstream_headers_available;
 	const domainPrefixAvailable = siteCapabilities.domain_prefix_available === true;
-	const panelTLSReady = siteCapabilities.panel_tls_enabled === true;
-	const canUseHostIngress = hostOnlyAvailable && domainPrefixAvailable && (panelTLSReady || (isEdit && String(site.public_host || '').trim() !== ''));
+	const canUseHostIngress = canUseDomainPrefix(siteCapabilities, site);
+	const domainPrefixExample = siteAccessAddress({ ingress_mode: 'host', public_host: `前缀.${siteCapabilities.route_domain || 'example.com'}` }, siteCapabilities);
 	const dynamicPolicy = normalizeDynamicSitePolicy(isEdit ? site : {
 		dynamic_discovery_enabled: Boolean(dynamicCapabilities && dynamicCapabilities.available),
 		dynamic_profile: 'compatible',
@@ -1438,8 +1445,8 @@ async function showSiteModal(site) {
 	  <label for="m-ingress-mode">入口模式</label>
 	  <select class="form-select modal-select" id="m-ingress-mode" required>
 		${isEdit && normalizedIngressMode(site) === 'unset' ? '<option value="unset" disabled>未配置（请选择）</option>' : ''}
-		<option value="host" ${canUseHostIngress ? '' : 'disabled'}>域名前缀${canUseHostIngress ? '' : '（需配置 TLS 和域名）'}</option>
-		<option value="path">路径</option>
+		<option value="host" ${canUseHostIngress ? '' : 'disabled'}>域名前缀${canUseHostIngress ? '' : '（需配置 HTTPS 入口和节点基础域名）'}</option>
+		<option value="path">路径前缀（复用现有地址和证书）</option>
 		<option value="port">独立端口</option>
 	  </select>
 	  <div class="form-help" id="m-ingress-warning"></div>
@@ -1454,7 +1461,7 @@ async function showSiteModal(site) {
 	  <label for="m-route-prefix">域名前缀</label>
 	  <input type="text" class="form-input" id="m-route-prefix" value="${isEdit ? esc(routePrefixForSite(site, siteCapabilities.route_domain)) : ''}" placeholder="如：123" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="63">
 	  <input type="hidden" id="m-public-host" value="${isEdit ? esc(site.public_host || '') : ''}">
-	  <div class="form-help">访问地址为 https://前缀.${esc(siteCapabilities.route_domain || 'example.com')}:${esc(String((typeof window !== 'undefined' && window.location && window.location.port) || '9090'))}，由面板端口统一转发。</div>
+	  <div class="form-help">访问地址为 ${esc(domainPrefixExample)}。复用此入口端口，不会另外开放站点端口；请将对应域名解析到服务器。</div>
 	</div>
 	<div class="form-group" id="m-path-prefix-group" hidden>
 	  <label for="m-path-prefix">路径前缀</label>
@@ -2020,6 +2027,7 @@ async function showSiteModal(site) {
 			? '填写 1–65535 之间的整数，并确保端口未被占用。'
 			: '共享入口不会另外开放站点端口。';
 		ingressWarning.textContent = state.warning;
+		if (state.mode === 'host' && siteCapabilities.external_proxy) ingressWarning.textContent = '当前由外部代理提供 HTTPS。请在代理中配置节点泛域名证书并转发这些域名；Meridian 不会自动修改外部代理。';
 	}
 	updateIngressFields();
 	ingressSelect.addEventListener('change', updateIngressFields);

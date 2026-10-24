@@ -11,8 +11,9 @@
 | `PANEL_BIND_ADDR` | `127.0.0.1` | 面板监听地址；远程绑定需要明确配置。 |
 | `PANEL_DOMAIN` | `panel.example.com` | 环境管理的面板允许域名；每次启动同步，移除或置空解除限制。面板手动保存或启用原生证书后，以数据库为准。 |
 | `PANEL_ROUTE_DOMAIN` | `example.com` | 初始站点基础域名，可规范化通配前缀。 |
+| `PANEL_ROUTE_DIRECT` | `false` | 原生 HTTPS 节点直接使用 Meridian 的实际监听端口。安装器申请泛域名证书时自动启用；经网关或不同公网映射端口访问节点时应关闭。 |
 | `PANEL_TLS_ENABLED` | `false` | 初始原生 TLS 开关，需有有效证书。 |
-| `TRUSTED_PROXY_CIDRS` | 逗号分隔的实际代理 CIDR | 可信代理来源，用于转发头与相关入口校验。 |
+| `TRUSTED_PROXY_CIDRS` | 未设置或空：`127.0.0.1/32,::1/128` | 同机 Nginx 默认可用；逗号分隔的自定义 CIDR **替换**默认值，`none` 禁用全部代理信任。用于客户端 IP、转发协议与入口校验；跨容器或远程代理填写实际来源，详见[真实 IP 配置](reverse-proxy.md#manual-proxy-client-ip)。 |
 | `ALLOW_INSECURE_HTTP` | `false` | 显式允许非回环的明文管理监听；正式公网不推荐。 |
 
 `PANEL_DOMAIN` 是管理面板的允许域名；`PANEL_ROUTE_DOMAIN` 是域名前缀站点使用的基础域名，例如 `media` 会生成 `media.example.com`。两者可以让面板和站点使用不同的公开地址，但 DNS、证书和反向代理仍需同时配置。从 `v1.13.5` 起，环境管理的面板域名随 `PANEL_DOMAIN` 在每次启动时同步；修改后使用新域名，移除或置空后解除旧 Host 限制。在“TLS 设置”手动保存域名或配置原生证书后，该域名改由数据库管理，后续环境变更不会覆盖它。`PANEL_ROUTE_DOMAIN`、监听端口与原生 TLS 开关仍为初始化默认值，已保存的数据库设置优先。分域名反代的完整示例见 [HTTPS 反向代理](reverse-proxy.md#separate-public-domains)。

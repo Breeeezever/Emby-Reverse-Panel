@@ -81,6 +81,33 @@ func TestIngressCapabilitiesReflectHostOnlySafety(t *testing.T) {
 	}
 }
 
+func TestIngressCapabilitiesExposeDirectNativePortOnlyWhenConfigured(t *testing.T) {
+	app := newTestApp(t)
+	app.panelListenPort = 9443
+	app.routeDirect = true
+	for _, tc := range []struct {
+		tls, loopback bool
+		want          int
+	}{
+		{true, false, 9443},
+		{true, true, 0},
+		{false, false, 0},
+		{false, true, 0},
+	} {
+		app.panelTLSEnabled, app.panelBindLoopback = tc.tls, tc.loopback
+		rr := httptest.NewRecorder()
+		app.handleIngressCapabilities(rr, httptest.NewRequest(http.MethodGet, "/api/ingress-capabilities", nil))
+		body := decodeBody(t, rr)
+		if got := int(body["domain_prefix_port"].(float64)); got != tc.want {
+			t.Fatalf("TLS=%t loopback=%t: port=%d want %d", tc.tls, tc.loopback, got, tc.want)
+		}
+	}
+	app.routeDirect = false
+	if app.domainPrefixPort() != 0 {
+		t.Fatal("normal gateways and container port mappings must retain their public port")
+	}
+}
+
 func TestSitesAPIRoundTripsOneHundredPlaybackAddressesAsArray(t *testing.T) {
 	app := newTestApp(t)
 	addresses := make([]string, 100)

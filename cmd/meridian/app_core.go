@@ -28,6 +28,7 @@ type App struct {
 	clientIPRegions   *clientIPRegionResolver
 	panelHost         string
 	routeDomain       string
+	routeDirect       bool
 	panelTLSEnabled   bool
 	panelCertificates *panelCertificateManager
 	panelBindLoopback bool
