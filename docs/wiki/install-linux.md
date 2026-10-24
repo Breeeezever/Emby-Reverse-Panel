@@ -33,7 +33,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 Token 文件只供管理员读取，例如权限设为 `600`；Token 需有目标 Zone 的 Zone Read 与 DNS Edit 权限。泛域名原生 HTTPS 需要 systemd 和有效的证书邮箱，签发后由 Meridian 自动续期。`--wildcard` 不能与 `--no-domain` 同用。
 
-已有安装不指定域名操作时保留配置；使用 `--wildcard` 重新配置时沿用安装器保存的面板域名。若需更换，显式传入 `--domain`；原域名不在新泛域名覆盖范围内时会拒绝配置。已有 Nginx 入口的处理见下方[泛域名与原生 HTTPS](#泛域名与原生-https)。
+已有安装不指定域名操作时保留配置；使用 `--wildcard` 重新配置时沿用安装器保存的面板域名。若需更换，显式传入 `--domain`；原域名不在新泛域名覆盖范围内时会拒绝配置。已有 Nginx 入口的处理见下方[泛域名与原生 HTTPS](#wildcard-https)。
 
 只需要单独面板域名、由 Nginx 管理 HTTPS 时：
 
@@ -90,7 +90,7 @@ sudo journalctl -u meridian -n 100 --no-pager
 
 运行日志用于启动、监听、证书和上游错误排查。客户端请求详情在面板的“请求日志”中查看。
 
-## 泛域名与原生 HTTPS
+## 泛域名与原生 HTTPS {#wildcard-https}
 
 首次安装可按上方步骤直接申请。已有 Meridian 时，菜单的“配置泛域名证书”或 `tls` 命令同样使用 Cloudflare DNS-01：
 
