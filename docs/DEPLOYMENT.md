@@ -114,7 +114,7 @@ docker compose pull && docker compose up -d
 
 Windows 使用 `meridian-windows-amd64.exe`，数据库路径按实际目录填写，并通过 Windows ACL 限制数据目录权限。
 
-源码构建需要 Go 1.26.9 或更高版本，无需 Node 或前端构建：
+源码构建需要 Go 1.26.10 或更高版本，无需 Node 或前端构建：
 
 ```bash
 git clone https://github.com/snnabb/Meridian.git
@@ -129,7 +129,7 @@ go build -trimpath -buildvcs=false -o meridian ./cmd/meridian
 | `PORT` / `DB_PATH` | 默认 `9090` / `meridian.db` |
 | `PANEL_BIND_ADDR` | 默认 `127.0.0.1` |
 | `PANEL_DOMAIN` | 面板允许的域名 |
-| `TRUSTED_PROXY_CIDRS` | 可信反向代理的精确 CIDR，逗号分隔 |
+| `TRUSTED_PROXY_CIDRS` | 未设置或留空默认信任 `127.0.0.1/32,::1/128`；逗号分隔的精确 CIDR 替换默认值，`none` 禁用信任 |
 | `JWT_SECRET` | 会话签名，至少 32 字节 |
 | `UPSTREAM_HEADER_KEY` | 固定回源 Header 加密，至少 32 字节 |
 | `DYNAMIC_ROUTE_KEY` | 动态播放路由签发，至少 32 字节 |

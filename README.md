@@ -88,7 +88,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 默认面板端口为 `9090`。未配置域名时仅监听本机，需要通过 HTTPS 反向代理访问。Linux 标准 systemd 安装支持面板内更新；Docker 与自定义部署按原方式更新。
 
-手动使用 Nginx、宝塔或 1Panel 反代时，还需配置可信代理与 `X-Real-IP`，否则日志可能只显示 `127.0.0.1`。同机原生部署可使用安装器的 `proxy --local`；容器部署按实际代理来源配置，见[手动反代与真实 IP](docs/wiki/reverse-proxy.md#manual-proxy-client-ip)。
+同机 Nginx / 宝塔反代默认支持真实 IP：`TRUSTED_PROXY_CIDRS` 未设置或留空时自动信任 `127.0.0.1` 和 `::1`，Nginx 配好 `X-Real-IP $remote_addr` 后无需再运行命令。已有空配置升级后同样生效；自定义代理范围保持原样，`none` 可关闭信任。跨容器的 1Panel / Docker 或远程代理仍按实际来源配置，见[手动反代与真实 IP](docs/wiki/reverse-proxy.md#manual-proxy-client-ip)。
 
 直接安装并申请泛域名（Token 在提示时隐藏输入）：
 

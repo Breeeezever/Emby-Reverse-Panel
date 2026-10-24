@@ -2434,6 +2434,10 @@ do_proxy() (
             || { info "已取消；请按反向代理文档填写实际代理来源 CIDR"; exit 0; }
     fi
     current=$(read_env_value TRUSTED_PROXY_CIDRS) || fail "无法读取可信代理配置"
+    # An explicit local-proxy opt-in replaces the application's trust opt-out.
+    case "$(printf '%s' "$current" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+        none) current="" ;;
+    esac
     proxies=$(remove_loopback_proxies "$current") || exit 1
     proxies="${proxies:+${proxies},}127.0.0.1/32,::1/128"
     work_dir=$(mktemp -d) || exit 1

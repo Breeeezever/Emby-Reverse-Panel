@@ -50,8 +50,8 @@ assert_preserved() {
     cmp "$NGINX_CONFIG" "${TEST_ROOT}/nginx.before"
 }
 
-# A manual reverse proxy starts with an empty allowlist. Only the opt-in changes
-# trust; existing domains, native TLS settings, secrets and custom Nginx survive.
+# The compatibility command writes an explicit allowlist for older binaries;
+# existing domains, native TLS settings, secrets and custom Nginx survive.
 reset_env ''
 (run_cli proxy --local)
 assert_equal '127.0.0.1/32,::1/128' "$(read_env_value TRUSTED_PROXY_CIDRS)"
@@ -68,6 +68,12 @@ assert_preserved
 cp "${DATA_DIR}/.env" "${TEST_ROOT}/once.env"
 (run_cli proxy --local)
 cmp "${DATA_DIR}/.env" "${TEST_ROOT}/once.env"
+
+# Explicit opt-in replaces the application's opt-out rather than mixing tokens.
+reset_env ' NoNe '
+(run_cli proxy --local)
+assert_equal '127.0.0.1/32,::1/128' "$(read_env_value TRUSTED_PROXY_CIDRS)"
+assert_preserved
 
 # Failed service activation restores the exact original file and retries health.
 reset_env ''

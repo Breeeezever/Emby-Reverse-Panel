@@ -55,7 +55,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 新安装默认仅监听 `127.0.0.1`，已有安装保留域名和入口配置。通过 SSH 隧道初始化，或按 [反向代理](reverse-proxy.md) 接入 HTTPS。`--no-domain` 是取消安装器域名并启用公开明文兼容入口，不用于保留已有的外部 HTTPS 反代。
 
-手动 Nginx/宝塔同机反代还需执行 `bash install.sh proxy --local`（菜单选项 6），补充可信回环代理并重启 Meridian；同时配置 Nginx 覆盖 `X-Real-IP`，以免请求日志只记录 `127.0.0.1`。1Panel 的 OpenResty 或 Meridian 如果在不同容器，必须按实际代理来源配置，不能直接套用回环地址。完整步骤见[手动反代真实 IP](reverse-proxy.md#manual-proxy-client-ip)。
+手动 Nginx/宝塔同机反代无需额外运行命令：`TRUSTED_PROXY_CIDRS` 未设置或留空时，Meridian 默认信任 `127.0.0.1` 和 `::1`。Nginx 覆盖设置 `X-Real-IP $remote_addr` 后，新请求日志自动显示真实 IP；已有空配置升级后同样生效。旧版程序仍可通过 `bash install.sh proxy --local`（菜单选项 6）显式配置。1Panel 的 OpenResty 或 Meridian 如果在不同容器，必须按实际代理来源配置。完整步骤见[手动反代真实 IP](reverse-proxy.md#manual-proxy-client-ip)。
 
 ## 标准安装位置
 
