@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ['master', 'codex/release-v1.14.0']
+    branches: ['master', 'beta', 'codex/release-v1.14.0']
   pull_request:
-    branches: ['master']
+    branches: ['master', 'beta']
 
 permissions:
   contents: read
@@ -74,7 +74,32 @@ jobs:
         run: bash tests/docker_entrypoint_test.sh
 
       - name: Build
-        run: go build -trimpath -buildvcs=false -o meridian ./cmd/meridian
+        run: |
+          if [[ "$GITHUB_REF" == refs/heads/beta ]]; then
+            base_version=$(sed -n 's/^var appVersion = "\([^"]*\)"$/\1/p' cmd/meridian/main.go)
+            test -n "$base_version"
+            version="${base_version}-beta.${GITHUB_SHA:0:7}"
+            CGO_ENABLED=0 go build -trimpath -buildvcs=false \
+              -ldflags="-s -w -X main.appVersion=${version}" \
+              -o meridian-linux-amd64 ./cmd/meridian
+            test "$(./meridian-linux-amd64 --version)" = "$version"
+            printf '%s\n' "$version" > BETA_VERSION
+            sha256sum meridian-linux-amd64 > SHA256SUMS
+          else
+            go build -trimpath -buildvcs=false -o meridian ./cmd/meridian
+          fi
+
+      - name: Upload beta binary
+        if: github.ref == 'refs/heads/beta'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: meridian-beta-linux-amd64-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            meridian-linux-amd64
+            BETA_VERSION
+            SHA256SUMS
 
   docker-build:
     runs-on: ubuntu-latest

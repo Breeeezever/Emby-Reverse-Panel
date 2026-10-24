@@ -86,3 +86,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false \
 ```
 
 构建产物仍需配置独立持久密钥、初始化令牌和数据目录。开发与验证流程见 [开发指南](development.md)。
+
+## 测试版 beta
+
+[`beta` 分支](https://github.com/snnabb/Meridian/tree/beta) 集中验证未发布改动，当前整合 [#98](https://github.com/snnabb/Meridian/pull/98)、[#100](https://github.com/snnabb/Meridian/pull/100)、[#101](https://github.com/snnabb/Meridian/pull/101)、[#102](https://github.com/snnabb/Meridian/pull/102) 和 [#103](https://github.com/snnabb/Meridian/pull/103)，包含泛域名 HTTPS、同机 Nginx 默认真实 IP、Go 1.26.10 与构建依赖更新。
+
+Linux x86-64 可直接获取已构建的测试程序：
+
+1. 登录 GitHub，打开 [beta 分支的 CI 运行](https://github.com/snnabb/Meridian/actions/workflows/ci.yml?query=branch%3Abeta)，选择最新成功的运行。
+2. 在运行页面底部的 Artifacts 下载 `meridian-beta-linux-amd64-提交号`，解压得到 `meridian-linux-amd64`、`BETA_VERSION` 和 `SHA256SUMS`。产物保留 14 天。
+3. 在解压目录运行 `sha256sum -c SHA256SUMS`，然后执行 `chmod 755 meridian-linux-amd64` 和 `./meridian-linux-amd64 --version`，确认与 `BETA_VERSION` 一致；再按上方手工运行方法配置测试实例。
+
+测试版本号格式为 `当前版本-beta.提交号`，例如 `v1.14.1-beta.abcdef0`。使用独立测试数据目录；已有部署替换前备份程序、环境和数据库，并保留原密钥。
+
+**下载 beta 分支的安装脚本不会自动安装 beta 程序。** 常规安装器和面板内更新仍下载正式 Release；测试分支产物不创建正式 Tag、Release 或 `latest` 镜像。ARM64、Windows 和 macOS 可从 `beta` 检出源码，再按上面的方式构建。
+
+测试分支的 Wiki 会构建并检查链接，正式文档站仍由 `master` 发布。公开演示站显示其实际部署版本，不能仅凭分支推送就视为已更新演示程序。

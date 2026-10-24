@@ -2,7 +2,7 @@ name: Wiki
 
 on:
   push:
-    branches: [master]
+    branches: [master, beta]
     paths:
       - docs/wiki/**
       - docs/images/**
@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: wiki-pages
+  group: wiki-pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -45,6 +45,7 @@ jobs:
 
   deploy:
     needs: build
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
