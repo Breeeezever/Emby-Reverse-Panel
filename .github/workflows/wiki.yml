@@ -33,7 +33,7 @@ jobs:
           python-version: '3.13'
           cache: pip
           cache-dependency-path: tools/wiki/requirements.txt
-      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Build Wiki
         run: |
           python -m pip install --disable-pip-version-check -r tools/wiki/requirements.txt
