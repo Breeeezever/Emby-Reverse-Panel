@@ -101,7 +101,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 **[Docker / Windows / 源码部署](docs/DEPLOYMENT.md)** · **[证书与播放模式](docs/USAGE.md)** · **[安全说明](SECURITY.md)**
 
-需要提前验证未发布改动，可使用 [`beta` 测试版分支](https://github.com/snnabb/Meridian/tree/beta)。每次推送经 CI 检查后提供 Linux x86-64 测试程序、版本号与校验文件，获取方式见[测试版说明](docs/wiki/install-source.md)。常规安装器与面板更新仍使用正式 Release。
+需要提前验证未发布改动时，维护者会按需创建 `beta` 测试分支，并在合并发布后清理。测试分支推送经 CI 检查后提供 Linux x86-64 程序、版本号与校验文件，获取方式见[测试版说明](docs/wiki/install-source.md)。常规安装器与面板更新使用正式 Release。
 
 [面板和站点使用不同域名：Nginx 配置、证书与操作步骤 →](docs/wiki/nginx-separate-domains.md)
 
@@ -109,6 +109,6 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 <div align="center">
 
-最新发布：`v1.14.1` · [下载发行版](https://github.com/snnabb/Meridian/releases/latest) · [反馈问题](https://github.com/snnabb/Meridian/issues)<br>[MIT License](LICENSE)
+最新发布：`v1.14.2` · [下载发行版](https://github.com/snnabb/Meridian/releases/latest) · [反馈问题](https://github.com/snnabb/Meridian/issues)<br>[MIT License](LICENSE)
 
 </div>

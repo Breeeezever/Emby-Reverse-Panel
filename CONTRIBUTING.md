@@ -26,7 +26,7 @@ node --test tests/*.test.js
 ## 提交 PR 的流程
 
 1. Fork 仓库
-2. 从 `master` 分支创建你的特性分支；针对测试版整合的问题可基于 `beta` 提交
+2. 从 `master` 分支创建你的特性分支；存在活动的 `beta` 测试分支时，针对该轮整合的问题也可基于 `beta` 提交
 3. 修改代码
 4. 确保 `go test ./...`、`go vet ./...` 和 `node --test tests/*.test.js` 通过
 5. 确保 `go build -trimpath -buildvcs=false -o meridian ./cmd/meridian` 能正常编译
@@ -34,7 +34,7 @@ node --test tests/*.test.js
 
 ## 测试版分支
 
-`beta` 用于集中验证待发布改动，保留被整合 PR 的提交历史。推送与目标为 `beta` 的 PR 都运行 CI 和 CodeQL；`beta` 推送还附带带提交号的 Linux x86-64 测试程序。Wiki 在该分支只构建和检查，正式文档站由 `master` 发布。安装器和面板更新继续使用正式 Release；测试程序下载见 [源码与测试版](docs/wiki/install-source.md)。
+`beta` 按需从 `master` 创建，用于集中验证待发布改动，保留被整合 PR 的提交历史；整合完成并正式发布后可清理，下一轮再从最新主支创建。推送与目标为 `beta` 的 PR 都运行 CI 和 CodeQL；`beta` 推送还附带带提交号的 Linux x86-64 测试程序。Wiki 在该分支只构建和检查，正式文档站由 `master` 发布。安装器和面板更新继续使用正式 Release；测试程序下载见 [源码与测试版](docs/wiki/install-source.md)。
 
 ## 版本发布后的同步验证
 
