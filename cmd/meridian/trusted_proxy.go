@@ -8,6 +8,15 @@ import (
 )
 
 func parseTrustedProxyCIDRs(value string) ([]*net.IPNet, error) {
+	value = strings.TrimSpace(value)
+	// Empty includes existing installations with TRUSTED_PROXY_CIDRS=. Keep
+	// the default narrow: container gateways and other loopback addresses are
+	// not automatically trusted. An explicit list replaces these defaults.
+	if value == "" {
+		value = "127.0.0.1/32,::1/128"
+	} else if strings.EqualFold(value, "none") {
+		return nil, nil
+	}
 	var networks []*net.IPNet
 	for _, raw := range strings.Split(value, ",") {
 		raw = strings.TrimSpace(raw)

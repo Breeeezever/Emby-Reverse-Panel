@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-- Go 1.26.9 或更高版本
+- Go 1.26.10 或更高版本
 - Node.js 22+
 - 无 CGO 依赖（SQLite 使用纯 Go 实现 `modernc.org/sqlite`）
 
@@ -31,6 +31,17 @@ node --test tests/*.test.js
 4. 确保 `go test ./...`、`go vet ./...` 和 `node --test tests/*.test.js` 通过
 5. 确保 `go build -trimpath -buildvcs=false -o meridian ./cmd/meridian` 能正常编译
 6. 提交 PR，使用 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md) 填写说明
+
+## 版本发布后的同步验证
+
+每次推送并发布新版本后，还需完成文档与演示站同步，不能仅以 Release 上传成功作为结束：
+
+1. 更新 `CHANGELOG.md`、README 版本信息，以及受影响的部署、使用和 Wiki 文档；检查文档站发布结果。
+2. 先在测试环境验证，再在正式部署环境验证；操作前备份，保留原站点、账号、密钥、证书和回滚方式。
+3. 同步公开演示站主入口与 `/test/` 的程序和版本说明，保持虚构数据、只读限制及禁止消息发送。
+4. 验证演示站两个入口的登录、页面和 API，核对实际运行版本与页面说明一致。
+
+服务器地址与登录凭据通过私有运维记录管理，不写入仓库或公开文档。草稿分支提交不等同于正式版本发布。
 
 ## 提交规范
 

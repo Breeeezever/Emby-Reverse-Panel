@@ -36,7 +36,7 @@
 
 - 管理面板默认监听 `127.0.0.1`；如需公网绑定必须显式设置 `PANEL_BIND_ADDR`，并启用 HTTPS 或显式设置 `ALLOW_INSECURE_HTTP=true`
 - 管理面板支持原生 HTTPS，可自动申请、读取服务器路径或上传证书；也可由外层反向代理终止 TLS
-- 站点新增支持 `path`、`host`、`port` 入口，旧配置兼容 `both`；新建默认路径入口。`path` 与 `host` 使用共享面板监听，不额外绑定站点端口。Host 入口要求原生 TLS、面板回环绑定或非空 `TRUSTED_PROXY_CIDRS` 来源白名单；未启用原生 TLS 的非回环管理入口会对不可信 Host 路由来源执行校验。`port` 和旧 `both` 的独立监听仍需由防火墙控制其公开范围
+- 站点新增支持 `path`、`host`、`port` 入口，旧配置兼容 `both`；新建默认路径入口。`path` 与 `host` 使用共享面板监听，不额外绑定站点端口。Host 入口要求原生 TLS、面板回环绑定或生效的可信代理来源白名单（默认仅精确回环地址）；未启用原生 TLS 的非回环管理入口会对不可信 Host 路由来源执行校验。`port` 和旧 `both` 的独立监听仍需由防火墙控制其公开范围
 - 设置 `PANEL_DOMAIN` 后，未知 Host 返回 `421` 而不是管理面板；未设置时保留直接 IP/任意 Host 的初始部署兼容行为
 - 安装器生成的 Nginx 配置只代理管理端口，不读取或代理站点回源、播放地址或站点监听端口
 - 管理 API 默认拒绝跨站浏览器请求；所有状态变更还要求同源 `Origin` 或 `Referer`，并发送 CSP、`X-Frame-Options`、`nosniff` 等响应头
@@ -60,7 +60,7 @@
 - 固定自定义 Header 只发送给主回源的精确 scheme、主机和有效端口；新密文的 AES-GCM 认证数据同时绑定 Header 名称和该 authority。修改主回源 authority 会在 HTTP 层和数据层清空未重新输入的旧 Header，独立播放回源及跨 authority 重定向也会删除这些 Header。Authorization、Cookie、Host、转发头和 hop-by-hop Header 不能由该功能覆盖
 - Meridian 管理会话 Cookie 会在所有站点 HTTP 与 WebSocket 请求出站前单独剥离，其他上游业务 Cookie 保留；畸形 Cookie Header 按失败关闭策略整头删除
 - 上游 HTTP 响应和 WebSocket 101 中名称精确为 `meridian_session` 的 `Set-Cookie` 会被删除，合法的 Emby/业务 Cookie 原样保留；无法安全解析的单条 `Set-Cookie` 按失败关闭策略丢弃
-- 直连客户端提供的转发头会全部重建；只有 peer 命中 `TRUSTED_PROXY_CIDRS` 时才采纳单一、合法的 `X-Real-IP` 与 `http`/`https` 协议值，不会把任意 `X-Forwarded-For` 链传给上游
+- 直连客户端提供的转发头会全部重建；只有 peer 命中可信代理范围时才采纳单一、合法的 `X-Real-IP` 与 `http`/`https` 协议值，不会把任意 `X-Forwarded-For` 链传给上游。`TRUSTED_PROXY_CIDRS` 未设置或留空默认信任 `127.0.0.1/32,::1/128`（包括这些来源上的本机进程）；自定义 CIDR 替换默认值，`none` 禁用全部代理信任。共享宿主机上的不可信进程需要隔离或显式关闭默认信任
 - 运行日志只保留上游的 scheme、主机和端口，不记录路径、查询参数或 URL 凭据
 
 ### 自动播放后端发现

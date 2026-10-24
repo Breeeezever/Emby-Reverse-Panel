@@ -82,11 +82,22 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh)
 ```
 
-1. 选择安装，设置面板端口；按提示配置域名与 HTTPS。
+1. 选择安装，设置面板端口；推荐选择泛域名原生 HTTPS，填写基础域名、邮箱和 Cloudflare DNS Token。新安装默认面板地址为 `panel.基础域名`，面板与域名前缀站点共用这张证书。
 2. 用安装器显示的初始化令牌创建管理员，密码至少 6 个字符。
 3. 添加站点：填写主地址，选择入口与播放模式，复制访问地址到 Emby 客户端。
 
 默认面板端口为 `9090`。未配置域名时仅监听本机，需要通过 HTTPS 反向代理访问。Linux 标准 systemd 安装支持面板内更新；Docker 与自定义部署按原方式更新。
+
+同机 Nginx / 宝塔反代默认支持真实 IP：`TRUSTED_PROXY_CIDRS` 未设置或留空时自动信任 `127.0.0.1` 和 `::1`，Nginx 配好 `X-Real-IP $remote_addr` 后无需再运行命令。已有空配置升级后同样生效；自定义代理范围保持原样，`none` 可关闭信任。跨容器的 1Panel / Docker 或远程代理仍按实际来源配置，见[手动反代与真实 IP](docs/wiki/reverse-proxy.md#manual-proxy-client-ip)。
+
+直接安装并申请泛域名（Token 在提示时隐藏输入）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh) install \
+  --wildcard '*.example.com' --email admin@example.com --port 9090
+```
+
+将 `panel.example.com` 和 `*.example.com` 解析到服务器并放行 TCP `9090`；使用此端口时设为“仅 DNS”。安装后访问 `https://panel.example.com:9090`，无需再单独申请面板证书。非交互参数与已有安装说明见 [Linux 安装](docs/wiki/install-linux.md)。
 
 **[Docker / Windows / 源码部署](docs/DEPLOYMENT.md)** · **[证书与播放模式](docs/USAGE.md)** · **[安全说明](SECURITY.md)**
 

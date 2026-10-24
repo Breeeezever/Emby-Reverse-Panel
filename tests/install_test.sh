@@ -31,6 +31,9 @@ export MERIDIAN_ASSUME_YES=1
 # The path is computed so this test works from an arbitrary checkout.
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/install.sh"
+# Domain workflow fixtures do not contact public DNS; the entry probe and its
+# failure modes are exercised by install_tls_test.sh.
+check_panel_https_entry() { return 0; }
 
 # The documented curl | sudo bash form runs the script from stdin, where Bash
 # leaves BASH_SOURCE as an empty array. Nounset must not abort before run_cli.
@@ -43,7 +46,7 @@ printf '%s' "$stdin_help" | grep -Fq 'Meridian 一键安装工具' \
 # disposable PTY while Bash still reads the installer itself from stdin.
 if command -v script >/dev/null 2>&1; then
     piped_menu=$(printf '0\n' | script -qec "bash < '${REPO_ROOT}/install.sh'" /dev/null)
-    printf '%s' "$piped_menu" | grep -Fq '请选择 [0-5]:' \
+    printf '%s' "$piped_menu" | grep -Fq '请选择 [0-6]:' \
         || { echo 'FAIL: piped menu was not attached to the terminal' >&2; exit 1; }
     if printf '%s' "$piped_menu" | grep -Fq '无效选项'; then
         echo 'FAIL: piped menu did not read the terminal selection' >&2
@@ -413,6 +416,25 @@ awk '!($0 ~ /^[[:space:]]*proxy_pass[[:space:]]+http:\/\/127\.0\.0\.1:[0-9]+;([[
     "$panel_port_after" > "${TEST_ROOT}/nginx-port-after-without-proxy"
 cmp -s "${TEST_ROOT}/nginx-port-before-without-proxy" "${TEST_ROOT}/nginx-port-after-without-proxy" \
     || { echo 'FAIL: Nginx port update changed directives outside proxy_pass' >&2; exit 1; }
+
+# Native Meridian checks TLS SNI against Host. Preserve the frontend while
+# configuring its HTTPS upstream, including repeated TLS/port changes.
+cp "$panel_port_before" "$NGINX_CONFIG"
+panel_tls_after="${TEST_ROOT}/nginx-native-after.conf"
+update_managed_panel_proxy_port 19443 "$panel_tls_after" https
+assert_contains "$panel_tls_after" 'proxy_pass https://127.0.0.1:19443;'
+assert_contains "$panel_tls_after" 'proxy_ssl_server_name on;'
+assert_contains "$panel_tls_after" "proxy_ssl_name \$host;"
+cp "$panel_tls_after" "$NGINX_CONFIG"
+update_managed_panel_proxy_port 19443 "${TEST_ROOT}/nginx-native-repeat.conf" https
+cmp "$panel_tls_after" "${TEST_ROOT}/nginx-native-repeat.conf"
+update_managed_panel_proxy_port 9090 "${TEST_ROOT}/nginx-native-http.conf" http
+cmp "$panel_port_before" "${TEST_ROOT}/nginx-native-http.conf"
+printf '    proxy_ssl_name other.example.com;\n' >> "$NGINX_CONFIG"
+if update_managed_panel_proxy_port 19443 "${TEST_ROOT}/nginx-native-conflict.conf" https; then
+    echo 'FAIL: custom Nginx TLS name was silently changed' >&2; exit 1
+fi
+[ ! -e "${TEST_ROOT}/nginx-native-conflict.conf" ] || { echo 'FAIL: rejected TLS config left a partial output' >&2; exit 1; }
 
 # Ambiguous managed files are rejected without leaving a partial output.
 cp "$panel_port_before" "$NGINX_CONFIG"
@@ -1429,10 +1451,10 @@ for removed_command in status restart logs backup rollback; do
 done
 
 menu_text=$(printf '0\n' | main_menu)
-for menu_item in '1) 安装' '2) 更新到最新版' '3) 修改管理员密码' '4) 卸载' '5) 配置泛域名证书' '0) 退出'; do
+for menu_item in '1) 安装' '2) 更新到最新版' '3) 修改管理员密码' '4) 卸载' '5) 配置泛域名证书' '6) 配置本机反向代理' '0) 退出'; do
     printf '%s' "$menu_text" | grep -Fq "$menu_item"
 done
-if printf '%s' "$menu_text" | grep -Eq '^  [6-9]\)'; then
+if printf '%s' "$menu_text" | grep -Eq '^  [7-9]\)'; then
     echo 'FAIL: menu exposes unexpected operations' >&2
     exit 1
 fi

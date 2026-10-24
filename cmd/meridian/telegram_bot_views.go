@@ -103,7 +103,12 @@ func (a *App) telegramSiteAddress(site Site, origin string) (string, error) {
 		u.Host = site.PublicHost
 		// Host ingress uses the externally exposed panel listener, including its
 		// nonstandard port. Dedicated listeners use their own actual TLS state.
-		if source, _ := url.Parse(origin); source.Port() != "" {
+		if port := a.domainPrefixPort(); port != 0 {
+			u.Scheme = "https"
+			if port != 443 {
+				u.Host = net.JoinHostPort(site.PublicHost, strconv.Itoa(port))
+			}
+		} else if source, _ := url.Parse(origin); source.Port() != "" {
 			u.Host = net.JoinHostPort(site.PublicHost, source.Port())
 		}
 	case ingressModePort:

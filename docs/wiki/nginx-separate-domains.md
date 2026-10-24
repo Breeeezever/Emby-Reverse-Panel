@@ -97,7 +97,7 @@ sudo certbot renew --cert-name media.example.net --dry-run
 
 ## 4. 在 Meridian 创建域名站点
 
-当前界面在未启用原生 TLS 时禁用新建“域名前缀”，所以这一步通过已有的站点 API 完成。后端在 v1.13.4 和 v1.13.5 均支持该方式。
+配置可信代理和节点基础域名后，也可在表单创建域名前缀站点。本页的完整域名无需属于面板中保存的节点基础域名，因此仍使用已有的站点 API；后端在 v1.13.4 和 v1.13.5 均支持该方式。
 
 登录 `https://panel.example.com/`，打开浏览器开发者工具（F12）的“控制台 / Console”。将下面的站点域名和 Emby 回源地址替换为真实值后执行一次：
 
@@ -133,7 +133,7 @@ await (async () => {
 
 ## 注意事项
 
-- **当前界面限制**：外部 HTTPS 不会启用新增表单的原生 TLS 能力；本页通过 API 注册完整站点 Host。不要为了解锁表单而在 Meridian 中申请或导入另一套原生证书。
+- **表单与完整域名**：可信外部 HTTPS 代理可使用域名前缀表单；本页通过 API 注册独立的完整站点 Host。使用现有网关时无需在 Meridian 中申请或导入另一套原生证书。
 - **证书覆盖**：两个域名需要各自匹配的证书。只使用 `media.example.net` 时不需要泛域名证书；`*.example.net` 也不能覆盖 `panel.example.com`。当前 Meridian 原生 HTTPS 共用一套证书，不支持面板和站点分别管理两张证书。
 - **域名来源**：完整 `public_host` 不依赖 `PANEL_ROUTE_DOMAIN`。已有数据库中的节点基础域名不会随该环境变量变化；手动保存或配置过原生 HTTPS 的面板域名也以数据库为准，见 [配置参考](configuration.md)。
 - **保留 Host**：两个 Nginx 入口都转发到 Meridian，由请求的 Host 区分管理面板和媒体站点。不能把媒体请求的 Host 改成面板域名，也不能把媒体入口直接代理到 Emby 后仍期待 Meridian 统计该流量。

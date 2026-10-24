@@ -220,6 +220,7 @@ func main() {
 		clientIPRegions:   clientIPRegions,
 		panelHost:         panelHost,
 		routeDomain:       routeDomain,
+		routeDirect:       envBool("PANEL_ROUTE_DIRECT"),
 		panelTLSEnabled:   panelTLSEnabled,
 		panelCertificates: panelCertificates,
 		panelBindLoopback: panelBindIP != nil && panelBindIP.IsLoopback(),

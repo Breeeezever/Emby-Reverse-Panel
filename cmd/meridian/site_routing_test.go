@@ -1,13 +1,82 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestSubdomainAndPathIngressUseSharedHTTPSListener(t *testing.T) {
+	app := newTestApp(t)
+	app.panelHost, app.routeDomain = "media.example.test", "media.example.test"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, r.URL.RequestURI())
+	}))
+	defer upstream.Close()
+	certPEM, keyPEM := testImportedCertificate(t, []string{"media.example.test", "*.media.example.test"}, 721, time.Now().Add(time.Hour))
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		t.Fatal("could not trust isolated test certificate")
+	}
+
+	// Occupy the database's internal site port: neither shared mode should
+	// attempt to bind it or tell clients to connect to it.
+	reserved, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reserved.Close()
+	port := reserved.Addr().(*net.TCPAddr).Port
+	for i, mode := range []string{ingressModeHost, ingressModePath} {
+		site := Site{ID: int64(720 + i), Name: mode, ListenPort: port, IngressMode: mode,
+			PublicHost: "cinema.media.example.test", PathPrefix: "/cinema", TargetURL: upstream.URL,
+			PlaybackMode: "direct", StreamHosts: "[]", UAMode: passthroughUAMode}
+		if mode == ingressModeHost {
+			site.PathPrefix = ""
+		} else {
+			site.PublicHost = ""
+		}
+		if err := app.pm.StartSite(site); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = app.pm.StopSite(site.ID) })
+	}
+	shared := httptest.NewUnstartedServer(app.publicHostRouter(http.NotFoundHandler()))
+	shared.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}}
+	shared.StartTLS()
+	defer shared.Close()
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, shared.Listener.Addr().String())
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	for _, hostPath := range []string{"cinema.media.example.test/System/Info/Public", "media.example.test/cinema/System/Info/Public"} {
+		response, err := client.Get("https://" + hostPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil || response.StatusCode != http.StatusOK || string(body) != "/System/Info/Public" {
+			t.Fatalf("%s: status=%d body=%s err=%v", hostPath, response.StatusCode, body, err)
+		}
+	}
+}
 
 func TestStripIngressPathPrefixNormalizesOnlyLiteralBoundarySlashes(t *testing.T) {
 	for _, test := range []struct {

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNormalizeManagedPanelSettings(t *testing.T) {
@@ -18,13 +19,62 @@ func TestNormalizeManagedPanelSettings(t *testing.T) {
 		t.Fatalf("unexpected settings: %+v", settings)
 	}
 	for _, tc := range [][2]string{
-		{"example.com", "example.com"},
 		{"a.b.example.com", "example.com"},
 		{"panel.example.com", ""},
 	} {
 		if _, err := normalizeManagedPanelSettings(tc[0], tc[1]); err == nil {
 			t.Fatalf("normalizeManagedPanelSettings(%q, %q) unexpectedly succeeded", tc[0], tc[1])
 		}
+	}
+}
+
+func TestManagedPanelAtNodeBaseDomain(t *testing.T) {
+	for _, domain := range []string{"example.com", "media.example.com"} {
+		settings, err := normalizeManagedPanelSettings(domain, domain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		domains := panelACMECertificateDomains(settings)
+		if len(domains) != 2 || domains[0] != "*."+domain || domains[1] != domain {
+			t.Fatalf("ACME domains = %v", domains)
+		}
+		certPEM, keyPEM := testImportedCertificate(t, domains, 719, time.Now().Add(24*time.Hour))
+		issued, err := parseImportedPanelCertificate(certPEM, keyPEM, settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, host := range []string{domain, "cinema." + domain} {
+			if err := issued.certificate.Leaf.VerifyHostname(host); err != nil {
+				t.Fatalf("certificate does not cover %s: %v", host, err)
+			}
+		}
+		if err := issued.certificate.Leaf.VerifyHostname("deep.cinema." + domain); err == nil {
+			t.Fatal("wildcard unexpectedly covers multiple labels")
+		}
+	}
+	settings, err := normalizeManagedPanelSettings("panel.example.com", "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if domains := panelACMECertificateDomains(settings); len(domains) != 1 || domains[0] != "*.example.com" {
+		t.Fatalf("legacy wildcard order changed: %v", domains)
+	}
+}
+
+func TestRetainedGatewayPreventsChangingOnlyNativeBackendPort(t *testing.T) {
+	app := newTestApp(t)
+	app.routeDirect, app.panelTLSEnabled = true, true
+	app.panelListenPort = 9443
+	var err error
+	app.trustedProxies, err = parseTrustedProxyCIDRs("127.0.0.1/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.validatePanelPortChange(9443); err != nil {
+		t.Fatalf("unchanged port must allow certificate maintenance: %v", err)
+	}
+	if err := app.validatePanelPortChange(freePort(t)); err == nil {
+		t.Fatal("changing the backend port must not strand the retained public gateway")
 	}
 }
 

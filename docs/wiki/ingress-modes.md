@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | 路径 | `https://panel.example.com/cinema/` | 新建默认，已有 HTTPS 面板时最省事 | 客户端保留路径，网关不剥离前缀。 |
 | 独立端口 | `http://panel.example.com:8001` | 需要独立监听或兼容不支持基础路径的客户端 | 端口可绑定、防火墙放行，Docker 映射，CDN 支持。 |
-| 域名前缀 | `https://cinema.example.com:9090` | 每个站点使用自己的子域名 | 路由域名、DNS、匹配证书与原生 TLS 就绪。 |
+| 域名前缀 | `https://cinema.example.com:9090` | 每个站点使用自己的子域名 | 路由域名、DNS、原生 HTTPS 或受信网关的证书与转发就绪。 |
 
 示例端口只用于说明。实际地址以界面显示和网关配置为准。
 
@@ -63,7 +63,11 @@ https://panel.example.com:8443/cinema/
 
 域名前缀使用共享监听入口，不需要新增站点独立端口。外部反向代理须识别站点 Host、提供覆盖该域名的证书，并将原 Host 转发给 Meridian。
 
-只配置外部网关 HTTPS，不会自动开启新建表单的原生 TLS 能力。暂时不能选择域名前缀时，可先用路径入口。
+外部 HTTPS 网关部署保存节点基础域名、配置可信代理后，也可在表单选择域名前缀；泛域名证书与所有节点域名的转发需在网关配置。路径前缀直接复用已有面板域名和证书，不需要泛域名证书。
+
+域名前缀和路径前缀都复用共享入口，站点内部记录的 `listen_port` 不代表另开了监听。TCP 检测应使用访问地址中的端口；未写端口的 HTTPS 地址使用 `443`。只有“独立端口”模式会另外绑定端口。
+
+二级域名同样可作为节点基础域名：`media.example.com` 下的 `cinema` 生成 `cinema.media.example.com`，证书需覆盖 `*.media.example.com`；`*.example.com` 无法覆盖它。若经 Cloudflare 代理，还需确认其边缘证书覆盖该层级且端口受支持；源站证书不会自动改变 Cloudflare 的边缘证书。
 
 ## 面板域名与站点域名分开 {#separate-panel-and-site-domains}
 
@@ -82,7 +86,7 @@ https://panel.example.com:8443/cinema/
 1. 将 `panel.example.com` 和 `media.example.com` 都解析到入口服务器。
 2. 在“全局设置 → TLS 设置”保存面板域名 `panel.example.com`、节点泛域名 `*.example.com` 和 Meridian 的**内部监听端口**。
 3. 在 Nginx 等网关中为两个域名配置 HTTPS，并把请求转发到同一个 Meridian 监听端口，保留原始 `Host`。证书必须覆盖两个域名；使用 `*.example.com` 时，它会覆盖这两个一层子域名。
-4. 外部 HTTPS 模式通过站点 API 设置 `ingress_mode: "host"` 和 `public_host: "media.example.com"`，客户端使用该地址访问站点。当前新增表单的“域名前缀”仍要求原生 TLS，完整操作见 [外部 HTTPS 模式创建域名站点](reverse-proxy.md#external-https-host-site)。
+4. 在站点表单选择“域名前缀”并填写 `media`，或通过 API 设置 `ingress_mode: "host"` 和 `public_host: "media.example.com"`。完整操作见 [外部 HTTPS 模式创建域名站点](reverse-proxy.md#external-https-host-site)。
 
 如果站点域名不在 `PANEL_ROUTE_DOMAIN` 对应的基础域名下，也可以通过 API 直接填写完整 `public_host`，但仍需自行准备 DNS、证书和网关路由；面板表单的“域名前缀”只生成 `前缀.PANEL_ROUTE_DOMAIN`。
 
