@@ -35,6 +35,7 @@ REQUESTED_DOMAIN=""
 REQUESTED_PORT=""
 REQUESTED_WILDCARD=""
 DNS_TOKEN_FILE=""
+TRUST_LOCAL_PROXY=0
 CERTBOT_EMAIL=""
 INITIAL_SETUP_TOKEN=""
 SETUP_TOKEN_ORIGIN=""
@@ -2404,10 +2405,73 @@ replace_tls_env() {
     local key="$1" value="$2" tmp_dir="$3"
     # awk field references are intentionally literal.
     # shellcheck disable=SC2016
-    as_root awk -F= -v wanted="$key" '$1 != wanted {print}' "$(env_file_path)" > "${tmp_dir}/tls.env"
-    printf '%s=%s\n' "$key" "$value" >> "${tmp_dir}/tls.env"
-    install_env_file "${tmp_dir}/tls.env"
+    as_root awk -F= -v wanted="$key" '$1 != wanted {print}' "$(env_file_path)" > "${tmp_dir}/tls.env" || return 1
+    printf '%s=%s\n' "$key" "$value" >> "${tmp_dir}/tls.env" || return 1
+    install_env_file "${tmp_dir}/tls.env" || return 1
 }
+
+do_proxy() (
+    # External Nginx/BaoTa/1Panel installations must opt in explicitly. Do not
+    # infer trust from request headers, a running nginx process or TLS settings.
+    init_privilege
+    validate_data_dir
+    validate_backup_dir
+    local env_file current proxies work_dir backup_dir changed=0
+    env_file=$(env_file_path)
+    if ! as_root test -f "$env_file" || as_root test -L "$env_file"; then
+        fail "找不到安全的已有环境配置: $env_file"
+    fi
+    if ! is_systemd || ! as_root systemctl is-active --quiet "$SERVICE_NAME"; then
+        fail "此命令需要正在运行的 systemd 服务；Docker 请修改容器环境并重新创建容器"
+    fi
+    as_root systemctl show "$SERVICE_NAME" -p EnvironmentFiles --value \
+        | grep -Fq -- "$env_file (ignore_errors=" \
+        || fail "服务未加载此环境文件，请修改实际生效的服务或容器配置: $env_file"
+    if [ "$TRUST_LOCAL_PROXY" != 1 ]; then
+        [ "$ASSUME_YES" != 1 ] || fail "请用 proxy --local 明确选择同机回环反向代理"
+        info "仅适用于 Nginx 与 Meridian 在同一网络命名空间，回源为 127.0.0.1 或 ::1。"
+        ask_yes_no "是否信任本机回环代理并重启 Meridian？（容器/远程代理请选择否）" 0 \
+            || { info "已取消；请按反向代理文档填写实际代理来源 CIDR"; exit 0; }
+    fi
+    current=$(read_env_value TRUSTED_PROXY_CIDRS) || fail "无法读取可信代理配置"
+    proxies=$(remove_loopback_proxies "$current") || exit 1
+    proxies="${proxies:+${proxies},}127.0.0.1/32,::1/128"
+    work_dir=$(mktemp -d) || exit 1
+    chmod 0700 "$work_dir" || exit 1
+    trap 'as_root rm -rf -- "$work_dir"' EXIT
+    as_root install -d -m 0700 "$BACKUP_DIR" || exit 1
+    backup_dir=$(as_root mktemp -d "${BACKUP_DIR}/proxy-$(date +%Y%m%d-%H%M%S)-XXXXXX") || exit 1
+    as_root cp -p -- "$env_file" "${backup_dir}/env.before" || fail "环境配置备份失败"
+    # This transaction only owns .env. Custom Nginx, certificates and database
+    # settings must never be restored or rewritten by the proxy configuration.
+    # Invoked by the EXIT trap, including when application or health checks fail.
+    # shellcheck disable=SC2317,SC2329
+    cleanup_proxy() {
+        local status=$?
+        if [ "$changed" = 1 ]; then
+            warn "可信代理配置未完成，正在恢复原环境配置"
+            if as_root cp -p -- "${backup_dir}/env.before" "${env_file}.restore" \
+                && as_root mv -f -- "${env_file}.restore" "$env_file"; then
+                restart_meridian_and_health || warn "原配置已恢复，但服务健康检查失败，请检查 $SERVICE_NAME"
+            else
+                warn "自动恢复失败，请从 ${backup_dir}/env.before 恢复"
+            fi
+        fi
+        as_root rm -rf -- "$work_dir"
+        return "$status"
+    }
+    trap cleanup_proxy EXIT
+    trap 'exit 130' INT TERM
+    changed=1
+    replace_tls_env TRUSTED_PROXY_CIDRS "$proxies" "$work_dir" || fail "写入可信代理配置失败"
+    restart_meridian_and_health || fail "应用可信代理配置后的健康检查失败"
+    changed=0
+    ok "已信任本机回环代理并重启 Meridian: $proxies"
+    info "原环境配置备份: ${backup_dir}/env.before"
+    # $remote_addr is a literal Nginx variable for the administrator to configure.
+    # shellcheck disable=SC2016
+    info 'Nginx 还须覆盖设置 proxy_set_header X-Real-IP $remote_addr; 请从外部访问站点，检查新请求日志中的客户端 IP。'
+)
 
 do_install() {
     local current_binary="${INSTALL_DIR}/${BIN_NAME}" tmp_dir version existing_install=0
@@ -2842,6 +2906,8 @@ Meridian 一键安装工具
       Cloudflare DNS 验证申请泛域名证书，切换原生 HTTPS 并自动续期。
   install.sh password
       隐藏输入并修改唯一管理员密码，同时轮换 JWT 密钥。
+  install.sh proxy --local
+      为同机 Nginx / 宝塔反代添加回环可信代理，备份配置并重启；不修改域名、证书或 Nginx。
   install.sh uninstall [-y] [--purge]
       卸载程序；默认保留数据与备份，--purge 才删除数据。
   install.sh help
@@ -2854,6 +2920,7 @@ Meridian 一键安装工具
   --wildcard NAME  泛域名或基础域名；直接使用原生 HTTPS，可用于 install 或 tls
   --dns-token-file PATH  从文件读取 Cloudflare DNS Token，不在命令参数中传入密钥
   --no-domain      不配置或取消安装器管理的面板域名
+  --local          仅用于 proxy；明确选择同一网络命名空间的回环反代，不适用于跨容器或远程代理
   -y, --yes        非交互确认；安装未指定域名时保留现有配置，首次安装则使用 IP
   --purge          卸载时删除数据目录；不会删除备份、Nginx、Certbot 或证书
 
@@ -2889,8 +2956,9 @@ main_menu() {
     printf '  3) 修改管理员密码\n'
     printf '  4) 卸载\n'
     printf '  5) 配置泛域名证书\n'
+    printf '  6) 配置本机反向代理（Nginx / 宝塔）\n'
     printf '  0) 退出\n\n'
-    read -r -p "请选择 [0-5]: " choice
+    read -r -p "请选择 [0-6]: " choice
     case "$choice" in
         1)
             prompt_panel_port
@@ -2900,6 +2968,7 @@ main_menu() {
         3) do_password ;;
         4) do_uninstall ;;
         5) do_tls ;;
+        6) do_proxy ;;
         0) exit 0 ;;
         *) fail "无效选项" ;;
     esac
@@ -2913,6 +2982,11 @@ run_cli() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             -y|--yes) ASSUME_YES=1 ;;
+            --local)
+                [ "$action" = proxy ] || fail "--local 仅用于 proxy"
+                [ "$TRUST_LOCAL_PROXY" = 0 ] || fail "--local 不能重复"
+                TRUST_LOCAL_PROXY=1
+                ;;
             --purge)
                 [ "$action" = "uninstall" ] || fail "--purge 仅用于 uninstall"
                 PURGE_DATA=1
@@ -2976,10 +3050,11 @@ run_cli() {
         tls) do_tls ;;
         update) do_update ;;
         password) do_password ;;
+        proxy) do_proxy ;;
         uninstall) do_uninstall ;;
         help) usage ;;
         menu) main_menu ;;
-        *) fail "未知操作: $action（仅支持 install、update、tls、password、uninstall、help）" ;;
+        *) fail "未知操作: $action（仅支持 install、update、tls、proxy、password、uninstall、help）" ;;
     esac
 }
 

@@ -46,7 +46,7 @@ printf '%s' "$stdin_help" | grep -Fq 'Meridian 一键安装工具' \
 # disposable PTY while Bash still reads the installer itself from stdin.
 if command -v script >/dev/null 2>&1; then
     piped_menu=$(printf '0\n' | script -qec "bash < '${REPO_ROOT}/install.sh'" /dev/null)
-    printf '%s' "$piped_menu" | grep -Fq '请选择 [0-5]:' \
+    printf '%s' "$piped_menu" | grep -Fq '请选择 [0-6]:' \
         || { echo 'FAIL: piped menu was not attached to the terminal' >&2; exit 1; }
     if printf '%s' "$piped_menu" | grep -Fq '无效选项'; then
         echo 'FAIL: piped menu did not read the terminal selection' >&2
@@ -1451,10 +1451,10 @@ for removed_command in status restart logs backup rollback; do
 done
 
 menu_text=$(printf '0\n' | main_menu)
-for menu_item in '1) 安装' '2) 更新到最新版' '3) 修改管理员密码' '4) 卸载' '5) 配置泛域名证书' '0) 退出'; do
+for menu_item in '1) 安装' '2) 更新到最新版' '3) 修改管理员密码' '4) 卸载' '5) 配置泛域名证书' '6) 配置本机反向代理' '0) 退出'; do
     printf '%s' "$menu_text" | grep -Fq "$menu_item"
 done
-if printf '%s' "$menu_text" | grep -Eq '^  [6-9]\)'; then
+if printf '%s' "$menu_text" | grep -Eq '^  [7-9]\)'; then
     echo 'FAIL: menu exposes unexpected operations' >&2
     exit 1
 fi

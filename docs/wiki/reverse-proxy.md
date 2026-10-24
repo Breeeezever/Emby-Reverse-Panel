@@ -27,6 +27,39 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 
 `TRUSTED_PROXY_CIDRS` 必须匹配 Meridian 实际看到的代理来源。Docker、远程网关和 IPv6 连接不能直接照搬同机地址，也不要填 `0.0.0.0/0`。
 
+### 手动 Nginx、宝塔与 1Panel：日志只显示 127.0.0.1 {#manual-proxy-client-ip}
+
+在宝塔、1Panel 或 Nginx 中新增反代，不会自动修改 Meridian 的环境配置。`TRUSTED_PROXY_CIDRS=` 为空时，Meridian 不采用代理传来的 `X-Real-IP`，新请求日志会记录直接连接它的 Nginx 地址。同机回源通常就是 `127.0.0.1`。安装器的 `install --domain` 会同时设置可信代理；原生 HTTPS 直连可以直接看到客户端地址，因此这两种方式通常没有该现象。
+
+**同机原生安装**（Nginx 与 Meridian 在同一网络命名空间，Nginx 回源为 `127.0.0.1` 或 `::1`）可在安装器菜单选择“配置本机反向代理”，或执行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh) proxy --local
+```
+
+命令会在现有 `TRUSTED_PROXY_CIDRS` 中补充 `127.0.0.1/32,::1/128`，保留其他代理范围，备份 `.env` 后重启并检查 Meridian，失败则恢复原配置。域名、监听端口、证书、数据库和自定义 Nginx 配置不由此命令改写。重启会短暂中断现有连接。
+
+也可备份并编辑实际生效的环境文件（标准安装为 `/opt/meridian/.env`），修改已有的这一项，避免重复定义，随后运行 `sudo systemctl restart meridian`。已有其他可信代理时保留它们。
+
+```dotenv
+TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+```
+
+Nginx 的反代 `location` 同时需要覆盖设置以下请求头；不要把浏览器提供的 `$http_x_real_ip` 直接传给 Meridian：
+
+```nginx
+proxy_set_header Host $http_host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+在宝塔/1Panel 保存配置后检查并重载其实际使用的 Nginx/OpenResty，再从另一台设备访问一个站点，检查**新产生**的请求日志；历史日志不会被改写。可额外发送伪造 `X-Real-IP` 的请求，确认日志仍记录真实连接地址。
+
+**1Panel/Docker 或远程代理**不能直接使用 `proxy --local`：容器内的回环地址只代表该容器。应根据实际回源连接来源，填写代理的精确 IP CIDR（IPv4 `/32`、IPv6 `/128`，或专用代理网络的必要范围），在 Compose 的 `environment` / `env_file` 中修改后重新创建容器；仅 `docker restart` 不会加载新的容器环境。不要把所有 Docker 网段或公网地址都加入信任。另见 [Docker 安装](install-docker.md)。
+
+如果已信任正确的代理，仍记录回环地址，应继续检查 Nginx 的 `$remote_addr` 是否早已被前置 stream/CDN 变成了代理地址，按下一节处理。
+
 ### Nginx stream 与真实 IP {#stream-client-ip}
 
 直接通过 HTTP 层反代时，Nginx 覆盖设置 `X-Real-IP $remote_addr`，Meridian 仅信任 `TRUSTED_PROXY_CIDRS` 中的代理来源；登录限流和请求日志即可使用客户端 IP。无端口的 `443` 反代本身不会必然让所有用户共用一个 IP。
@@ -233,6 +266,7 @@ sudo systemctl reload nginx
 | 现象 | 原因与处理 |
 | --- | --- |
 | 站点请求落到管理面板 | 路径前缀被网关剥离，检查 `proxy_pass` 的 URI 规则。 |
+| 日志 IP 全是 127.0.0.1 或容器网关地址 | 按[手动反代真实 IP 配置](#manual-proxy-client-ip)核对生效的可信代理 CIDR、X-Real-IP 覆盖和前置转发层。 |
 | 保存提示同源校验失败 | 检查 Host、外部协议、可信代理和浏览器实际访问地址。 |
 | 备份上传返回 413 | 调整网关请求体上限，再检查备份文件大小。 |
 | 面板能打开但实时状态不更新 | 检查 SSE 缓冲、连接超时与 CDN 行为。 |

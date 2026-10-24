@@ -8,7 +8,7 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh)
 ```
 
-交互菜单提供安装、更新、修改管理员密码、卸载和泛域名证书配置。安装过程会检查平台、依赖与端口，并下载对应正式版本。
+交互菜单提供安装、更新、修改管理员密码、卸载、泛域名证书和本机反向代理配置。安装过程会检查平台、依赖与端口，并下载对应正式版本。
 
 安装时可直接选择“泛域名 + Meridian 原生 HTTPS”（推荐）。输入 `example.com` 或 `*.example.com`，新安装默认使用 `panel.example.com` 作为面板域名，再填写 ACME 邮箱与 Cloudflare DNS Token。一次申请泛域名证书，面板与域名前缀站点共用，无需先给面板单独申请证书，也无需安装后再去网页配置泛域名。
 
@@ -50,10 +50,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/insta
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/snnabb/Meridian/master/install.sh) install \
-  --port 9090 --no-domain -y
+  --port 9090 -y
 ```
 
-默认仅监听 `127.0.0.1`。通过 SSH 隧道初始化，或按 [反向代理](reverse-proxy.md) 接入 HTTPS。
+新安装默认仅监听 `127.0.0.1`，已有安装保留域名和入口配置。通过 SSH 隧道初始化，或按 [反向代理](reverse-proxy.md) 接入 HTTPS。`--no-domain` 是取消安装器域名并启用公开明文兼容入口，不用于保留已有的外部 HTTPS 反代。
+
+手动 Nginx/宝塔同机反代还需执行 `bash install.sh proxy --local`（菜单选项 6），补充可信回环代理并重启 Meridian；同时配置 Nginx 覆盖 `X-Real-IP`，以免请求日志只记录 `127.0.0.1`。1Panel 的 OpenResty 或 Meridian 如果在不同容器，必须按实际代理来源配置，不能直接套用回环地址。完整步骤见[手动反代真实 IP](reverse-proxy.md#manual-proxy-client-ip)。
 
 ## 标准安装位置
 
